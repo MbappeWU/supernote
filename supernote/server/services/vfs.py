@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.server.constants import (
     SYSTEM_CATEGORY_CONTAINER_MAP,
+    SYSTEM_ROOT_DIRECTORIES,
 )
 from supernote.server.db.models.file import RecycleFileDO, UserFileDO
 from supernote.server.exceptions import FileAlreadyExists, InvalidPath
@@ -60,6 +61,31 @@ class VirtualFileSystem:
             return result.scalar_one_or_none()
 
         return None
+
+    async def is_system_directory(self, user_id: int, node: UserFileDO) -> bool:
+        """Whether `node` is a folder a Supernote device requires.
+
+        These are Export, Inbox and Screenshot at the root, and Note, MyStyle and
+        Document inside the NOTE and DOCUMENT containers. The same names
+        elsewhere are ordinary folders.
+        """
+        if node.is_folder != "Y":
+            return False
+
+        name = node.file_name
+        if node.directory_id == 0:
+            return name in SYSTEM_ROOT_DIRECTORIES
+
+        container = SYSTEM_CATEGORY_CONTAINER_MAP.get(name)
+        if container is None:
+            return False
+
+        parent_node = await self.get_node_by_id(user_id, node.directory_id)
+        return (
+            parent_node is not None
+            and parent_node.directory_id == 0
+            and parent_node.file_name == container
+        )
 
     async def create_directory(
         self, user_id: int, parent_id: int, name: str

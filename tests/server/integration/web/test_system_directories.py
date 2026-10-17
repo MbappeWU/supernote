@@ -58,3 +58,22 @@ async def test_device_cannot_delete_flattened_folders(
     # 3. Attempt to delete
     with pytest.raises(ApiException, match="Cannot delete system directory"):
         await device_client.delete(id=note_id, equipment_no="TEST")
+
+
+async def test_a_users_own_folder_may_share_a_system_name(
+    web_client: WebClient,
+) -> None:
+    """A folder named `Document` outside its system location can be deleted."""
+    res = await web_client.list_query(directory_id=0)
+    note_folder = next(f for f in res.user_file_vo_list if f.file_name == "Note")
+
+    created = await web_client.create_folder(
+        parent_id=int(note_folder.id), name="Document"
+    )
+
+    await web_client.file_delete(
+        id_list=[int(created.id)], parent_id=int(note_folder.id)
+    )
+
+    children = await web_client.list_query(directory_id=int(note_folder.id))
+    assert not any(f.file_name == "Document" for f in children.user_file_vo_list)
