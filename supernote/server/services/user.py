@@ -275,23 +275,10 @@ class UserService:
             session.add(record)
             await session.commit()
 
-        if equipment in (Equipment.TERMINAL, Equipment.APP):
-            ttl = self._config.device_expiration_hours * 3600
-        else:
-            ttl = self._config.expiration_hours * 3600
-
-        payload = {
-            "sub": account,
-            "equipment_no": equipment_no or "",
-            "iat": int(time.time()),
-            "exp": int(time.time()) + ttl,
-        }
-        token = jwt.encode(payload, self._config.secret_key, algorithm=JWT_ALGORITHM)
-
-        # Persist session in CoordinationService
-        session_val = f"{account}|{equipment_no or ''}"
-        await self._coordination_service.set_value(
-            f"session:{token}", session_val, ttl=ttl
+        token = await self.create_session(
+            account=account,
+            equipment_no=equipment_no,
+            equipment=equipment,
         )
 
         return LoginVO(
@@ -301,6 +288,33 @@ class UserService:
             is_bind_equipment=is_bind_equipment,
             user_name=account,
         )
+
+    async def create_session(
+        self,
+        account: str,
+        equipment_no: str | None = None,
+        equipment: Equipment = Equipment.WEB,
+    ) -> str:
+        """Create and persist a new authenticated session token for an account."""
+        if equipment in (Equipment.TERMINAL, Equipment.APP):
+            ttl = self._config.device_expiration_hours * 3600
+        else:
+            ttl = self._config.expiration_hours * 3600
+
+        now = int(time.time())
+        payload = {
+            "sub": account,
+            "equipment_no": equipment_no or "",
+            "iat": now,
+            "exp": now + ttl,
+        }
+        token = jwt.encode(payload, self._config.secret_key, algorithm=JWT_ALGORITHM)
+
+        session_val = f"{account}|{equipment_no or ''}"
+        await self._coordination_service.set_value(
+            f"session:{token}", session_val, ttl=ttl
+        )
+        return token
 
     async def verify_token(self, token: str) -> SessionState | None:
         """Verify token against persisted sessions and JWT signature."""

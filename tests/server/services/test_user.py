@@ -322,3 +322,17 @@ async def test_register_valid_email(user_service: UserService) -> None:
         except ValueError as e:
             pytest.fail(f"Valid email '{email}' failed validation: {e}")
         # We don't bother cleanup since we're using unique email addresses
+
+
+async def test_create_session_and_verify_token(user_service: UserService) -> None:
+    """Verify create_session mints and persists a verifiable session token."""
+    email = "session_test@example.com"
+    pw_md5 = hashlib.md5(b"password123").hexdigest()
+    await user_service.register(UserRegisterDTO(email=email, password=pw_md5))
+
+    token = await user_service.create_session(email, equipment_no="SN123")
+    state = await user_service.verify_token(token)
+    assert state is not None
+    assert state.email == email
+    assert state.equipment_no == "SN123"
+    assert state.token == token

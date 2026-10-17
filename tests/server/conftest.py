@@ -11,7 +11,6 @@ from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import jwt
 import pytest
 from aiohttp.test_utils import TestClient
 from pytest_aiohttp import AiohttpClient
@@ -35,7 +34,7 @@ from supernote.server.services.coordination import (
     CoordinationService,
     SqliteCoordinationService,
 )
-from supernote.server.services.user import JWT_ALGORITHM, UserService
+from supernote.server.services.user import UserService
 
 TEST_USERNAME = "test@example.com"
 TEST_PASSWORD = "testpassword"
@@ -200,18 +199,13 @@ async def test_user_id(
 
 @pytest.fixture(name="auth_headers")
 async def auth_headers_fixture(
-    server_config: ServerConfig,
+    user_service: UserService,
     coordination_service: SqliteCoordinationService,
     create_test_user: None,
 ) -> dict[str, str]:
     """Generate auth headers and persist session in state."""
-    # Create a JWT token (so it works as a session token for login_bridge)
-    secret = server_config.auth.secret_key
-    token = jwt.encode({"sub": TEST_USERNAME}, secret, algorithm=JWT_ALGORITHM)
-
-    # 1. Store as regular Session (for login bridge / user service)
-    session_val = f"{TEST_USERNAME}|"
-    await coordination_service.set_value(f"session:{token}", session_val, ttl=3600)
+    # 1. Create and persist regular session via UserService
+    token = await user_service.create_session(TEST_USERNAME)
 
     # 2. Store as MCP token (for MCP resource server verification)
     token_data = {

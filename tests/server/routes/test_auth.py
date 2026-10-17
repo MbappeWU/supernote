@@ -1,7 +1,6 @@
 import hashlib
 from unittest.mock import patch
 
-import jwt
 import pytest
 from aiohttp.test_utils import TestClient
 
@@ -99,12 +98,8 @@ async def test_user_query(
     with pytest.raises(ApiException):
         await unauth_web.query_user()
 
-    secret = client.app["config"].auth.secret_key
-    bad_token = jwt.encode(
-        {"sub": "nonexistent@example.com"}, secret, algorithm="HS256"
-    )
-    await client.app["coordination_service"].set_value(
-        f"session:{bad_token}", "nonexistent@example.com|", ttl=3600
+    bad_token = await client.app["user_service"].create_session(
+        "nonexistent@example.com"
     )
 
     class BadAuth(AbstractAuth):
