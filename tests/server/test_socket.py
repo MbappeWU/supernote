@@ -18,7 +18,7 @@ from supernote.models.socket import (
 )
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
-from supernote.server.services.user import JWT_ALGORITHM
+from supernote.server.services.user import JWT_ALGORITHM, UserService
 from supernote.server.socket import SocketIOServerManager
 from supernote.server.socket_auth import compute_handshake_signature
 
@@ -70,11 +70,11 @@ def socket_client(
 
 @pytest.mark.asyncio
 async def test_socketio_ping_pong(
+    socketio_server: TestServer,
     socket_client: SupernoteSocketClient,
-    server_config: ServerConfig,
 ) -> None:
-    secret = server_config.auth.secret_key
-    token_a = jwt.encode({"sub": "test@example.com"}, secret, algorithm=JWT_ALGORITHM)
+    user_service: UserService = socketio_server.app["user_service"]
+    token_a = await user_service.create_session("test@example.com")
     params_a = _make_handshake_params(token_a)
 
     await socket_client.connect(params_a)
@@ -89,11 +89,11 @@ async def test_socketio_ping_pong(
 
 @pytest.mark.asyncio
 async def test_socketio_status_heartbeat(
+    socketio_server: TestServer,
     socket_client: SupernoteSocketClient,
-    server_config: ServerConfig,
 ) -> None:
-    secret = server_config.auth.secret_key
-    token_a = jwt.encode({"sub": "test@example.com"}, secret, algorithm=JWT_ALGORITHM)
+    user_service: UserService = socketio_server.app["user_service"]
+    token_a = await user_service.create_session("test@example.com")
     params_a = _make_handshake_params(token_a)
 
     await socket_client.connect(params_a)
@@ -114,15 +114,14 @@ def additional_users() -> list[str]:
 async def test_socketio_multi_user_message_isolation(
     socketio_server: TestServer,
     create_socket_client: Callable[[], SupernoteSocketClient],
-    server_config: ServerConfig,
     create_test_user: None,
 ) -> None:
-    secret = server_config.auth.secret_key
+    user_service: UserService = socketio_server.app["user_service"]
     user_a = "test@example.com"
     user_b = "a@example.com"
 
-    token_a = jwt.encode({"sub": user_a}, secret, algorithm=JWT_ALGORITHM)
-    token_b = jwt.encode({"sub": user_b}, secret, algorithm=JWT_ALGORITHM)
+    token_a = await user_service.create_session(user_a)
+    token_b = await user_service.create_session(user_b)
 
     params_a = _make_handshake_params(token_a)
     params_b = _make_handshake_params(token_b)
@@ -193,6 +192,7 @@ async def test_socketio_connect_unauthorized(
 @pytest.mark.asyncio
 async def test_socketio_connect_invalid_token(
     socket_client: SupernoteSocketClient,
+    server_config: ServerConfig,
 ) -> None:
     # Valid signature but invalid JWT token string
     invalid_token_params = _make_handshake_params("bad.jwt.token")
@@ -202,14 +202,26 @@ async def test_socketio_connect_invalid_token(
 
     assert not socket_client.is_connected
 
+    # Valid JWT signature, but never persisted in CoordinationService
+    secret = server_config.auth.secret_key
+    unpersisted_token = jwt.encode(
+        {"sub": "test@example.com"}, secret, algorithm=JWT_ALGORITHM
+    )
+    unpersisted_params = _make_handshake_params(unpersisted_token)
+
+    with pytest.raises(SocketIOConnectionError):
+        await socket_client.connect(unpersisted_params)
+
+    assert not socket_client.is_connected
+
 
 @pytest.mark.asyncio
 async def test_socketio_client_received_ack(
+    socketio_server: TestServer,
     socket_client: SupernoteSocketClient,
-    server_config: ServerConfig,
 ) -> None:
-    secret = server_config.auth.secret_key
-    token_a = jwt.encode({"sub": "test@example.com"}, secret, algorithm=JWT_ALGORITHM)
+    user_service: UserService = socketio_server.app["user_service"]
+    token_a = await user_service.create_session("test@example.com")
     params_a = _make_handshake_params(token_a)
 
     await socket_client.connect(params_a)
@@ -225,11 +237,10 @@ async def test_socketio_client_received_ack(
 async def test_socketio_client_messages_async_iterator(
     socketio_server: TestServer,
     socket_client: SupernoteSocketClient,
-    server_config: ServerConfig,
 ) -> None:
-    secret = server_config.auth.secret_key
+    user_service: UserService = socketio_server.app["user_service"]
     user_id = "test@example.com"
-    token_a = jwt.encode({"sub": user_id}, secret, algorithm=JWT_ALGORITHM)
+    token_a = await user_service.create_session(user_id)
     params_a = _make_handshake_params(token_a)
 
     await socket_client.connect(params_a)
@@ -249,3 +260,55 @@ async def test_socketio_client_messages_async_iterator(
         break
 
     await socket_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_socketio_revoked_session_disconnected_on_heartbeat_and_send(
+    socketio_server: TestServer,
+    create_socket_client: Callable[[], SupernoteSocketClient],
+) -> None:
+    """Verify revoked sessions are disconnected on heartbeat or outbound send_message."""
+    user_service: UserService = socketio_server.app["user_service"]
+    manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
+    user_id = "test@example.com"
+
+    token_ping = await user_service.create_session(user_id)
+    token_status = await user_service.create_session(user_id)
+    token_send = await user_service.create_session(user_id)
+
+    client_ping = create_socket_client()
+    client_status = create_socket_client()
+    client_send = create_socket_client()
+
+    await client_ping.connect(_make_handshake_params(token_ping))
+    await client_status.connect(_make_handshake_params(token_status))
+    await client_send.connect(_make_handshake_params(token_send))
+
+    # Revoke token_ping and verify ratta_ping fails and disconnects
+    await user_service.logout(token_ping)
+    with pytest.raises(TimeoutError):
+        await client_ping.ping(timeout=0.1)
+
+    # Revoke token_status and verify status check fails and disconnects
+    await user_service.logout(token_status)
+    with pytest.raises(TimeoutError):
+        await client_status.check_status(timeout=0.1)
+
+    # Revoke token_send and verify outbound send_message disconnects instead of delivering
+    await user_service.logout(token_send)
+    msg_data = SocketMessageData(
+        code="0",
+        msg="secret update",
+        timestamp=1700000000000,
+        msg_type=SocketIoMessageType.FILE_SYN,
+    )
+    await manager.send_message(user_id, msg_data)
+
+    received = await anext(client_send.messages())
+    assert isinstance(received, SocketMessageData)
+    assert received.code == "403"
+    assert received.msg == "token verification failed"
+
+    await client_ping.disconnect()
+    await client_status.disconnect()
+    await client_send.disconnect()
