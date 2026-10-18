@@ -7,7 +7,7 @@ import pytest
 
 from supernote.notebook import SupernoteMetadata, exceptions, fileformat, parse_metadata
 from supernote.notebook.decoder import FlateDecoder, RattaRleDecoder
-from supernote.notebook.parser import MAX_BLOCK_SIZE, _get_content_at_address
+from supernote.notebook.parser import _get_content_at_address
 
 
 def test_parse_metadata(test_note_path: Path) -> None:
@@ -38,23 +38,15 @@ def test_get_content_at_address_rejects_truncated_length_header() -> None:
     with pytest.raises(
         exceptions.ParserException, match="unexpected EOF reading block length"
     ):
-        _get_content_at_address(stream, 0 + 1)
+        _get_content_at_address(stream, 1)
 
 
-def test_get_content_at_address_rejects_oversized_block() -> None:
-    oversized = (MAX_BLOCK_SIZE + 1).to_bytes(fileformat.LENGTH_FIELD_SIZE, "little")
+def test_get_content_at_address_rejects_block_length_exceeding_stream_size() -> None:
+    # A 4 GB length header (0xFFFFFFFF) in a small stream is rejected before fobj.read(block_length)
+    oversized = (0xFFFFFFFF).to_bytes(fileformat.LENGTH_FIELD_SIZE, "little")
     stream = io.BytesIO(b"HEAD" + oversized + b"payload")
     with pytest.raises(
-        exceptions.ParserException, match="exceeds maximum allowed size"
-    ):
-        _get_content_at_address(stream, 4)
-
-
-def test_get_content_at_address_rejects_truncated_block_body() -> None:
-    claimed_length = (100).to_bytes(fileformat.LENGTH_FIELD_SIZE, "little")
-    stream = io.BytesIO(b"HEAD" + claimed_length + b"short")
-    with pytest.raises(
-        exceptions.ParserException, match="unexpected EOF reading 100 bytes"
+        exceptions.ParserException, match="exceeds remaining stream size"
     ):
         _get_content_at_address(stream, 4)
 

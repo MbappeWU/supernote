@@ -187,31 +187,25 @@ def load_notebook(file_name, metadata=None, policy="strict"):
     return note
 
 
-MAX_BLOCK_SIZE = 32 * 1024 * 1024  # 32 MB
-
-
 def _get_content_at_address(fobj: FileObj, address: int) -> bytes | None:
     if address == 0:
         return None
     if address < 0:
         raise exceptions.ParserException(f"invalid negative block address: {address}")
-    fobj.seek(address, os.SEEK_SET)
-    length_bytes = fobj.read(fileformat.LENGTH_FIELD_SIZE)
-    if len(length_bytes) < fileformat.LENGTH_FIELD_SIZE:
+    stream_end = fobj.seek(0, os.SEEK_END)
+    if address + fileformat.LENGTH_FIELD_SIZE > stream_end:
         raise exceptions.ParserException(
             f"unexpected EOF reading block length at address {address}"
         )
+    fobj.seek(address, os.SEEK_SET)
+    length_bytes = fobj.read(fileformat.LENGTH_FIELD_SIZE)
     block_length = int.from_bytes(length_bytes, "little")
-    if block_length > MAX_BLOCK_SIZE:
+    remaining_bytes = stream_end - (address + fileformat.LENGTH_FIELD_SIZE)
+    if block_length > remaining_bytes:
         raise exceptions.ParserException(
-            f"block length {block_length} exceeds maximum allowed size {MAX_BLOCK_SIZE}"
+            f"block length {block_length} at address {address} exceeds remaining stream size {remaining_bytes}"
         )
-    content = fobj.read(block_length)
-    if len(content) < block_length:
-        raise exceptions.ParserException(
-            f"unexpected EOF reading {block_length} bytes at address {address}"
-        )
-    return content
+    return fobj.read(block_length)
 
 
 def _get_cover_address(metadata):
