@@ -114,19 +114,19 @@ class SqliteCoordinationService(CoordinationService):
     async def pop_value(self, key: str) -> str | None:
         """Get and delete a value atomically."""
         async with self._session_manager.session() as session:
-            # Traditional Select then Delete to avoid issues with RETURNING in some sqlite/alchemy versions
-            stmt = select(KeyValueDO).where(KeyValueDO.key == key)
+            stmt = (
+                delete(KeyValueDO)
+                .where(KeyValueDO.key == key)
+                .returning(KeyValueDO.value, KeyValueDO.expiry)
+            )
             result = await session.execute(stmt)
-            kv = result.scalar_one_or_none()
-
-            if not kv:
-                return None
-
-            value = kv.value
-            expiry = kv.expiry
-            await session.delete(kv)
+            row = result.first()
             await session.commit()
 
+            if not row:
+                return None
+
+            value, expiry = row
             if time.time() > expiry:
                 return None
             return str(value)
