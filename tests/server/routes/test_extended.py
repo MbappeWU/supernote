@@ -196,8 +196,17 @@ async def test_handle_list_system_tasks(
     client: TestClient,
     extended_client: ExtendedClient,
     session_manager: DatabaseSessionManager,
+    test_user_id: int,
 ) -> None:
     async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=1,
+                user_id=test_user_id,
+                file_name="Note1.note",
+                directory_id=0,
+            )
+        )
         session.add(
             SystemTaskDO(file_id=1, task_type="PNG", key="page_0", status="COMPLETED")
         )
@@ -218,10 +227,55 @@ async def test_handle_list_system_tasks(
         await extended_client.list_system_tasks()
 
 
+async def test_handle_list_system_tasks_excludes_other_users_tasks(
+    extended_client: ExtendedClient,
+    session_manager: DatabaseSessionManager,
+    test_user_id: int,
+) -> None:
+    """Verify GET /api/extended/system/tasks only returns tasks for the authenticated user's files."""
+    other_user_id = test_user_id + 999
+    async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=1,
+                user_id=test_user_id,
+                file_name="OwnNote.note",
+                directory_id=0,
+            )
+        )
+        session.add(
+            UserFileDO(
+                id=2,
+                user_id=other_user_id,
+                file_name="OtherUserSecret.note",
+                directory_id=0,
+            )
+        )
+        session.add(
+            SystemTaskDO(file_id=1, task_type="PNG", key="page_0", status="COMPLETED")
+        )
+        session.add(
+            SystemTaskDO(
+                file_id=2,
+                task_type="OCR",
+                key="page_0",
+                status="FAILED",
+                last_error="secret error",
+            )
+        )
+        await session.commit()
+
+    res = await extended_client.list_system_tasks()
+    assert res.success
+    returned_file_ids = {t.file_id for t in res.tasks}
+    assert returned_file_ids == {1}
+
+
 async def test_file_processing_status(
     client: TestClient,
     extended_client: ExtendedClient,
     session_manager: DatabaseSessionManager,
+    test_user_id: int,
 ) -> None:
     # Invalid DTO
     with pytest.raises(ApiException):
@@ -231,6 +285,15 @@ async def test_file_processing_status(
         )
 
     async with session_manager.session() as session:
+        for fid in (10, 20, 30, 40):
+            session.add(
+                UserFileDO(
+                    id=fid,
+                    user_id=test_user_id,
+                    file_name=f"Note{fid}.note",
+                    directory_id=0,
+                )
+            )
         # File 10: FAILED task
         session.add(
             SystemTaskDO(file_id=10, task_type="PNG", key="p0", status="FAILED")
@@ -270,6 +333,32 @@ async def test_file_processing_status(
         pytest.raises(ApiException),
     ):
         await extended_client.get_processing_status(file_ids=[10])
+
+
+async def test_file_processing_status_excludes_other_users_files(
+    extended_client: ExtendedClient,
+    session_manager: DatabaseSessionManager,
+    test_user_id: int,
+) -> None:
+    """Verify POST /api/extended/file/processing/status does not leak task status for another user's file."""
+    other_user_id = test_user_id + 999
+    async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=77,
+                user_id=other_user_id,
+                file_name="OtherUser.note",
+                directory_id=0,
+            )
+        )
+        session.add(
+            SystemTaskDO(file_id=77, task_type="PNG", key="p0", status="FAILED")
+        )
+        await session.commit()
+
+    res = await extended_client.get_processing_status(file_ids=[77])
+    assert res.success
+    assert res.status_map["77"] == ProcessingStatus.NONE
 
 
 async def test_extended_search_invalid_dto_and_errors(

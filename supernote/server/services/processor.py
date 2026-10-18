@@ -448,13 +448,16 @@ class ProcessorService:
                 exc_info=True,
             )
 
-    async def list_system_tasks(self, limit: int = 100) -> list[SystemTaskDO]:
-        """List recent system tasks."""
+    async def list_system_tasks(
+        self, user_id: int | None = None, limit: int = 100
+    ) -> list[SystemTaskDO]:
+        """List recent system tasks, optionally scoped to a specific user."""
         async with self.session_manager.session() as session:
-            stmt = (
-                select(SystemTaskDO)
-                .order_by(SystemTaskDO.update_time.desc())
-                .limit(limit)
-            )
+            stmt = select(SystemTaskDO)
+            if user_id is not None:
+                stmt = stmt.join(
+                    UserFileDO, SystemTaskDO.file_id == UserFileDO.id
+                ).where(UserFileDO.user_id == user_id)
+            stmt = stmt.order_by(SystemTaskDO.update_time.desc()).limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())
