@@ -9,7 +9,7 @@ from supernote.server.constants import (
     SYSTEM_ROOT_DIRECTORIES,
 )
 from supernote.server.db.models.file import RecycleFileDO, UserFileDO
-from supernote.server.exceptions import FileAlreadyExists, InvalidPath
+from supernote.server.exceptions import FileAlreadyExists, InvalidPath, ParentNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -222,13 +222,11 @@ class VirtualFileSystem:
         if not node:
             return False
 
-        # TODO: Handle recursive soft delete for folders?
-        # For now, just mark the node.
-
+        now_ms = int(time.time() * 1000)
         node.is_active = "N"
+        node.update_time = now_ms
 
         # Create recycle bin entry
-        now_ms = int(time.time() * 1000)
         recycle = RecycleFileDO(
             user_id=user_id,
             file_id=node.id,
@@ -239,8 +237,33 @@ class VirtualFileSystem:
         )
         self.db.add(recycle)
 
+        if node.is_folder == "Y":
+            await self._cascade_soft_delete(user_id, node.id, now_ms)
+
         await self.db.commit()
         return True
+
+    async def _cascade_soft_delete(
+        self, user_id: int, folder_id: int, now_ms: int
+    ) -> None:
+        """Cascade inactivation across all active descendants of a folder."""
+        queue = [folder_id]
+        visited = {folder_id}
+        while queue:
+            current_id = queue.pop(0)
+            stmt = select(UserFileDO).where(
+                UserFileDO.user_id == user_id,
+                UserFileDO.directory_id == current_id,
+                UserFileDO.is_active == "Y",
+            )
+            result = await self.db.execute(stmt)
+            children = result.scalars().all()
+            for child in children:
+                child.is_active = "N"
+                child.update_time = now_ms
+                if child.is_folder == "Y" and child.id not in visited:
+                    visited.add(child.id)
+                    queue.append(child.id)
 
     async def resolve_path(self, user_id: int, path: str) -> UserFileDO | None:
         """Resolve a posix-style path to a file node."""
@@ -500,13 +523,60 @@ class VirtualFileSystem:
             UserFileDO.user_id == user_id, UserFileDO.id == recycle_entry.file_id
         )
         node_result = await self.db.execute(node_stmt)
-        if node := node_result.scalar_one_or_none():
-            node.is_active = "Y"
-            # TODO: Lets add common functions for getting the current now_ms so we can
-            # fake out update time in tests etc.
-            node.update_time = int(time.time() * 1000)
+        node = node_result.scalar_one_or_none()
+        if node is None:
+            return False
+
+        # Check parent directory existence and active status
+        if node.directory_id != 0:
+            parent_stmt = select(UserFileDO).where(
+                UserFileDO.user_id == user_id,
+                UserFileDO.id == node.directory_id,
+            )
+            parent_result = await self.db.execute(parent_stmt)
+            parent = parent_result.scalar_one_or_none()
+            if parent is None or parent.is_active != "Y" or parent.is_folder != "Y":
+                raise ParentNotFound("Parent directory is missing")
+
+        now_ms = int(time.time() * 1000)
+        node.is_active = "Y"
+        node.update_time = now_ms
 
         await self.db.delete(recycle_entry)
+
+        # Reactivate descendants that were cascade-deleted with the folder.
+        # Descendants with an existing RecycleFileDO entry were deleted independently
+        # and must remain inactive in the recycle bin.
+        if node.is_folder == "Y":
+            recycle_stmt = select(RecycleFileDO.file_id).where(
+                RecycleFileDO.user_id == user_id,
+                RecycleFileDO.id != recycle_entry.id,
+            )
+            independently_deleted_ids = set(
+                (await self.db.execute(recycle_stmt)).scalars().all()
+            )
+
+            queue = [node.id]
+            visited = {node.id}
+            while queue:
+                current_id = queue.pop(0)
+                cascade_stmt = select(UserFileDO).where(
+                    UserFileDO.user_id == user_id,
+                    UserFileDO.directory_id == current_id,
+                    UserFileDO.is_active == "N",
+                )
+                cascade_res = await self.db.execute(cascade_stmt)
+                children = cascade_res.scalars().all()
+                for child in children:
+                    if child.id in independently_deleted_ids:
+                        # Independently deleted by user; keep inactive in recycle bin
+                        continue
+                    child.is_active = "Y"
+                    child.update_time = now_ms
+                    if child.is_folder == "Y" and child.id not in visited:
+                        visited.add(child.id)
+                        queue.append(child.id)
+
         await self.db.commit()
         return True
 
@@ -514,7 +584,6 @@ class VirtualFileSystem:
         self, user_id: int, recycle_ids: list[int] | None = None
     ) -> None:
         """Permanently delete items from recycle bin."""
-
         stmt = delete(RecycleFileDO).where(RecycleFileDO.user_id == user_id)
         if recycle_ids:
             stmt = stmt.where(RecycleFileDO.id.in_(recycle_ids))
