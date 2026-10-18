@@ -18,9 +18,10 @@ import base64
 import json
 import zlib
 from dataclasses import dataclass
+from io import BytesIO
 
 import numpy as np
-import png
+from PIL import Image
 
 from . import color, exceptions
 
@@ -358,21 +359,14 @@ class PngDecoder(BaseDecoder):
         int
             bit per pixel
         """
-        r = png.Reader(bytes=data)
-        (width, height, rows, info) = r.asRGBA()
-        if width != page_width or height != page_height:
-            raise exceptions.DecoderException(
-                f"invalid size = ({width}, {height}), expected = ({page_width}, {page_height})"
-            )
-        values = [x for row in rows for x in row]  # flatten rows
-        depth = info["bitdepth"]
-        greyscale = info["greyscale"]
-        alpha = info["alpha"]
-        ch = 1 if greyscale else 3
-        if alpha:
-            ch = ch + 1
-        bit_per_pixel = depth * ch
-        return bytes(values), (page_width, page_height), bit_per_pixel
+        with Image.open(BytesIO(data)) as img:
+            width, height = img.size
+            if width != page_width or height != page_height:
+                raise exceptions.DecoderException(
+                    f"invalid size = ({width}, {height}), expected = ({page_width}, {page_height})"
+                )
+            bitmap = img.convert("RGBA").tobytes()
+        return bitmap, (page_width, page_height), 32
 
 
 @dataclass(frozen=True)

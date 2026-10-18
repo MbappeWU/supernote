@@ -21,7 +21,6 @@ dependencies = [
   "numpy>=1.19.0",
   "Pillow>=7.2.0",
   "potracer>=0.0.1",
-  "pypng>=0.0.20",
   "reportlab>=3.6.1",
   "svgwrite>=1.4",
 ]
