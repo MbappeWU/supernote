@@ -21,7 +21,7 @@ from supernote.server.mcp.auth import create_auth_app
 from supernote.server.mcp.server import create_mcp_server, run_server, set_services
 from supernote.server.utils.auth_utils import get_token_from_request
 
-from .config import ServerConfig
+from .config import AuthConfig, ServerConfig
 from .constants import MAX_UPLOAD_SIZE
 from .db.models.user import UserDO
 from .db.session import DatabaseSessionManager
@@ -40,7 +40,7 @@ from .routes import (
 )
 from .routes.decorators import public_route
 from .services.blob import LocalBlobStorage
-from .services.coordination import SqliteCoordinationService
+from .services.coordination import CoordinationService, SqliteCoordinationService
 from .services.file import FileService
 from .services.gemini import GeminiService
 from .services.processor import ProcessorService
@@ -328,6 +328,14 @@ def create_coordination_service(
     return SqliteCoordinationService(session_manager)
 
 
+def create_user_service(
+    auth_config: AuthConfig,
+    coordination_service: CoordinationService,
+    session_manager: DatabaseSessionManager,
+) -> UserService:
+    return UserService(auth_config, coordination_service, session_manager)
+
+
 def create_app(config: ServerConfig) -> web.Application:
     app = web.Application(client_max_size=MAX_UPLOAD_SIZE)
     app["config"] = config
@@ -344,7 +352,9 @@ def create_app(config: ServerConfig) -> web.Application:
     event_bus = LocalEventBus()
     app["event_bus"] = event_bus
 
-    user_service = UserService(config.auth, coordination_service, session_manager)
+    user_service = create_user_service(
+        config.auth, coordination_service, session_manager
+    )
     file_service = FileService(
         config.storage_root,
         blob_storage,

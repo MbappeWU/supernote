@@ -1,7 +1,6 @@
 import hashlib
 from unittest.mock import patch
 
-import jwt
 import pytest
 from aiohttp.test_utils import TestClient
 
@@ -92,6 +91,7 @@ async def test_bind_equipment(client: TestClient, create_test_user: None) -> Non
 async def test_user_query(
     client: TestClient,
     web_client: WebClient,
+    user_service: UserService,
 ) -> None:
     base_url = str(client.make_url(""))
     unauth_client = Client(client.session, host=base_url)
@@ -99,13 +99,7 @@ async def test_user_query(
     with pytest.raises(ApiException):
         await unauth_web.query_user()
 
-    secret = client.app["config"].auth.secret_key
-    bad_token = jwt.encode(
-        {"sub": "nonexistent@example.com"}, secret, algorithm="HS256"
-    )
-    await client.app["coordination_service"].set_value(
-        f"session:{bad_token}", "nonexistent@example.com|", ttl=3600
-    )
+    bad_token = await user_service.create_session("nonexistent@example.com")
 
     class BadAuth(AbstractAuth):
         async def async_get_access_token(self) -> str:
@@ -122,7 +116,10 @@ async def test_user_query(
 
 
 async def test_user_register_errors_and_success(
-    client: TestClient, admin_client: AdminClient, create_test_user: None
+    client: TestClient,
+    admin_client: AdminClient,
+    user_service: UserService,
+    create_test_user: None,
 ) -> None:
     resp = await client.post("/api/user/register", json={})
     assert resp.status == 400
@@ -138,7 +135,7 @@ async def test_user_register_errors_and_success(
     # SupernoteError in register
     with (
         patch.object(
-            client.app["user_service"],
+            user_service,
             "register",
             side_effect=SupernoteError("Reg error", status_code=400),
         ),
@@ -150,9 +147,7 @@ async def test_user_register_errors_and_success(
 
     # Uncaught Exception
     with (
-        patch.object(
-            client.app["user_service"], "register", side_effect=Exception("Crash")
-        ),
+        patch.object(user_service, "register", side_effect=Exception("Crash")),
         pytest.raises(ApiException),
     ):
         await admin_client.register(
