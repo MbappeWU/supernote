@@ -42,6 +42,18 @@ def sign_payload(secret: str, body: bytes) -> str:
     return f"sha256={digest}"
 
 
+def verify_signature(secret: str, body: bytes, signature_header: str) -> bool:
+    """Verify a webhook payload body against an `X-Supernote-Signature` header.
+
+    Uses constant-time comparison via :func:`hmac.compare_digest` to prevent
+    timing side-channel attacks.
+    """
+    if not secret or not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = sign_payload(secret, body)
+    return hmac.compare_digest(expected, signature_header)
+
+
 class WebhookService:
     """Dispatches signed outbound webhook notifications for subscribed events."""
 

@@ -26,6 +26,7 @@ from supernote.server.services.webhook import (
     SIGNATURE_HEADER,
     WebhookService,
     sign_payload,
+    verify_signature,
 )
 
 
@@ -127,6 +128,38 @@ def test_sign_payload_is_deterministic_hmac_sha256() -> None:
 
     expected = hmac.new(b"my-secret", body, hashlib.sha256).hexdigest()
     assert signature == f"sha256={expected}"
+
+
+def test_verify_signature_accepts_valid_signature() -> None:
+    body = b'{"event": "note.sync_completed"}'
+    signature = sign_payload("my-secret", body)
+
+    assert verify_signature("my-secret", body, signature) is True
+
+
+def test_verify_signature_rejects_tampered_body() -> None:
+    body = b'{"event": "note.sync_completed"}'
+    signature = sign_payload("my-secret", body)
+
+    assert verify_signature("my-secret", b'{"event": "tampered"}', signature) is False
+
+
+def test_verify_signature_rejects_wrong_secret() -> None:
+    body = b'{"event": "note.sync_completed"}'
+    signature = sign_payload("my-secret", body)
+
+    assert verify_signature("wrong-secret", body, signature) is False
+
+
+def test_verify_signature_rejects_malformed_or_empty_inputs() -> None:
+    body = b'{"event": "note.sync_completed"}'
+    signature = sign_payload("my-secret", body)
+
+    assert verify_signature("", body, signature) is False
+    assert verify_signature("my-secret", body, "") is False
+    assert (
+        verify_signature("my-secret", body, signature.removeprefix("sha256=")) is False
+    )
 
 
 async def test_dispatch_sends_signed_post_to_subscribed_endpoint(
