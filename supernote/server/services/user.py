@@ -4,6 +4,7 @@ import logging
 import re
 import secrets
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 
 import jwt
@@ -45,6 +46,7 @@ MD5_REGEX = r"^[a-f0-9]{32}$"
 class SessionState(DataClassJSONMixin):
     token: str
     email: str
+    user_id: int
     equipment_no: str | None = None
     created_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
@@ -68,6 +70,54 @@ class UserService:
         self._config = config
         self._coordination_service = coordination_service
         self._session_manager = session_manager
+
+    @staticmethod
+    def _session_prefix(user_id: int, equipment_no: str | None = None) -> str:
+        """Build the CoordinationService key prefix for user or device sessions."""
+        if equipment_no is None:
+            return f"session:{user_id}:"
+        encoded_eq = urllib.parse.quote(equipment_no, safe="")
+        return f"session:{user_id}:{encoded_eq}:"
+
+    @classmethod
+    def _session_key(cls, user_id: int, equipment_no: str | None, token: str) -> str:
+        """Build the CoordinationService key for a user session."""
+        return f"{cls._session_prefix(user_id, equipment_no or '')}{token}"
+
+    async def revoke_user_sessions(self, user_id: int) -> None:
+        """Revoke all active sessions for a user."""
+        await self._coordination_service.delete_by_prefix(self._session_prefix(user_id))
+
+    async def revoke_equipment_sessions(self, user_id: int, equipment_no: str) -> None:
+        """Revoke all active sessions for a specific device belonging to a user."""
+        if not equipment_no:
+            return
+        await self._coordination_service.delete_by_prefix(
+            self._session_prefix(user_id, equipment_no)
+        )
+
+    async def logout(self, token: str) -> None:
+        """Revoke a single session token."""
+        if not token:
+            return
+        try:
+            payload = jwt.decode(
+                token,
+                self._config.secret_key,
+                algorithms=[JWT_ALGORITHM],
+                options={"verify_exp": False},
+            )
+        except jwt.PyJWTError:
+            logger.debug("Logout called with invalid JWT")
+            return
+
+        user_id = payload.get("user_id")
+        equipment_no = payload.get("equipment_no")
+        if type(user_id) is not int or not isinstance(equipment_no, str):
+            return
+        await self._coordination_service.delete_value(
+            self._session_key(user_id, equipment_no, token)
+        )
 
     async def list_users(self) -> list[UserDO]:
         async with self._session_manager.session() as session:
@@ -175,13 +225,16 @@ class UserService:
             user = result.scalar_one_or_none()
             if not user:
                 return
+            user_id = user.id
 
-            await session.execute(delete(DeviceDO).where(DeviceDO.user_id == user.id))
+            await session.execute(delete(DeviceDO).where(DeviceDO.user_id == user_id))
             await session.execute(
-                delete(LoginRecordDO).where(LoginRecordDO.user_id == user.id)
+                delete(LoginRecordDO).where(LoginRecordDO.user_id == user_id)
             )
-            await session.execute(delete(UserDO).where(UserDO.id == user.id))
+            await session.execute(delete(UserDO).where(UserDO.id == user_id))
             await session.commit()
+
+        await self.revoke_user_sessions(user_id)
 
     async def generate_random_code(self, account: str) -> tuple[str, str]:
         """Generate a random code for login challenge."""
@@ -206,6 +259,12 @@ class UserService:
     async def _get_user_do(self, account: str) -> UserDO | None:
         async with self._session_manager.session() as session:
             stmt = select(UserDO).where(UserDO.email == account)
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def _get_user_by_id(self, user_id: int) -> UserDO | None:
+        async with self._session_manager.session() as session:
+            stmt = select(UserDO).where(UserDO.id == user_id)
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
@@ -284,7 +343,7 @@ class UserService:
             await session.commit()
 
         token = await self.create_session(
-            account=account,
+            account=user.email,
             equipment_no=equipment_no,
             equipment=equipment,
         )
@@ -294,7 +353,7 @@ class UserService:
             counts="0",
             is_bind=is_bind,
             is_bind_equipment=is_bind_equipment,
-            user_name=account,
+            user_name=user.email,
         )
 
     async def create_session(
@@ -303,58 +362,92 @@ class UserService:
         equipment_no: str | None = None,
         equipment: Equipment = Equipment.WEB,
     ) -> str:
-        """Create and persist a new authenticated session token for an account."""
+        """Create and persist a new authenticated session token for an active account."""
+        user = await self._get_user_do(account)
+        if not user or not user.is_active:
+            raise ValueError(f"Active user {account} not found")
+
         if equipment in (Equipment.TERMINAL, Equipment.APP):
             ttl = self._config.device_expiration_hours * 3600
         else:
             ttl = self._config.expiration_hours * 3600
 
+        if equipment_no:
+            await self.revoke_equipment_sessions(user.id, equipment_no)
+
         now = int(time.time())
         payload = {
-            "sub": account,
+            "sub": user.email,
+            "user_id": user.id,
             "equipment_no": equipment_no or "",
             "iat": now,
             "exp": now + ttl,
+            "jti": secrets.token_hex(8),
         }
         token = jwt.encode(payload, self._config.secret_key, algorithm=JWT_ALGORITHM)
 
-        session_val = f"{account}|{equipment_no or ''}"
+        session_state = SessionState(
+            token=token,
+            email=user.email,
+            user_id=user.id,
+            equipment_no=equipment_no or None,
+        )
+        session_key = self._session_key(user.id, equipment_no, token)
         await self._coordination_service.set_value(
-            f"session:{token}", session_val, ttl=ttl
+            session_key, str(session_state.to_json()), ttl=ttl
         )
         return token
 
     async def verify_token(self, token: str) -> SessionState | None:
-        """Verify token against persisted sessions and JWT signature."""
+        """Verify token against JWT signature, persisted session state, and active user record."""
+        if not token:
+            return None
         try:
-            # 1. Check if session exists in CoordinationService
-            session_val = await self._coordination_service.get_value(f"session:{token}")
-
-            if not session_val:
-                logger.warning(
-                    "Session not found in coordination service: %s", token[:10]
-                )
-                return None
-
-            session_val_parts = session_val.split("|")
-            username = session_val_parts[0]
-            equipment_no = session_val_parts[1] if len(session_val_parts) > 1 else None
-
-            # 2. Decode and verify JWT
             payload = jwt.decode(
                 token, self._config.secret_key, algorithms=[JWT_ALGORITHM]
             )
-            if payload.get("sub") != username:
-                return None
-
-            return SessionState(
-                token=token,
-                email=username,
-                equipment_no=equipment_no,
-            )
-        except jwt.PyJWTError as e:
-            logger.warning("Token verification failed: %s", e)
+        except jwt.PyJWTError as err:
+            logger.warning("Token verification failed: %s", err)
             return None
+
+        sub = payload.get("sub")
+        user_id = payload.get("user_id")
+        equipment_no = payload.get("equipment_no")
+        if (
+            not isinstance(sub, str)
+            or not sub
+            or type(user_id) is not int
+            or not isinstance(equipment_no, str)
+        ):
+            logger.warning("Token missing or malformed required claims")
+            return None
+
+        session_key = self._session_key(user_id, equipment_no, token)
+        session_val = await self._coordination_service.get_value(session_key)
+        if not session_val:
+            logger.warning("Session not found in coordination service: %s", token[:10])
+            return None
+
+        try:
+            session_state = SessionState.from_json(session_val)
+        except (ValueError, TypeError, KeyError) as err:
+            logger.warning("Invalid persisted session state: %s", err)
+            return None
+
+        if (
+            session_state.user_id != user_id
+            or session_state.email != sub
+            or (session_state.equipment_no or "") != equipment_no
+        ):
+            logger.warning("Persisted session state mismatch for user_id=%s", user_id)
+            return None
+
+        user = await self._get_user_by_id(user_id)
+        if not user or not user.is_active or user.email != sub:
+            logger.warning("Token user invalid or inactive for user_id=%s", user_id)
+            return None
+
+        return session_state
 
     async def get_user_profile(self, account: str) -> UserVO | None:
         user = await self._get_user_do(account)
@@ -397,30 +490,42 @@ class UserService:
             return True
 
     async def unlink_equipment(self, equipment_no: str) -> bool:
-        """Unlink a device."""
+        """Unlink a device and revoke its sessions."""
         async with self._session_manager.session() as session:
+            existing = await session.execute(
+                select(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
+            )
+            user_ids = {d.user_id for d in existing.scalars().all()}
             await session.execute(
                 delete(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
             )
             await session.commit()
+
+        for uid in user_ids:
+            await self.revoke_equipment_sessions(uid, equipment_no)
         return True
 
     async def update_password(self, account: str, dto: UpdatePasswordDTO) -> bool:
-        """Update user password."""
+        """Update user password and revoke active sessions."""
         if not re.match(MD5_REGEX, dto.password):
             raise ValueError("Invalid password format, must be md5 hash")
 
         async with self._session_manager.session() as session:
-            await session.execute(
-                update(UserDO)
-                .where(UserDO.email == account)
-                .values(password_md5=dto.password)
+            result = await session.execute(
+                select(UserDO).where(UserDO.email == account)
             )
+            user = result.scalar_one_or_none()
+            if not user:
+                raise ValueError(f"User {account} not found")
+            user_id = user.id
+            user.password_md5 = dto.password
             await session.commit()
+
+        await self.revoke_user_sessions(user_id)
         return True
 
     async def update_email(self, account: str, dto: UpdateEmailDTO) -> bool:
-        """Update user email."""
+        """Update user email and revoke active sessions bound to the old email."""
         if not re.match(EMAIL_REGEX, dto.email):
             raise ValueError("Invalid email address format")
 
@@ -439,16 +544,19 @@ class UserService:
                 if existing.scalar_one_or_none() is not None:
                     raise ValueError("Email already registered")
 
+            user_id = user.id
             user.email = dto.email
             try:
                 await session.commit()
             except IntegrityError as err:
                 await session.rollback()
                 raise ValueError("Email already registered") from err
+
+        await self.revoke_user_sessions(user_id)
         return True
 
     async def admin_reset_password(self, email: str, password_md5: str) -> None:
-        """Force reset user password (Admin only)."""
+        """Force reset user password (Admin only) and revoke active sessions."""
         if not re.match(MD5_REGEX, password_md5):
             raise ValueError("Invalid password format, must be md5 hash")
 
@@ -457,12 +565,14 @@ class UserService:
             user = result.scalar_one_or_none()
             if not user:
                 raise ValueError(f"User {email} not found")
-
+            user_id = user.id
             user.password_md5 = password_md5
             await session.commit()
 
+        await self.revoke_user_sessions(user_id)
+
     async def retrieve_password(self, account: str, password_md5: str) -> bool:
-        """Retrieve/Reset password."""
+        """Retrieve/Reset password and revoke active sessions."""
         # Find user by alias (email/phone/username) and reset password.
         if not account:
             return False
@@ -481,8 +591,11 @@ class UserService:
             if not user:
                 return False
 
+            user_id = user.id
             user.password_md5 = password_md5
             await session.commit()
+
+        await self.revoke_user_sessions(user_id)
         return True
 
     async def query_login_records(
