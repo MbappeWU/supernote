@@ -11,24 +11,22 @@ device sync request).
 import asyncio
 import hashlib
 import hmac
-import json
 import logging
 import time
-from typing import Any
 
 import aiohttp
 
-from supernote.models.webhook import NoteSyncCompletedPayload, WebhookFileVO
+from supernote.models.webhook import (
+    EVENT_NOTE_SYNC_COMPLETED,
+    NoteSyncCompletedPayload,
+    WebhookFileVO,
+    WebhookPayload,
+)
 
 from ..config import WebhookConfig, WebhookEndpointConfig
 from ..events import Event, LocalEventBus, NoteUpdatedEvent
 
 logger = logging.getLogger(__name__)
-
-# Name of the event dispatched when a .note file finishes syncing to the
-# server. Fired from the same point the processing pipeline is enqueued
-# (see NoteUpdatedEvent), i.e. as soon as the device's upload completes.
-EVENT_NOTE_SYNC_COMPLETED = "note.sync_completed"
 
 SIGNATURE_HEADER = "X-Supernote-Signature"
 EVENT_HEADER = "X-Supernote-Event"
@@ -74,16 +72,17 @@ class WebhookService:
             timestamp=int(time.time()),
             file=WebhookFileVO(id=event.file_id, path=event.file_path),
         )
-        await self.dispatch(EVENT_NOTE_SYNC_COMPLETED, payload.to_dict())
+        await self.dispatch(payload)
 
-    async def dispatch(self, event_name: str, payload: dict[str, Any]) -> None:
-        """Send `payload` to every configured endpoint subscribed to `event_name`.
+    async def dispatch(self, payload: WebhookPayload) -> None:
+        """Send `payload` to every configured endpoint subscribed to `payload.event`.
 
         An endpoint with no `events` configured is subscribed to everything
         (see `WebhookEndpointConfig.events`). Never raises: endpoints are
         notified concurrently and independently, and one endpoint failing has
         no effect on delivery to the others.
         """
+        event_name = payload.event
         endpoints = [
             ep
             for ep in self.config.endpoints
@@ -91,8 +90,9 @@ class WebhookService:
         ]
         if not endpoints:
             return
+        body = str(payload.to_json()).encode("utf-8")
         results = await asyncio.gather(
-            *(self._send(endpoint, event_name, payload) for endpoint in endpoints),
+            *(self._send(endpoint, event_name, body) for endpoint in endpoints),
             return_exceptions=True,
         )
         for endpoint, result in zip(endpoints, results, strict=True):
@@ -106,24 +106,23 @@ class WebhookService:
         self,
         endpoint: WebhookEndpointConfig,
         event_name: str,
-        payload: dict[str, Any],
+        body: bytes,
     ) -> None:
-        """POST `payload` to a single endpoint, retrying transient failures.
+        """POST `body` to a single endpoint, retrying transient failures.
 
         Client errors (4xx) are not retried. Network errors, timeouts, and
         server errors (5xx) are retried up to MAX_ATTEMPTS with a linear
         backoff. All failures are logged (without the secret or signature)
         and swallowed.
         """
-        body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json", EVENT_HEADER: event_name}
         if endpoint.secret:
             headers[SIGNATURE_HEADER] = sign_payload(endpoint.secret, body)
 
         timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                try:
                     async with session.post(
                         endpoint.url, data=body, headers=headers
                     ) as response:
@@ -139,14 +138,14 @@ class WebhookService:
                             f"Webhook {event_name} to {endpoint.url} failed with "
                             f"status {response.status} (attempt {attempt}/{MAX_ATTEMPTS})."
                         )
-            except (aiohttp.ClientError, TimeoutError) as e:
-                logger.warning(
-                    f"Webhook {event_name} to {endpoint.url} failed: "
-                    f"{type(e).__name__} (attempt {attempt}/{MAX_ATTEMPTS})."
-                )
+                except (aiohttp.ClientError, TimeoutError) as e:
+                    logger.warning(
+                        f"Webhook {event_name} to {endpoint.url} failed: "
+                        f"{type(e).__name__} (attempt {attempt}/{MAX_ATTEMPTS})."
+                    )
 
-            if attempt < MAX_ATTEMPTS:
-                await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                if attempt < MAX_ATTEMPTS:
+                    await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
         logger.error(
             f"Webhook {event_name} to {endpoint.url} failed after "

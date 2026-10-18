@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 from mashumaro.mixins.json import DataClassJSONMixin
 
+EVENT_NOTE_SYNC_COMPLETED = "note.sync_completed"
+
 
 @dataclass
 class WebhookFileVO(DataClassJSONMixin):
@@ -21,7 +23,18 @@ class WebhookFileVO(DataClassJSONMixin):
 
 
 @dataclass
-class NoteSyncCompletedPayload(DataClassJSONMixin):
+class WebhookPayload(DataClassJSONMixin):
+    """Base payload for outbound webhook events."""
+
+    event: str
+    """The webhook event name (e.g. `note.sync_completed`)."""
+
+    timestamp: int
+    """Unix timestamp (seconds) of when the event was dispatched."""
+
+
+@dataclass
+class NoteSyncCompletedPayload(WebhookPayload):
     """Payload sent for the `note.sync_completed` outbound webhook event.
 
     Corresponds to `EVENT_NOTE_SYNC_COMPLETED` in
@@ -30,12 +43,6 @@ class NoteSyncCompletedPayload(DataClassJSONMixin):
     Intentionally excludes the internal `user_id` (a private, per-user
     database identifier) -- see that module for discussion.
     """
-
-    event: str
-    """The webhook event name. Always `note.sync_completed` today."""
-
-    timestamp: int
-    """Unix timestamp (seconds) of when the event was dispatched."""
 
     file: WebhookFileVO
     """Metadata about the file that finished syncing."""
