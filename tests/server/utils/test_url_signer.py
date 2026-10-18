@@ -123,21 +123,15 @@ async def test_verify_rejects_path_suffix_and_query_tampering(
     with pytest.raises(InvalidSignature, match="Signed query parameter mismatch"):
         await stateful_signer.verify(polluted_url)
 
-    # 4. Unexpected unsigned query parameter rejected by default
+    # 4. Device-appended extra query parameters (e.g. partNumber) are permitted as long as signed params match
     extra_param_url = f"{signed_url}&partNumber=1"
-    with pytest.raises(InvalidSignature, match="Unexpected unsigned query parameters"):
-        await stateful_signer.verify(extra_param_url)
+    payload_extra = await stateful_signer.verify(extra_param_url, consume=False)
+    assert payload_extra["path"] == "/api/oss/download?path=12"
 
-    # 5. Allowed extra query parameter succeeds when explicitly permitted (without burning if consume=False)
-    payload_allowed = await stateful_signer.verify(
-        extra_param_url, consume=False, allowed_query_params={"partNumber"}
-    )
-    assert payload_allowed["path"] == "/api/oss/download?path=12"
-
-    # 6. None of the failed attempts burned the single-use nonce; original URL still succeeds once
+    # 5. None of the failed attempts burned the single-use nonce; original URL still succeeds once
     payload = await stateful_signer.verify(signed_url)
     assert payload["path"] == "/api/oss/download?path=12"
 
-    # 7. Subsequent replay of consumed nonce fails
+    # 6. Subsequent replay of consumed nonce fails
     with pytest.raises(InvalidSignature, match="Token invalid or already used"):
         await stateful_signer.verify(signed_url)

@@ -121,16 +121,7 @@ async def handle_oss_upload_part(request: web.Request) -> web.Response:
         should_consume = True
 
     try:
-        payload = await url_signer.verify(
-            request.path_qs,
-            consume=should_consume,
-            allowed_query_params={
-                "uploadId",
-                "partNumber",
-                "totalChunks",
-                "object_name",
-            },
-        )
+        payload = await url_signer.verify(request.path_qs, consume=should_consume)
     except SupernoteError as err:
         return err.to_response()
 

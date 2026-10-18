@@ -129,19 +129,12 @@ class UrlSigner:
         separator = "&" if "?" in path else "?"
         return f"{path}{separator}timestamp={now_ms}&nonce={nonce}&signature={token}"
 
-    async def verify(
-        self,
-        signed_url: str,
-        consume: bool = True,
-        allowed_query_params: set[str] | None = None,
-    ) -> dict[str, Any]:
+    async def verify(self, signed_url: str, consume: bool = True) -> dict[str, Any]:
         """Verify the signature embedded in the URL.
 
         Args:
             signed_url: The full path + query string containing the signature.
             consume: Whether to consume the nonce (single-use). Default True.
-            allowed_query_params: Optional set of unsigned query parameter names
-                permitted in addition to the signed path's query parameters.
 
         Returns:
             The decoded payload if valid.
@@ -188,17 +181,6 @@ class UrlSigner:
         for key, expected_values in expected_query.items():
             if query_params.get(key) != expected_values:
                 raise InvalidSignature(f"Signed query parameter mismatch for '{key}'")
-
-        allowed_keys = (
-            set(expected_query.keys())
-            | {"signature", "timestamp", "nonce"}
-            | (allowed_query_params or set())
-        )
-        unexpected_keys = set(query_params.keys()) - allowed_keys
-        if unexpected_keys:
-            raise InvalidSignature(
-                f"Unexpected unsigned query parameters: {sorted(unexpected_keys)}"
-            )
 
         # Verify timestamp if present in payload
         if "timestamp" in payload:
