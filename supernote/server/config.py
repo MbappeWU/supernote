@@ -60,6 +60,9 @@ class WebhookEndpointConfig(DataClassYAMLMixin):
     url: str = ""
     """The HTTP(S) endpoint that receives the webhook POST request."""
 
+    user: str = ""
+    """Email address of the user account whose events this endpoint receives."""
+
     secret: str = ""
     """Shared secret used to HMAC-SHA256 sign the payload.
 
@@ -70,7 +73,7 @@ class WebhookEndpointConfig(DataClassYAMLMixin):
     events: list[str] = field(default_factory=list)
     """Event names this endpoint wants to receive, e.g. `note.sync_completed`.
 
-    If empty (the default), the endpoint receives every event.
+    If empty (the default), the endpoint receives every event for `user`.
     """
 
     def __post_init__(self) -> None:
@@ -78,6 +81,10 @@ class WebhookEndpointConfig(DataClassYAMLMixin):
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError(
                 f"Webhook endpoint URL must use http or https scheme with a valid host: {self.url!r}"
+            )
+        if not self.user or not self.user.strip():
+            raise ValueError(
+                "Webhook endpoint must specify a non-empty user email address."
             )
 
     class Config(BaseConfig):

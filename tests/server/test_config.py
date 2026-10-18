@@ -146,6 +146,7 @@ def test_server_config_load_webhooks_from_file(tmp_path: Path) -> None:
             "endpoints": [
                 {
                     "url": "https://n8n.homelab.local/webhook/supernote",
+                    "user": "alice@example.com",
                     "secret": "hmac-secret-key",
                     "events": ["note.sync_completed"],
                 }
@@ -161,6 +162,7 @@ def test_server_config_load_webhooks_from_file(tmp_path: Path) -> None:
     assert len(config.webhooks.endpoints) == 1
     endpoint = config.webhooks.endpoints[0]
     assert endpoint.url == "https://n8n.homelab.local/webhook/supernote"
+    assert endpoint.user == "alice@example.com"
     assert endpoint.secret == "hmac-secret-key"
     assert endpoint.events == ["note.sync_completed"]
 
@@ -187,7 +189,14 @@ def test_server_config_webhooks_enabled_env_var_override(tmp_path: Path) -> None
 def test_webhook_endpoint_config_rejects_invalid_urls(invalid_url: str) -> None:
     """WebhookEndpointConfig only accepts http and https URLs with a valid host."""
     with pytest.raises(ValueError, match="http or https scheme"):
-        WebhookEndpointConfig(url=invalid_url)
+        WebhookEndpointConfig(url=invalid_url, user="alice@example.com")
+
+
+@pytest.mark.parametrize("invalid_user", ["", "   "])
+def test_webhook_endpoint_config_rejects_empty_user(invalid_user: str) -> None:
+    """WebhookEndpointConfig requires a non-empty user email address."""
+    with pytest.raises(ValueError, match="non-empty user email"):
+        WebhookEndpointConfig(url="https://example.com/webhook", user=invalid_user)
 
 
 def test_server_config_proxy_env_vars(tmp_path: Path) -> None:

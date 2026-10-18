@@ -34,6 +34,7 @@ from ..events import (
     NoteProcessingCompletedEvent,
     NoteUpdatedEvent,
 )
+from .user import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -87,18 +88,30 @@ class WebhookService:
         self,
         config: WebhookConfig,
         event_bus: LocalEventBus,
+        user_service: UserService,
         max_concurrency: int = MAX_CONCURRENT_REQUESTS,
     ) -> None:
         self.config = config
         self.event_bus = event_bus
+        self.user_service = user_service
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._session: aiohttp.ClientSession | None = None
+        self._endpoints_by_user: dict[int, list[WebhookEndpointConfig]] = {}
 
-    def start(self) -> None:
-        """Subscribe to the events that can trigger webhook dispatch."""
+    async def start(self) -> None:
+        """Resolve endpoint users and subscribe to the events that can trigger webhook dispatch."""
         if not self.config.enabled or not self.config.endpoints:
             logger.debug("Webhook dispatch disabled or no endpoints configured.")
             return
+        self._endpoints_by_user = {}
+        for endpoint in self.config.endpoints:
+            user = await self.user_service.get_user_by_email(endpoint.user)
+            if user is None:
+                logger.warning(
+                    f"Webhook endpoint user {endpoint.user!r} not found; skipping endpoint."
+                )
+                continue
+            self._endpoints_by_user.setdefault(user.id, []).append(endpoint)
         self._session = aiohttp.ClientSession()
         self.event_bus.subscribe(NoteUpdatedEvent, self._handle_note_updated)
         self.event_bus.subscribe(
@@ -113,15 +126,22 @@ class WebhookService:
         if self._session is not None:
             await self._session.close()
             self._session = None
+        self._endpoints_by_user = {}
+
+    def _matching_endpoints(
+        self, user_id: int, event_name: str
+    ) -> list[WebhookEndpointConfig]:
+        """Return configured endpoints subscribed to `event_name` for `user_id`."""
+        return [
+            ep
+            for ep in self._endpoints_by_user.get(user_id, ())
+            if not ep.events or event_name in ep.events
+        ]
 
     async def _handle_note_updated(self, event: Event) -> None:
         """Translate a NoteUpdatedEvent into a note.sync_completed webhook."""
         if not isinstance(event, NoteUpdatedEvent):
             return
-        # Note: intentionally does not include event.user_id. It's an
-        # internal database identifier, not something we want to hand to
-        # third-party endpoints. See PR #217 for discussion on how
-        # per-user webhook delivery might work in a future iteration.
         payload = NoteSyncCompletedPayload(
             event=EVENT_NOTE_SYNC_COMPLETED,
             timestamp=int(time.time()),
@@ -131,7 +151,7 @@ class WebhookService:
                 path=event.file_path,
             ),
         )
-        await self.dispatch(payload)
+        await self.dispatch(payload, user_id=event.user_id)
 
     async def _handle_note_processing_completed(self, event: Event) -> None:
         """Translate a NoteProcessingCompletedEvent into a note.processing_completed webhook."""
@@ -146,22 +166,18 @@ class WebhookService:
                 path=event.file_path,
             ),
         )
-        await self.dispatch(payload)
+        await self.dispatch(payload, user_id=event.user_id)
 
-    async def dispatch(self, payload: WebhookPayload) -> None:
-        """Send `payload` to every configured endpoint subscribed to `payload.event`.
+    async def dispatch(self, payload: WebhookPayload, *, user_id: int) -> None:
+        """Send `payload` to every configured endpoint subscribed to `payload.event` for `user_id`.
 
-        An endpoint with no `events` configured is subscribed to everything
-        (see `WebhookEndpointConfig.events`). Never raises: endpoints are
-        notified concurrently and independently, and one endpoint failing has
-        no effect on delivery to the others.
+        An endpoint with no `events` configured receives every event for its
+        configured user. Never raises: endpoints are notified concurrently and
+        independently, and one endpoint failing has no effect on delivery to
+        the others.
         """
         event_name = payload.event
-        endpoints = [
-            ep
-            for ep in self.config.endpoints
-            if not ep.events or event_name in ep.events
-        ]
+        endpoints = self._matching_endpoints(user_id, event_name)
         if not endpoints:
             return
         body = str(payload.to_json()).encode("utf-8")
