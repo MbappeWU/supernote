@@ -41,6 +41,7 @@ from supernote.models.file_device import (
     SynchronousStartLocalDTO,
     SynchronousStartLocalVO,
 )
+from supernote.server.config import ServerConfig
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.file import (
     FileEntity,
@@ -545,6 +546,11 @@ async def handle_note_to_png(request: web.Request) -> web.Response:
     # Response: PngVO
     req_data = PngDTO.from_dict(await request.json())
     user_email = request["user"]
+    config: ServerConfig = request.app["config"]
+
+    if not (config.web_enabled and config.web_notebook_preview):
+        return web.json_response(PngVO(png_page_vo_list=[]).to_dict())
+
     file_service: FileService = request.app["file_service"]
     url_signer: UrlSigner = request.app["url_signer"]
 

@@ -393,9 +393,12 @@ def create_app(config: ServerConfig) -> web.Application:
     app["webhook_service"] = webhook_service
 
     # Register modules
+    png_enabled = gemini_service.is_configured or (
+        config.web_enabled and config.web_notebook_preview
+    )
     processor_service.register_modules(
         hashing=PageHashingModule(file_service=file_service),
-        png=PngConversionModule(file_service=file_service),
+        png=PngConversionModule(file_service=file_service) if png_enabled else None,
         ocr=GeminiOcrModule(
             file_service=file_service, config=config, gemini_service=gemini_service
         ),
@@ -425,14 +428,17 @@ def create_app(config: ServerConfig) -> web.Application:
     setup_socketio(app, config, user_service)
 
     # Serve static frontend files
-    static_path = Path(str(importlib.resources.files("supernote.server") / "static"))
+    if config.web_enabled:
+        static_path = Path(
+            str(importlib.resources.files("supernote.server") / "static")
+        )
 
-    @public_route
-    async def handle_index(request: web.Request) -> web.FileResponse:
-        return web.FileResponse(static_path / "index.html")
+        @public_route
+        async def handle_index(request: web.Request) -> web.FileResponse:
+            return web.FileResponse(static_path / "index.html")
 
-    app.router.add_get("/", handle_index)
-    app.router.add_static("/static/", path=static_path, name="static")
+        app.router.add_get("/", handle_index)
+        app.router.add_static("/static/", path=static_path, name="static")
 
     if config.metrics_enabled:
 
