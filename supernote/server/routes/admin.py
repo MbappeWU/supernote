@@ -162,7 +162,8 @@ async def handle_reprocess(request: web.Request) -> web.Response:
             stmt = stmt.where(SystemTaskDO.file_id == file_id)
         else:
             file_stmt = select(UserFileDO.id, UserFileDO.user_id).where(
-                UserFileDO.file_name.like("%.note")
+                UserFileDO.file_name.like("%.note"),
+                UserFileDO.is_active == "Y",
             )
             file_result = await session.execute(file_stmt)
             targets = list(file_result.all())

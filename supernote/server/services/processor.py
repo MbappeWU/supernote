@@ -16,6 +16,7 @@ from supernote.server.metrics import (
 from ..constants import CACHE_BUCKET, DEFAULT_PAGE_CONCURRENCY
 from ..db.models.file import UserFileDO
 from ..db.models.note_processing import NotePageContentDO, SystemTaskDO
+from ..db.models.summary import SummaryDO
 from ..db.session import DatabaseSessionManager
 from ..events import (
     Event,
@@ -214,6 +215,7 @@ class ProcessorService:
             await session.execute(
                 delete(SystemTaskDO).where(SystemTaskDO.file_id == file_id)
             )
+            await session.execute(delete(SummaryDO).where(SummaryDO.file_id == file_id))
             await session.commit()
 
         # Delete Blobs (PNGs)
@@ -223,7 +225,7 @@ class ProcessorService:
             png_path = get_page_png_path(file_id, page_id)
             try:
                 await self.file_service.blob_storage.delete(CACHE_BUCKET, png_path)
-            except Exception as e:
+            except (FileNotFoundError, OSError) as e:
                 logger.warning(
                     f"Failed to delete PNG for {file_id} page {page_id}: {e}"
                 )
@@ -301,10 +303,13 @@ class ProcessorService:
             # Subquery to find file_ids that exist in f_system_task
             task_exists_stmt = select(SystemTaskDO.file_id)
 
-            # Find all UserFileDO with .note extension that are NOT in f_system_task
+            # Find all active UserFileDO with .note extension that are NOT in f_system_task
             stmt = (
                 select(UserFileDO.id, UserFileDO.user_id)
-                .where(UserFileDO.file_name.like("%.note"))
+                .where(
+                    UserFileDO.file_name.like("%.note"),
+                    UserFileDO.is_active == "Y",
+                )
                 .where(UserFileDO.id.not_in(task_exists_stmt))
             )
             result = await session.execute(stmt)
