@@ -13,9 +13,21 @@ export function getToken() {
     return authToken;
 }
 
-export function logout() {
+export async function logout() {
+    const token = authToken;
     authToken = null;
     localStorage.removeItem('supernote_token');
+    if (token) {
+        try {
+            await fetch('/api/user/logout', {
+                method: 'POST',
+                headers: { 'x-access-token': token },
+                keepalive: true,
+            });
+        } catch (e) {
+            // Ignore network errors during logout
+        }
+    }
     window.location.reload();
 }
 

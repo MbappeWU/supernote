@@ -460,3 +460,47 @@ async def test_user_query_routes_and_equipment_no(
     assert data["success"] is True
     assert data["equipmentNo"] == "EQUIP_999"
     assert data["user"]["email"] == "test@example.com"
+
+
+async def test_logout_and_account_clear(
+    client: TestClient,
+    login_client: LoginClient,
+    create_test_user: None,
+) -> None:
+    """Test POST /api/user/logout single-session revocation and POST /api/user/account/clear."""
+    # Unauthenticated logout returns 401
+    unauth_resp = await client.post("/api/user/logout", json={})
+    assert unauth_resp.status == 401
+
+    base_url = str(client.make_url(""))
+    token_a = await login_client.login("test@example.com", "testpassword")
+    token_b = await login_client.login("test@example.com", "testpassword")
+
+    client_a = Client(client.session, auth=SimpleTokenAuth(token_a), host=base_url)
+    admin_a = AdminClient(client_a)
+    web_a = WebClient(client_a)
+
+    client_b = Client(client.session, auth=SimpleTokenAuth(token_b), host=base_url)
+    web_b = WebClient(client_b)
+
+    # Log out session A via AdminClient.logout()
+    await admin_a.logout()
+
+    # Session A is revoked, Session B remains active
+    with pytest.raises(ApiException):
+        await web_a.query_user()
+
+    res_b = await web_b.query_user()
+    assert res_b.success is True
+
+    # POST /api/user/account/clear deletes account and revokes remaining sessions
+    clear_resp = await client.post(
+        "/api/user/account/clear",
+        headers={"x-access-token": token_b},
+        json={},
+    )
+    assert clear_resp.status == 200
+    assert (await clear_resp.json())["success"] is True
+
+    with pytest.raises(ApiException):
+        await web_b.query_user()
