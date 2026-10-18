@@ -148,3 +148,23 @@ async def test_verify_tampered_url_does_not_consume_nonce(
 
     with pytest.raises(InvalidSignature, match="Token invalid or already used"):
         await stateful_signer.verify(signed_url)
+
+
+async def test_sign_multi_use_skips_nonce_storage_and_allows_reuse(
+    coordination_service: CoordinationService,
+) -> None:
+    """Verify single_use=False does not store a nonce in CoordinationService and allows repeated verification."""
+    stateful_signer = UrlSigner(
+        "test-secret-key-32-characters-long!!", coordination_service
+    )
+    signed_url = await stateful_signer.sign(
+        "/api/oss/download?path=12", user="u@example.com", single_use=False
+    )
+
+    payload1 = await stateful_signer.verify(signed_url)
+    nonce = payload1["nonce"]
+    assert payload1["single_use"] is False
+    assert await coordination_service.get_value(f"nonce:u@example.com:{nonce}") is None
+
+    payload2 = await stateful_signer.verify(signed_url)
+    assert payload2["path"] == "/api/oss/download?path=12"

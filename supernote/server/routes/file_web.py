@@ -285,7 +285,9 @@ async def handle_download_url(request: web.Request) -> web.Response:
         # fetches the file directly instead of this process buffering a
         # notebook to hand it over.
         path_to_sign = f"/api/oss/download?path={info.id}"
-        signed_path = await url_signer.sign(path_to_sign, user=user_email)
+        signed_path = await url_signer.sign(
+            path_to_sign, user=user_email, single_use=False
+        )
         download_url = f"{get_request_base_url(request)}{signed_path}"
 
         response = FileDownloadUrlVO(url=download_url, md5=info.md5 or "")

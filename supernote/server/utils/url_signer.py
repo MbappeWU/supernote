@@ -73,6 +73,7 @@ class UrlSigner:
         path: str,
         user: str | None = None,
         expiration: datetime.timedelta = DEFAULT_EXPIRATION,
+        single_use: bool = True,
     ) -> str:
         """Sign a path and return the full signed URL.
 
@@ -80,6 +81,7 @@ class UrlSigner:
             path: The path to sign (e.g. /api/file/download/data?path=...)
             user: The user email to embed in the signature.
             expiration: Expiration duration (timedelta).
+            single_use: Whether to register a single-use nonce in CoordinationService.
 
         Returns:
             The full signed URL with the signature query parameter appended.
@@ -99,7 +101,7 @@ class UrlSigner:
         nonce = uuid.uuid4().hex
 
         # whitelist logic: store nonce before issuing token
-        if self._coordination_service:
+        if self._coordination_service and single_use:
             # Key format: nonce:{user}:{nonce} for easier namespacing/debug
             # Fallback to 'anon' if no user provided
             user_key_part = user if user else "anon"
@@ -110,13 +112,15 @@ class UrlSigner:
             ttl = int(expiration.total_seconds()) + 60
             await self._coordination_service.set_value(key, "1", ttl=ttl)
 
-        payload = {
+        payload: dict[str, Any] = {
             "path": path,
             "exp": exp,
             "nonce": nonce,
             "iat": now,
             "timestamp": now_ms,
         }
+        if not single_use:
+            payload["single_use"] = False
         if user:
             payload["user"] = user
 
@@ -198,7 +202,8 @@ class UrlSigner:
 
         # Consume or check nonce in CoordinationService after URL integrity checks pass
         user = payload.get("user")
-        if self._coordination_service and nonce:
+        is_single_use = payload.get("single_use", True)
+        if self._coordination_service and nonce and is_single_use:
             user_key_part = user if user else "anon"
             key = f"nonce:{user_key_part}:{nonce}"
 

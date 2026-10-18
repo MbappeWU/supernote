@@ -335,7 +335,9 @@ async def handle_download_summary(request: web.Request) -> web.Response:
         url_signer: UrlSigner = request.app["url_signer"]
         encoded_name = urllib.parse.quote(summary.handwrite_inner_name)
         download_path = f"/api/oss/download?path={encoded_name}"
-        signed_path = await url_signer.sign(download_path, user=user_email)
+        signed_path = await url_signer.sign(
+            download_path, user=user_email, single_use=False
+        )
         base_url = get_request_base_url(request)
         download_url = f"{base_url}{signed_path}"
 
