@@ -333,8 +333,8 @@ createApp({
             }
         }
 
-        function handleLogout() {
-            logout();
+        async function handleLogout() {
+            await logout();
         }
 
         onMounted(async () => {

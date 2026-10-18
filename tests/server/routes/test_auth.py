@@ -493,6 +493,15 @@ async def test_logout_and_account_clear(
     res_b = await web_b.query_user()
     assert res_b.success is True
 
+    # Bodyless POST /api/user/logout (matching Web UI fetch) also works
+    token_c = await login_client.login("test@example.com", "testpassword")
+    logout_c_resp = await client.post(
+        "/api/user/logout",
+        headers={"x-access-token": token_c},
+    )
+    assert logout_c_resp.status == 200
+    assert (await logout_c_resp.json())["success"] is True
+
     # POST /api/user/account/clear deletes account and revokes remaining sessions
     clear_resp = await client.post(
         "/api/user/account/clear",

@@ -23,7 +23,7 @@ export async function fetchTaskGroups() {
     });
 
     if (response.status === 401) {
-        logout();
+        logout(false);
         throw new Error("Unauthorized");
     }
 
@@ -81,7 +81,7 @@ export async function fetchTasks(taskListId = null) {
     });
 
     if (response.status === 401) {
-        logout();
+        logout(false);
         throw new Error("Unauthorized");
     }
 
@@ -199,7 +199,7 @@ export async function fetchIcsFeed(taskListId = null) {
     });
 
     if (response.status === 401) {
-        logout();
+        logout(false);
         throw new Error("Unauthorized");
     }
 

@@ -13,11 +13,11 @@ export function getToken() {
     return authToken;
 }
 
-export async function logout() {
+export async function logout(revokeOnServer = true) {
     const token = authToken;
     authToken = null;
     localStorage.removeItem('supernote_token');
-    if (token) {
+    if (revokeOnServer && token) {
         try {
             await fetch('/api/user/logout', {
                 method: 'POST',
@@ -125,7 +125,7 @@ export async function fetchFiles(directoryId = "0", pageNo = 1, pageSize = 50) {
         if (response.status === 401) {
             // If the token is invalid, clear it
             if (authToken) {
-                logout();
+                logout(false);
                 throw new Error("Unauthorized");
             }
             throw new Error("Unauthorized");
@@ -174,7 +174,7 @@ export async function convertNoteToPng(fileId) {
 
     if (!response.ok) {
         if (response.status === 401) {
-            logout();
+            logout(false);
             throw new Error("Unauthorized");
         }
         throw new Error(`Conversion failed: ${response.statusText}`);
@@ -226,7 +226,7 @@ export async function fetchSummaries(fileId) {
 
     if (!response.ok) {
         if (response.status === 401) {
-            logout();
+            logout(false);
             throw new Error("Unauthorized");
         }
         throw new Error(`Summary fetch failed: ${response.statusText}`);
@@ -314,7 +314,7 @@ export async function fetchSystemTasks() {
     });
 
     if (response.status === 401) {
-        logout();
+        logout(false);
         throw new Error("Unauthorized");
     }
 
@@ -343,7 +343,7 @@ export async function fetchCapacity() {
     });
 
     if (response.status === 401) {
-        logout();
+        logout(false);
         throw new Error("Unauthorized");
     }
 
@@ -580,7 +580,7 @@ export async function fetchProcessingStatus(fileIds) {
     });
 
     if (response.status === 401) {
-        logout();
+        logout(false);
         throw new Error("Unauthorized");
     }
 
@@ -613,7 +613,7 @@ export async function fetchDownloadUrl(fileId) {
 
     if (!response.ok) {
         if (response.status === 401) {
-            logout();
+            logout(false);
             throw new Error("Unauthorized");
         }
         throw new Error(`Download failed: ${response.statusText}`);
