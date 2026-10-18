@@ -137,7 +137,7 @@ class UrlSigner:
             consume: Whether to consume the nonce (single-use). Default True.
 
         Returns:
-            The decoded payload if valid, None otherwise.
+            The decoded payload if valid.
         """
         if not signed_url.startswith("/"):
             raise ValueError("Path must start with '/'")
@@ -146,7 +146,7 @@ class UrlSigner:
         parsed = urllib.parse.urlparse(signed_url)
         query_params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
 
-        if not (signatures := query_params.get("signature")):
+        if not (signatures := query_params.get("signature")) or len(signatures) != 1:
             raise InvalidSignature(f"No signature found in URL: {signed_url}")
 
         signature = signatures[0]
@@ -164,20 +164,44 @@ class UrlSigner:
         if not isinstance(payload, dict):
             raise InvalidSignature(f"Invalid payload type: {type(payload)}")
 
-        # We reconstruct the URL *without* the signature param to compare
-        # against what was signed (payload['path']).
-        if not (expected_path := payload.get("path")):
+        if not (expected_path := payload.get("path")) or not isinstance(
+            expected_path, str
+        ):
             raise InvalidSignature(f"No path found in payload: {payload}")
 
-        # CONSUME NONCE (Single-Use Token)
-        # Check and Remove (atomic pop if possible)
+        expected_parsed = urllib.parse.urlparse(expected_path)
+        if parsed.path != expected_parsed.path:
+            raise InvalidSignature(
+                f"Signed path mismatch: expected path '{expected_parsed.path}', got '{parsed.path}'"
+            )
+
+        expected_query = urllib.parse.parse_qs(
+            expected_parsed.query, keep_blank_values=True
+        )
+        for key, expected_values in expected_query.items():
+            if query_params.get(key) != expected_values:
+                raise InvalidSignature(f"Signed query parameter mismatch for '{key}'")
+
+        # Verify timestamp if present in payload
+        if "timestamp" in payload:
+            ts_param = query_params.get("timestamp")
+            if not ts_param or len(ts_param) != 1:
+                raise InvalidSignature("Timestamp missing from URL")
+            if str(payload["timestamp"]) != ts_param[0]:
+                raise InvalidSignature("Timestamp mismatch")
+
         nonce = payload.get("nonce")
+        if "nonce" in query_params:
+            nonce_param = query_params["nonce"]
+            if len(nonce_param) != 1 or str(nonce) != nonce_param[0]:
+                raise InvalidSignature("Nonce mismatch")
+
+        # Consume or check nonce in CoordinationService after URL integrity checks pass
         user = payload.get("user")
         if self._coordination_service and nonce:
             user_key_part = user if user else "anon"
             key = f"nonce:{user_key_part}:{nonce}"
 
-            # Atomic Pop if consuming, otherwise just check existence
             if consume:
                 val = await self._coordination_service.pop_value(key)
                 if not val:
@@ -188,19 +212,6 @@ class UrlSigner:
                 val = await self._coordination_service.get_value(key)
                 if not val:
                     raise InvalidSignature(f"Token invalid or expired (nonce: {nonce})")
-
-        if not signed_url.startswith(expected_path):
-            raise InvalidSignature(
-                f"Signed path mismatch: signed path '{expected_path}' is not prefix of request '{signed_url}'"
-            )
-
-        # Verify timestamp if present in payload
-        if "timestamp" in payload:
-            ts_param = query_params.get("timestamp")
-            if not ts_param:
-                raise InvalidSignature("Timestamp missing from URL")
-            if str(payload["timestamp"]) != ts_param[0]:
-                raise InvalidSignature("Timestamp mismatch")
 
         return payload
 
