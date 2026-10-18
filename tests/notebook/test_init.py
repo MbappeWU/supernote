@@ -5,9 +5,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from supernote.notebook import SupernoteMetadata, exceptions, fileformat, parse_metadata
+from supernote.notebook import (
+    SupernoteMetadata,
+    exceptions,
+    fileformat,
+    load,
+    parse_metadata,
+)
 from supernote.notebook.decoder import FlateDecoder, RattaRleDecoder
-from supernote.notebook.parser import _get_content_at_address
 
 
 def test_parse_metadata(test_note_path: Path) -> None:
@@ -20,35 +25,44 @@ def test_parse_metadata(test_note_path: Path) -> None:
     assert data["FILE_ID"] == "F202512072214597017338I6OJBpDccy1"
 
 
-def test_get_content_at_address_zero_returns_none() -> None:
-    stream = io.BytesIO(b"unused")
-    assert _get_content_at_address(stream, 0) is None
+def test_parse_metadata_rejects_negative_block_address() -> None:
+    prefix = b"noteSN_FILE_VER_20230015"
+    footer_body = b"<FILE_FEATURE:-1><PAGE:0>"
+    footer_block = (
+        len(footer_body).to_bytes(fileformat.LENGTH_FIELD_SIZE, "little") + footer_body
+    )
+    tail = len(prefix).to_bytes(fileformat.ADDRESS_SIZE, "little")
+    stream = io.BytesIO(prefix + footer_block + tail)
 
-
-def test_get_content_at_address_rejects_negative_address() -> None:
-    stream = io.BytesIO(b"unused")
     with pytest.raises(
         exceptions.ParserException, match="invalid negative block address"
     ):
-        _get_content_at_address(stream, -1)
+        parse_metadata(stream)
 
 
-def test_get_content_at_address_rejects_truncated_length_header() -> None:
-    stream = io.BytesIO(b"\x00\x01")
+def test_parse_metadata_rejects_truncated_block_length_header() -> None:
+    prefix = b"noteSN_FILE_VER_20230015"
+    # Point footer address at the last 2 bytes of the file so a 4-byte length cannot be read
+    bad_footer_address = len(prefix) + 2
+    tail = bad_footer_address.to_bytes(fileformat.ADDRESS_SIZE, "little")
+    stream = io.BytesIO(prefix + tail)
+
     with pytest.raises(
         exceptions.ParserException, match="unexpected EOF reading block length"
     ):
-        _get_content_at_address(stream, 1)
+        parse_metadata(stream)
 
 
-def test_get_content_at_address_rejects_block_length_exceeding_stream_size() -> None:
-    # A 4 GB length header (0xFFFFFFFF) in a small stream is rejected before fobj.read(block_length)
-    oversized = (0xFFFFFFFF).to_bytes(fileformat.LENGTH_FIELD_SIZE, "little")
-    stream = io.BytesIO(b"HEAD" + oversized + b"payload")
+def test_load_rejects_block_length_exceeding_stream_size() -> None:
+    prefix = b"noteSN_FILE_VER_20230015"
+    oversized_length = (0xFFFFFFFF).to_bytes(fileformat.LENGTH_FIELD_SIZE, "little")
+    tail = len(prefix).to_bytes(fileformat.ADDRESS_SIZE, "little")
+    stream = io.BytesIO(prefix + oversized_length + b"<PAGE:0>" + tail)
+
     with pytest.raises(
         exceptions.ParserException, match="exceeds remaining stream size"
     ):
-        _get_content_at_address(stream, 4)
+        load(stream)
 
 
 def test_flate_decoder_valid_and_rejects_oversized_or_corrupt_streams() -> None:
