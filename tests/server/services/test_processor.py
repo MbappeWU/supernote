@@ -519,3 +519,18 @@ async def test_processor_pause_resume(
 
         # Cleanup
         await processor_service.stop()
+
+
+async def test_process_file_without_page_modules(
+    processor_service: ProcessorService,
+) -> None:
+    """Verify process_file runs global pre-modules and skips page queries when no page_modules are registered."""
+    hashing = MagicMock(spec=ProcessorModule)
+    hashing.run = AsyncMock(return_value=True)
+
+    processor_service.register_modules(hashing=hashing, png=None)
+    assert processor_service.page_modules == []
+    assert processor_service.global_post_modules == []
+
+    await processor_service.process_file(123)
+    hashing.run.assert_called_once_with(123, processor_service.session_manager)

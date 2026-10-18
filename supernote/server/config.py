@@ -201,6 +201,21 @@ BaseConfig
     webhooks: WebhookConfig = field(default_factory=WebhookConfig)
     """Outbound webhook dispatch configuration."""
 
+    web_enabled: bool = True
+    """Whether to serve the web frontend dashboard and static assets.
+
+    Env Var: `SUPERNOTE_WEB_ENABLED`
+    """
+
+    web_notebook_preview: bool = True
+    """Whether to generate and display notebook page previews in the web UI.
+
+    When disabled, the web UI remains available for file, task, and metadata management,
+    but skips CPU-heavy notebook rasterization.
+
+    Env Var: `SUPERNOTE_WEB_NOTEBOOK_PREVIEW`
+    """
+
     @property
     def configured_base_url(self) -> str | None:
         """Get the explicitly configured base URL, or None if unset.
@@ -395,6 +410,18 @@ BaseConfig
                 "SUPERNOTE_WEBHOOKS_ENABLED", config.webhooks.enabled
             )
             logger.info(f"Webhooks Enabled: {config.webhooks.enabled}")
+
+        if os.getenv("SUPERNOTE_WEB_ENABLED"):
+            config.web_enabled = _get_bool_env(
+                "SUPERNOTE_WEB_ENABLED", config.web_enabled
+            )
+            logger.info(f"Web Enabled: {config.web_enabled}")
+
+        if os.getenv("SUPERNOTE_WEB_NOTEBOOK_PREVIEW"):
+            config.web_notebook_preview = _get_bool_env(
+                "SUPERNOTE_WEB_NOTEBOOK_PREVIEW", config.web_notebook_preview
+            )
+            logger.info(f"Web Notebook Preview: {config.web_notebook_preview}")
 
         if config.trace_log_file is None:
             config.trace_log_file = str(

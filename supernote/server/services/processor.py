@@ -80,15 +80,15 @@ class ProcessorService:
     def register_modules(
         self,
         hashing: ProcessorModule,
-        png: ProcessorModule,
-        ocr: ProcessorModule,
-        embedding: ProcessorModule,
-        summary: ProcessorModule,
+        png: ProcessorModule | None = None,
+        ocr: ProcessorModule | None = None,
+        embedding: ProcessorModule | None = None,
+        summary: ProcessorModule | None = None,
     ) -> None:
         """Register processing modules in logical order."""
         self.global_pre_modules = [hashing]
-        self.page_modules = [png, ocr, embedding]
-        self.global_post_modules = [summary]
+        self.page_modules = [m for m in (png, ocr, embedding) if m is not None]
+        self.global_post_modules = [m for m in (summary,) if m is not None]
         logger.info("Registered all processor modules.")
 
     async def start(self) -> None:
@@ -354,7 +354,7 @@ class ProcessorService:
         """Orchestrate the processing pipeline for a single file."""
         logger.info(f"Processing file {file_id}...")
 
-        if not self.global_pre_modules or not self.page_modules:
+        if not self.global_pre_modules:
             logger.error("Modules not fully registered. Skipping processing.")
             return
 
@@ -364,33 +364,34 @@ class ProcessorService:
                 logger.error(f"Pre-module {module.name} failed. Aborting pipeline.")
                 return
 
-        # Identify Pages
-        async with self.session_manager.session() as session:
-            # We want both index and ID. Index is needed for order, ID for tasks/storage.
-            stmt = (
-                select(NotePageContentDO.page_index, NotePageContentDO.page_id)
-                .where(NotePageContentDO.file_id == file_id)
-                .order_by(NotePageContentDO.page_index)
-            )
-            result = await session.execute(stmt)
-            pages = result.all()  # List of (index, id) tuples
+        if self.page_modules:
+            # Identify Pages
+            async with self.session_manager.session() as session:
+                # We want both index and ID. Index is needed for order, ID for tasks/storage.
+                stmt = (
+                    select(NotePageContentDO.page_index, NotePageContentDO.page_id)
+                    .where(NotePageContentDO.file_id == file_id)
+                    .order_by(NotePageContentDO.page_index)
+                )
+                result = await session.execute(stmt)
+                pages = result.all()  # List of (index, id) tuples
 
-        if not pages:
-            logger.info(f"No pages found for file {file_id}. Skipping page tasks.")
-        else:
-            # Pipeline Stage: Per-Page Processing (Parallel across pages with limit)
-            sem = asyncio.Semaphore(self.page_concurrency)
+            if not pages:
+                logger.info(f"No pages found for file {file_id}. Skipping page tasks.")
+            else:
+                # Pipeline Stage: Per-Page Processing (Parallel across pages with limit)
+                sem = asyncio.Semaphore(self.page_concurrency)
 
-            async def throttled_process_page(page_index: int, page_id: str):
-                async with sem:
-                    await self._process_page(file_id, page_index, page_id)
+                async def throttled_process_page(page_index: int, page_id: str):
+                    async with sem:
+                        await self._process_page(file_id, page_index, page_id)
 
-            tasks = [
-                throttled_process_page(page_index, page_id)
-                for page_index, page_id in pages
-                if page_id  # Strict Check: Everything must have a page_id
-            ]
-            await asyncio.gather(*tasks)
+                tasks = [
+                    throttled_process_page(page_index, page_id)
+                    for page_index, page_id in pages
+                    if page_id  # Strict Check: Everything must have a page_id
+                ]
+                await asyncio.gather(*tasks)
 
         # Pipeline Stage: Global Post-processing (Summary)
         for module in self.global_post_modules:

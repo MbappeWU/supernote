@@ -62,3 +62,7 @@ auth:
 #       # to receive every event.
 #       events:
 #         - "note.sync_completed"
+
+# Web interface settings (optional)
+# web_enabled: true # Set to false to disable web dashboard and static routes (default: true)
+# web_notebook_preview: true # Set to false to disable heavy notebook page rendering for web preview (default: true)

@@ -187,3 +187,22 @@ def test_server_config_proxy_env_vars(tmp_path: Path) -> None:
         assert config.proxy_mode == "strict"
         # The list should be parsed from the comma-separated string
         assert config.trusted_proxies == ["10.0.0.1", "10.0.0.2"]
+
+
+def test_server_config_web_flags(tmp_path: Path) -> None:
+    """Verify web_enabled and web_notebook_preview configuration loading."""
+    config = ServerConfig()
+    assert config.web_enabled is True
+    assert config.web_notebook_preview is True
+
+    config_dir = tmp_path / "config"
+    with patch.dict(
+        os.environ,
+        {
+            "SUPERNOTE_WEB_ENABLED": "false",
+            "SUPERNOTE_WEB_NOTEBOOK_PREVIEW": "0",
+        },
+    ):
+        loaded = ServerConfig.load(config_dir)
+        assert loaded.web_enabled is False
+        assert loaded.web_notebook_preview is False
