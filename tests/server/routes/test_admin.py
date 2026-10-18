@@ -1,7 +1,9 @@
 import hashlib
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp.test_utils import TestClient
 from sqlalchemy import delete, select
 
 from supernote.client.admin import AdminClient
@@ -9,6 +11,7 @@ from supernote.client.client import Client
 from supernote.models.base import ProcessingStatus
 from supernote.models.user import UserRegisterDTO
 from supernote.server.config import ServerConfig
+from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import SystemTaskDO
 from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
@@ -190,13 +193,12 @@ async def test_admin_queue_control(
 
 
 async def test_admin_reprocess(
-    client: Client,
+    client: TestClient,
     session_manager: DatabaseSessionManager,
     admin_headers: dict[str, str],
     user_headers: dict[str, str],
 ) -> None:
     """Test admin reprocess endpoint (permission and functionality)."""
-
     # Insert a dummy SystemTaskDO
     async with session_manager.session() as session:
         task = SystemTaskDO(
@@ -209,7 +211,7 @@ async def test_admin_reprocess(
         session.add(task)
         await session.commit()
 
-    # 1. Non-admin should fail (403)
+    # Non-admin should fail (403)
     resp = await client.post(
         "/api/admin/reprocess",
         json={"task_type": "summary", "file_id": 999},
@@ -217,7 +219,7 @@ async def test_admin_reprocess(
     )
     assert resp.status == 403
 
-    # 2. Admin should succeed (200)
+    # Admin should succeed (200)
     resp = await client.post(
         "/api/admin/reprocess",
         json={"task_type": "summary", "file_id": 999},
@@ -225,7 +227,7 @@ async def test_admin_reprocess(
     )
     assert resp.status == 200
 
-    # 3. Verify task is deleted in DB
+    # Verify task is deleted in DB
     async with session_manager.session() as session:
         result = await session.execute(
             select(SystemTaskDO).where(SystemTaskDO.file_id == 999)
@@ -233,10 +235,51 @@ async def test_admin_reprocess(
         tasks = result.scalars().all()
         assert len(tasks) == 0
 
-    # 4. Admin with invalid task type should fail (400)
+    # Admin with invalid task type should fail (400)
     resp = await client.post(
         "/api/admin/reprocess",
         json={"task_type": "invalid_type", "file_id": 999},
         headers=admin_headers,
     )
     assert resp.status == 400
+
+    # Global reprocess should only trigger active .note files, skipping soft-deleted notes
+    async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=8001,
+                user_id=1,
+                file_name="active_note.note",
+                storage_key="k1",
+                md5="m1",
+                is_active="Y",
+            )
+        )
+        session.add(
+            UserFileDO(
+                id=8002,
+                user_id=1,
+                file_name="inactive_note.note",
+                storage_key="k2",
+                md5="m2",
+                is_active="N",
+            )
+        )
+        await session.commit()
+
+    with patch.object(
+        client.app["event_bus"], "publish", new_callable=AsyncMock
+    ) as mock_pub:
+        resp = await client.post(
+            "/api/admin/reprocess",
+            json={"task_type": "summary"},
+            headers=admin_headers,
+        )
+        assert resp.status == 200
+        published_ids = [
+            call.args[0].file_id
+            for call in mock_pub.call_args_list
+            if hasattr(call.args[0], "file_id")
+        ]
+        assert 8001 in published_ids
+        assert 8002 not in published_ids

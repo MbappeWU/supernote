@@ -3,7 +3,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.server.constants import USER_DATA_BUCKET
-from supernote.server.db.models.file import UserFileDO
+from supernote.server.db.models.file import RecycleFileDO, UserFileDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import ParentNotFound
 from supernote.server.services.blob import BlobStorage
@@ -249,3 +249,52 @@ async def test_restore_fails_when_parent_missing_or_inactive(
         await vfs.restore_node(user_id, child_recycle.id)
 
     assert await vfs.restore_node(user_id, 999999) is False
+
+
+async def test_purge_folder_removes_all_descendants_and_recycle_entries(
+    db_session: AsyncSession,
+) -> None:
+    """Verify permanently purging a folder removes all descendant file records and recycle bin entries."""
+    vfs = VirtualFileSystem(db_session)
+    user_id = 1004
+
+    f1 = await vfs.create_directory(user_id, 0, "F1")
+    f2 = await vfs.create_directory(user_id, f1.id, "F2")
+    await vfs.create_or_update_file(
+        user_id, f1.id, "file1.txt", size=5, md5="m1", storage_key="k1"
+    )
+    file2 = await vfs.create_or_update_file(
+        user_id, f2.id, "file2.txt", size=10, md5="m2", storage_key="k2"
+    )
+
+    await vfs.delete_node(user_id, file2.id)
+    await vfs.delete_node(user_id, f1.id)
+
+    recycle_entries = await vfs.list_recycle(user_id)
+    assert len(recycle_entries) == 2
+    f1_recycle = next(r for r in recycle_entries if r.file_id == f1.id)
+
+    purged_nodes = await vfs.purge_recycle(user_id, [f1_recycle.id])
+    assert len(purged_nodes) == 4
+
+    remaining_files = (
+        (
+            await db_session.execute(
+                select(UserFileDO).where(UserFileDO.user_id == user_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(remaining_files) == 0
+
+    remaining_recycle = (
+        (
+            await db_session.execute(
+                select(RecycleFileDO).where(RecycleFileDO.user_id == user_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(remaining_recycle) == 0

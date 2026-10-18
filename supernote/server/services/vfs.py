@@ -581,16 +581,57 @@ class VirtualFileSystem:
         return True
 
     async def purge_recycle(
-        self, user_id: int, recycle_ids: list[int] | None = None
-    ) -> None:
-        """Permanently delete items from recycle bin."""
-        stmt = delete(RecycleFileDO).where(RecycleFileDO.user_id == user_id)
-        if recycle_ids:
+        self,
+        user_id: int,
+        recycle_ids: list[int] | None = None,
+    ) -> list[UserFileDO]:
+        """Permanently delete items from recycle bin and return purged file nodes."""
+        stmt = select(RecycleFileDO).where(RecycleFileDO.user_id == user_id)
+        if recycle_ids is not None:
+            if not recycle_ids:
+                return []
             stmt = stmt.where(RecycleFileDO.id.in_(recycle_ids))
+        recycle_entries = list((await self.db.execute(stmt)).scalars().all())
+        if not recycle_entries:
+            return []
 
-        await self.db.execute(stmt)
-        # TODO: Also delete UserFileDO? For now, VFS "active='N'" nodes remain.
+        target_file_ids = [r.file_id for r in recycle_entries]
+        node_stmt = select(UserFileDO).where(
+            UserFileDO.user_id == user_id,
+            UserFileDO.id.in_(target_file_ids),
+        )
+        primary_nodes = list((await self.db.execute(node_stmt)).scalars().all())
+
+        all_nodes: dict[int, UserFileDO] = {n.id: n for n in primary_nodes}
+        folder_queue = [n.id for n in primary_nodes if n.is_folder == "Y"]
+        while folder_queue:
+            desc_stmt = select(UserFileDO).where(
+                UserFileDO.user_id == user_id,
+                UserFileDO.directory_id.in_(folder_queue),
+            )
+            desc_nodes = (await self.db.execute(desc_stmt)).scalars().all()
+            folder_queue = []
+            for desc in desc_nodes:
+                if desc.id not in all_nodes:
+                    all_nodes[desc.id] = desc
+                    if desc.is_folder == "Y":
+                        folder_queue.append(desc.id)
+
+        all_file_ids = set(all_nodes.keys()) | set(target_file_ids)
+        await self.db.execute(
+            delete(RecycleFileDO).where(
+                RecycleFileDO.user_id == user_id,
+                RecycleFileDO.file_id.in_(all_file_ids),
+            )
+        )
+        await self.db.execute(
+            delete(UserFileDO).where(
+                UserFileDO.user_id == user_id,
+                UserFileDO.id.in_(all_file_ids),
+            )
+        )
         await self.db.commit()
+        return list(all_nodes.values())
 
     async def search_files(self, user_id: int, keyword: str) -> list[UserFileDO]:
         """Search for active files/folders by keyword (case-insensitive)."""
