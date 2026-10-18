@@ -215,3 +215,71 @@ async def test_scenario_security_edge_cases(
         allow_redirects=True,
     )
     assert resp_mismatch.status == 400
+
+
+async def test_login_bridge_rejects_mismatched_redirect_uri(
+    client: TestClient,
+    login_client: LoginClient,
+    create_test_user: None,
+) -> None:
+    """Verify /login-bridge directly validates redirect_uri against client_id before issuing an auth code."""
+    token = await login_client.login(TEST_USERNAME, TEST_PASSWORD)
+
+    resp = await client.post(
+        "/login-bridge",
+        params={
+            "client_id": "http://localhost:3000",
+            "redirect_uri": "http://evil.com/callback",
+            "code_challenge": "challenge123",
+        },
+        headers={"x-access-token": token},
+    )
+    assert resp.status == 400
+    body = await resp.json()
+    assert body["error"] == "invalid_redirect_uri"
+
+
+async def test_login_bridge_rejects_prefix_spoofing_and_traversal(
+    client: TestClient,
+    login_client: LoginClient,
+    create_test_user: None,
+) -> None:
+    """Verify validate_redirect_uri blocks authority prefix spoofing, path sibling prefix spoofing, and '..' traversal."""
+    token = await login_client.login(TEST_USERNAME, TEST_PASSWORD)
+
+    for bad_redirect in (
+        "http://localhost:3000.evil.com/app/cb",
+        "http://localhost:3000/app-evil/cb",
+        "http://localhost:3000/app/../evil",
+    ):
+        resp = await client.post(
+            "/login-bridge",
+            params={
+                "client_id": "http://localhost:3000/app",
+                "redirect_uri": bad_redirect,
+                "code_challenge": "challenge123",
+            },
+            headers={"x-access-token": token},
+        )
+        assert resp.status == 400, f"Expected 400 for {bad_redirect}"
+
+
+async def test_login_bridge_requires_code_challenge(
+    client: TestClient,
+    login_client: LoginClient,
+    create_test_user: None,
+) -> None:
+    """Verify /login-bridge rejects requests missing a PKCE code_challenge."""
+    token = await login_client.login(TEST_USERNAME, TEST_PASSWORD)
+
+    resp = await client.post(
+        "/login-bridge",
+        params={
+            "client_id": "http://localhost:3000",
+            "redirect_uri": "http://localhost:3000/callback",
+        },
+        headers={"x-access-token": token},
+    )
+    assert resp.status == 400
+    body = await resp.json()
+    assert body["error"] == "invalid_request"
