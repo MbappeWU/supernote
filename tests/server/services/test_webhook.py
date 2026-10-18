@@ -6,17 +6,22 @@ import hmac
 import json
 from collections.abc import Generator
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from aiohttp import web
 from pytest_aiohttp import AiohttpClient
 
+from supernote.models.webhook import (
+    EVENT_NOTE_SYNC_COMPLETED,
+    NoteSyncCompletedPayload,
+    WebhookFileVO,
+    WebhookPayload,
+)
 from supernote.server.config import WebhookConfig, WebhookEndpointConfig
 from supernote.server.events import LocalEventBus, NoteUpdatedEvent
 from supernote.server.services.webhook import (
     EVENT_HEADER,
-    EVENT_NOTE_SYNC_COMPLETED,
     MAX_ATTEMPTS,
     SIGNATURE_HEADER,
     WebhookService,
@@ -108,6 +113,14 @@ def _endpoint(url: str, **overrides: Any) -> WebhookEndpointConfig:
     return WebhookEndpointConfig(**defaults)
 
 
+def _sample_payload(event: str = EVENT_NOTE_SYNC_COMPLETED) -> NoteSyncCompletedPayload:
+    return NoteSyncCompletedPayload(
+        event=event,
+        timestamp=1730000000,
+        file=WebhookFileVO(id=42, path="Note/Daily/2026-08-04.note"),
+    )
+
+
 def test_sign_payload_is_deterministic_hmac_sha256() -> None:
     body = b'{"event": "note.sync_completed"}'
     signature = sign_payload("my-secret", body)
@@ -123,13 +136,13 @@ async def test_dispatch_sends_signed_post_to_subscribed_endpoint(
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     service = WebhookService(config, LocalEventBus())
 
-    payload = {"event": EVENT_NOTE_SYNC_COMPLETED, "user_id": 1}
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, payload)
+    payload = _sample_payload()
+    await service.dispatch(payload)
 
     assert len(webhook_receiver.calls) == 1
     call = webhook_receiver.calls[0]
     assert call["url"] == endpoint.url
-    assert json.loads(call["data"]) == payload
+    assert json.loads(call["data"]) == payload.to_dict()
     assert call["headers"][EVENT_HEADER] == EVENT_NOTE_SYNC_COMPLETED
     assert call["headers"][SIGNATURE_HEADER] == sign_payload(
         endpoint.secret, call["data"]
@@ -143,7 +156,7 @@ async def test_dispatch_skips_endpoints_not_subscribed_to_event(
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     service = WebhookService(config, LocalEventBus())
 
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "note.sync_completed"})
+    await service.dispatch(_sample_payload())
 
     assert webhook_receiver.calls == []
 
@@ -156,8 +169,8 @@ async def test_dispatch_endpoint_with_no_events_receives_everything(
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     service = WebhookService(config, LocalEventBus())
 
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "note.sync_completed"})
-    await service.dispatch("task.created", {"event": "task.created"})
+    await service.dispatch(_sample_payload())
+    await service.dispatch(WebhookPayload(event="task.created", timestamp=1730000000))
 
     assert len(webhook_receiver.calls) == 2
 
@@ -169,7 +182,7 @@ async def test_dispatch_omits_signature_header_when_no_secret(
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     service = WebhookService(config, LocalEventBus())
 
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "note.sync_completed"})
+    await service.dispatch(_sample_payload())
 
     assert SIGNATURE_HEADER not in webhook_receiver.calls[0]["headers"]
 
@@ -191,11 +204,12 @@ async def test_note_updated_event_triggers_note_sync_completed_webhook(
 
     assert len(webhook_receiver.calls) == 1
     body = json.loads(webhook_receiver.calls[0]["data"])
-    assert body["event"] == EVENT_NOTE_SYNC_COMPLETED
-    assert body["file"] == {"id": 42, "path": "Note/Daily/2026-08-04.note"}
-    assert "timestamp" in body
-    # The internal, per-user database ID must never leave the server.
-    assert "user_id" not in body
+    assert body == {
+        "event": EVENT_NOTE_SYNC_COMPLETED,
+        "timestamp": ANY,
+        "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
+    }
+    assert isinstance(body["timestamp"], int)
 
 
 async def test_start_does_not_subscribe_when_disabled(
@@ -223,7 +237,7 @@ async def test_send_does_not_raise_on_repeated_server_errors(
     service = WebhookService(config, LocalEventBus())
 
     # Must not raise even though every attempt fails.
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "x"})
+    await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == MAX_ATTEMPTS
 
@@ -237,7 +251,7 @@ async def test_send_does_not_raise_on_timeout(
     service = WebhookService(config, LocalEventBus())
 
     with patch("supernote.server.services.webhook.REQUEST_TIMEOUT_SECONDS", 0.05):
-        await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "x"})
+        await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == MAX_ATTEMPTS
 
@@ -250,7 +264,7 @@ async def test_send_does_not_retry_client_errors(
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     service = WebhookService(config, LocalEventBus())
 
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "x"})
+    await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == 1
 
@@ -263,7 +277,7 @@ async def test_send_recovers_after_transient_failure(
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     service = WebhookService(config, LocalEventBus())
 
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "x"})
+    await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == 2
 
@@ -277,7 +291,7 @@ async def test_dispatch_does_not_leak_secret_or_full_signature_in_logs(
     service = WebhookService(config, LocalEventBus())
 
     with caplog.at_level("WARNING"):
-        await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"event": "x"})
+        await service.dispatch(_sample_payload())
 
     assert "super-secret-value" not in caplog.text
 
@@ -291,15 +305,17 @@ async def test_dispatch_never_raises_on_unexpected_error(
         endpoints=[
             WebhookEndpointConfig(
                 url="https://example.invalid/hook",
+                secret="test-secret",
                 events=[EVENT_NOTE_SYNC_COMPLETED],
             ),
         ],
     )
     service = WebhookService(config, LocalEventBus())
 
-    # A payload that cannot be serialized fails outside the retried network
-    # errors, so it exercises the unexpected-error path. No real request is
-    # ever attempted, so this doesn't need the fake webhook receiver.
-    await service.dispatch(EVENT_NOTE_SYNC_COMPLETED, {"bad": object()})
+    with patch(
+        "supernote.server.services.webhook.sign_payload",
+        side_effect=RuntimeError("unexpected signing failure"),
+    ):
+        await service.dispatch(_sample_payload())
 
-    assert "TypeError" in caplog.text
+    assert "RuntimeError" in caplog.text
