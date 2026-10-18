@@ -3,11 +3,15 @@
 # Folders a Supernote device expects at fixed locations. Whether a folder is a
 # system folder depends on where it is, see `VirtualFileSystem.is_system_directory`.
 SYSTEM_ROOT_DIRECTORIES = {
+    "EXPORT",
+    "INBOX",
+    "SCREENSHOT",
+    "NOTE",
+    "DOCUMENT",
+    # Created for accounts registered before the firmware's spelling was used.
     "Export",
     "Inbox",
     "Screenshot",
-    "NOTE",
-    "DOCUMENT",
 }
 
 # All system folder names regardless of location. Not suitable for deciding

@@ -175,7 +175,7 @@ class UserService:
         """Create the standard Supernote directory structure for a new user.
 
         Creates the real two-level structure used by device firmware:
-        - System folders at root (Export, Inbox, Screenshot)
+        - System folders at root (EXPORT, INBOX, SCREENSHOT), named as the firmware names them
         - Category containers (NOTE, DOCUMENT) with children
 
         This structure is stored as-is in the database. The web API will
@@ -185,9 +185,9 @@ class UserService:
             vfs = VirtualFileSystem(session)
 
             # System folders at root (directoryId=0) - always visible
-            await vfs.create_directory(user_id, 0, "Export")
-            await vfs.create_directory(user_id, 0, "Inbox")
-            await vfs.create_directory(user_id, 0, "Screenshot")
+            await vfs.create_directory(user_id, 0, "EXPORT")
+            await vfs.create_directory(user_id, 0, "INBOX")
+            await vfs.create_directory(user_id, 0, "SCREENSHOT")
 
             # Category containers with children (for device firmware compatibility)
             note_parent = await vfs.create_directory(user_id, 0, "NOTE")

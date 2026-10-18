@@ -11,7 +11,7 @@ from supernote.server.services.user import UserService
 
 USER_A = "user_a@example.com"
 USER_B = "user_b@example.com"
-DEFAULT_FOLDERS = ["Export", "Inbox", "Screenshot", "NOTE", "DOCUMENT"]
+DEFAULT_FOLDERS = ["EXPORT", "INBOX", "SCREENSHOT", "NOTE", "DOCUMENT"]
 
 
 @pytest.fixture

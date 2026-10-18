@@ -41,7 +41,6 @@ from supernote.models.file_web import (
 )
 from supernote.server.constants import (
     CATEGORY_CONTAINERS,
-    IMMUTABLE_SYSTEM_DIRECTORIES,
     ORDERED_WEB_ROOT,
 )
 from supernote.server.exceptions import SupernoteError
@@ -322,6 +321,8 @@ async def handle_file_list_query(request: web.Request) -> web.Response:
                 if entity.name in CATEGORY_CONTAINERS:
                     category_map[entity.name] = entity
                 else:
+                    if entity.is_folder:
+                        entity.name = entity.name.capitalize()
                     flattened_entities.append(entity)
 
             # Fetch children of category containers and promote to root
@@ -334,11 +335,8 @@ async def handle_file_list_query(request: web.Request) -> web.Response:
 
             file_entities = flattened_entities
 
-        # TODO: This is not currently using the same sorting where there is
-        # a preferred orderign and capitalization for the items in the root folder.
-        # for item in page_items:
-        #     if req_data.directory_id != 0 or item.name not in IMMUTABLE_SYSTEM_DIRECTORIES:
-        #         item.name = item.name.capitalize()
+        # TODO: This is not currently using the same preferred ordering for the
+        # items in the root folder as /api/file/folder/list/query.
         page_items, total = _sort_and_page(
             file_entities,
             req_data.sequence,
@@ -491,8 +489,7 @@ async def handle_folder_list_query(request: web.Request) -> web.Response:
                         child.entity.parent_id = 0  # View adjustment
                         folder_details.append(child)
                 else:
-                    if detail.entity.name not in IMMUTABLE_SYSTEM_DIRECTORIES:
-                        detail.entity.name = detail.entity.name.capitalize()
+                    detail.entity.name = detail.entity.name.capitalize()
                     folder_details.append(detail)
 
         folder_details.sort(key=_root_sort_key)

@@ -9,13 +9,13 @@ async def test_soft_delete_to_recycle(
     web_client: WebClient,
 ) -> None:
     # Create a folder
-    await web_client.create_folder(parent_id=0, name="TestFolder")
+    await web_client.create_folder(parent_id=0, name="Testfolder")
 
     # Get ID of folder
     # Use Web Listing to find ID
     list_result = await web_client.list_query(directory_id=0)
     entry = next(
-        e for e in list_result.user_file_vo_list if e.file_name == "TestFolder"
+        e for e in list_result.user_file_vo_list if e.file_name == "Testfolder"
     )
     item_id = int(entry.id)
 
@@ -25,7 +25,7 @@ async def test_soft_delete_to_recycle(
     # Verify not in main folder
     list_folder_result = await web_client.list_query(directory_id=0)
     assert not any(
-        e.file_name == "TestFolder" for e in list_folder_result.user_file_vo_list
+        e.file_name == "Testfolder" for e in list_folder_result.user_file_vo_list
     )
 
     # Verify in recycle bin
@@ -34,7 +34,7 @@ async def test_soft_delete_to_recycle(
     assert recycle_list_result.total == 1
     assert recycle_list_result.recycle_file_vo_list
     assert len(recycle_list_result.recycle_file_vo_list) == 1
-    assert recycle_list_result.recycle_file_vo_list[0].file_name == "TestFolder"
+    assert recycle_list_result.recycle_file_vo_list[0].file_name == "Testfolder"
     assert recycle_list_result.recycle_file_vo_list[0].is_folder == "Y"
 
 
@@ -42,10 +42,10 @@ async def test_recycle_revert(
     web_client: WebClient,
 ) -> None:
     # Create and delete a folder
-    await web_client.create_folder(parent_id=0, name="ToRestore")
+    await web_client.create_folder(parent_id=0, name="Torestore")
 
     list_result = await web_client.list_query(directory_id=0)
-    entry = next(e for e in list_result.user_file_vo_list if e.file_name == "ToRestore")
+    entry = next(e for e in list_result.user_file_vo_list if e.file_name == "Torestore")
     item_id = int(entry.id)
 
     await web_client.file_delete(id_list=[item_id])
@@ -62,7 +62,7 @@ async def test_recycle_revert(
 
     # Verify back in main folder
     list_folder_result = await web_client.list_query(directory_id=0)
-    assert any(e.file_name == "ToRestore" for e in list_folder_result.user_file_vo_list)
+    assert any(e.file_name == "Torestore" for e in list_folder_result.user_file_vo_list)
 
     # Verify not in recycle bin
     recycle_list_result = await web_client.recycle_list(page_no=1, page_size=20)
@@ -73,10 +73,10 @@ async def test_recycle_permanent_delete(
     web_client: WebClient,
 ) -> None:
     # Create and delete a folder
-    await web_client.create_folder(parent_id=0, name="ToDelete")
+    await web_client.create_folder(parent_id=0, name="Todelete")
 
     list_result = await web_client.list_query(directory_id=0)
-    entry = next(e for e in list_result.user_file_vo_list if e.file_name == "ToDelete")
+    entry = next(e for e in list_result.user_file_vo_list if e.file_name == "Todelete")
     item_id = int(entry.id)
 
     await web_client.file_delete(id_list=[item_id])
