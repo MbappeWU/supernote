@@ -354,3 +354,78 @@ async def test_search_chunks_with_date_filter_inferred(
         user_id=user_id, query="test", date_after="2023-10-27", date_before="2023-10-29"
     )
     assert len(results) == 2
+
+
+async def test_list_notebooks(
+    search_service: SearchService,
+    session_manager: DatabaseSessionManager,
+) -> None:
+    user_id = 1
+    async with session_manager.session() as session:
+        session.add_all(
+            [
+                UserFileDO(
+                    id=101,
+                    user_id=user_id,
+                    file_name="Older.note",
+                    directory_id=0,
+                    is_folder="N",
+                    is_active="Y",
+                    create_time=1000,
+                    update_time=1500,
+                ),
+                UserFileDO(
+                    id=102,
+                    user_id=user_id,
+                    file_name="Newer_Daily.note",
+                    directory_id=0,
+                    is_folder="N",
+                    is_active="Y",
+                    create_time=2000,
+                    update_time=3000,
+                ),
+                UserFileDO(
+                    id=103,
+                    user_id=user_id,
+                    file_name="Deleted.note",
+                    directory_id=0,
+                    is_folder="N",
+                    is_active="N",
+                    create_time=4000,
+                    update_time=5000,
+                ),
+                UserFileDO(
+                    id=104,
+                    user_id=user_id,
+                    file_name="Document.pdf",
+                    directory_id=0,
+                    is_folder="N",
+                    is_active="Y",
+                    create_time=4000,
+                    update_time=5000,
+                ),
+                UserFileDO(
+                    id=105,
+                    user_id=999,
+                    file_name="OtherUser.note",
+                    directory_id=0,
+                    is_folder="N",
+                    is_active="Y",
+                    create_time=4000,
+                    update_time=5000,
+                ),
+            ]
+        )
+        await session.commit()
+
+    notebooks = await search_service.list_notebooks(user_id=user_id)
+    assert [n.file_id for n in notebooks] == [102, 101]
+    assert notebooks[0].file_name == "Newer_Daily.note"
+    assert notebooks[0].create_time == 2000
+    assert notebooks[0].update_time == 3000
+
+    filtered = await search_service.list_notebooks(user_id=user_id, name_filter="daily")
+    assert [n.file_id for n in filtered] == [102]
+
+    limited = await search_service.list_notebooks(user_id=user_id, limit=1)
+    assert [n.file_id for n in limited] == [102]
