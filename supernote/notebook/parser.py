@@ -187,12 +187,30 @@ def load_notebook(file_name, metadata=None, policy="strict"):
     return note
 
 
-def _get_content_at_address(fobj, address):
-    content = None
-    if address != 0:
-        fobj.seek(address, os.SEEK_SET)
-        block_length = int.from_bytes(fobj.read(fileformat.LENGTH_FIELD_SIZE), "little")
-        content = fobj.read(block_length)
+MAX_BLOCK_SIZE = 32 * 1024 * 1024  # 32 MB
+
+
+def _get_content_at_address(fobj: FileObj, address: int) -> bytes | None:
+    if address == 0:
+        return None
+    if address < 0:
+        raise exceptions.ParserException(f"invalid negative block address: {address}")
+    fobj.seek(address, os.SEEK_SET)
+    length_bytes = fobj.read(fileformat.LENGTH_FIELD_SIZE)
+    if len(length_bytes) < fileformat.LENGTH_FIELD_SIZE:
+        raise exceptions.ParserException(
+            f"unexpected EOF reading block length at address {address}"
+        )
+    block_length = int.from_bytes(length_bytes, "little")
+    if block_length > MAX_BLOCK_SIZE:
+        raise exceptions.ParserException(
+            f"block length {block_length} exceeds maximum allowed size {MAX_BLOCK_SIZE}"
+        )
+    content = fobj.read(block_length)
+    if len(content) < block_length:
+        raise exceptions.ParserException(
+            f"unexpected EOF reading {block_length} bytes at address {address}"
+        )
     return content
 
 
@@ -527,11 +545,9 @@ class SupernoteParser:
         dict
             extracted parameters
         """
-        if address == 0:
+        contents = _get_content_at_address(fobj, address)
+        if contents is None:
             return {}
-        fobj.seek(address, os.SEEK_SET)
-        block_length = int.from_bytes(fobj.read(fileformat.LENGTH_FIELD_SIZE), "little")
-        contents = fobj.read(block_length)
         params = self._extract_parameters(contents.decode())
         return params
 

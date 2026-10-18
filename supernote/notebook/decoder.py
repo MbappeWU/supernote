@@ -78,7 +78,22 @@ class FlateDecoder(BaseDecoder):
         int
             bit per pixel
         """
-        uncompressed = zlib.decompress(data)
+        expected_length = (
+            self.INTERNAL_PAGE_WIDTH
+            * self.INTERNAL_PAGE_HEIGHT
+            * np.dtype(np.uint16).itemsize
+        )
+        decompressor = zlib.decompressobj()
+        try:
+            uncompressed = decompressor.decompress(data, expected_length + 1)
+        except zlib.error as err:
+            raise exceptions.DecoderException(
+                f"failed to decompress bitmap: {err}"
+            ) from err
+        if decompressor.unconsumed_tail or len(uncompressed) != expected_length:
+            raise exceptions.DecoderException(
+                f"uncompressed bitmap length = {len(uncompressed)}, expected = {expected_length}"
+            )
         bitmap = np.frombuffer(uncompressed, dtype=np.uint16)
         bitmap = np.reshape(
             bitmap, (self.INTERNAL_PAGE_WIDTH, self.INTERNAL_PAGE_HEIGHT)
@@ -203,6 +218,11 @@ class RattaRleDecoder(BaseDecoder):
                     else:
                         length += 1
                         uncompressed += color_bytes_list[colorcode] * length
+
+                if len(uncompressed) > expected_length:
+                    raise exceptions.DecoderException(
+                        f"uncompressed bitmap length = {len(uncompressed)}, expected = {expected_length}"
+                    )
         except StopIteration:
             if len(holder) > 0:
                 (colorcode, length) = holder
