@@ -18,7 +18,7 @@ from mcp.shared.auth import (
     OAuthClientInformationFull,
     OAuthToken,
 )
-from pydantic import AnyHttpUrl, AnyUrl
+from pydantic import AnyHttpUrl, AnyUrl, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
@@ -41,12 +41,23 @@ class SupernoteOAuthClientInformationFull(OAuthClientInformationFull):
 
     @override
     def validate_redirect_uri(self, redirect_uri: AnyUrl | None) -> AnyUrl:
-        """Allows redirect uri prefixes."""
+        """Allows redirect uri prefixes matching the registered origin and path boundary."""
         if redirect_uri is None:
             raise InvalidRedirectUriError("Redirect URI must be specified")
-        redirect_uri_str = str(redirect_uri)
+        redirect_parsed = urlparse(str(redirect_uri))
         for registered_redirect_uri in self.redirect_uris or ():
-            if redirect_uri_str.startswith(str(registered_redirect_uri)):
+            reg_parsed = urlparse(str(registered_redirect_uri))
+            if (
+                redirect_parsed.scheme != reg_parsed.scheme
+                or redirect_parsed.netloc != reg_parsed.netloc
+            ):
+                continue
+            reg_path = reg_parsed.path.rstrip("/")
+            if (
+                not reg_path
+                or redirect_parsed.path == reg_path
+                or redirect_parsed.path.startswith(f"{reg_path}/")
+            ):
                 return redirect_uri
         raise InvalidRedirectUriError(
             f"Redirect URI '{redirect_uri}' not in allowed list"
@@ -260,9 +271,10 @@ def create_auth_app(
         # Extract OAuth params from query
         client_id = request.query_params.get("client_id")
         redirect_uri = request.query_params.get("redirect_uri")
+        code_challenge = request.query_params.get("code_challenge")
         state = request.query_params.get("state")
 
-        if not client_id or not redirect_uri:
+        if not client_id or not redirect_uri or not code_challenge:
             return JSONResponse({"error": "invalid_request"}, status_code=400)
 
         # Validate Client compatibility
@@ -270,15 +282,22 @@ def create_auth_app(
         if not client_info:
             return JSONResponse({"error": "invalid_client"}, status_code=400)
 
+        try:
+            validated_redirect_uri = client_info.validate_redirect_uri(
+                AnyHttpUrl(redirect_uri)
+            )
+        except (ValidationError, InvalidRedirectUriError):
+            return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+
         # Create the authorization code
         code_str = secrets.token_urlsafe(16)
         auth_code = SupernoteAuthorizationCode(
             code=code_str,
             user_id=session.email,
             client_id=client_id,
-            redirect_uri=AnyHttpUrl(redirect_uri),
+            redirect_uri=AnyHttpUrl(str(validated_redirect_uri)),
             scopes=["supernote:all"],
-            code_challenge=request.query_params.get("code_challenge") or "",
+            code_challenge=code_challenge,
             expires_at=int(time.time() + 600),
             redirect_uri_provided_explicitly=True,
         )
