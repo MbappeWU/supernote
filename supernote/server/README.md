@@ -7,7 +7,6 @@ This package provides a self-hosted implementation of the Supernote Cloud server
 -   **Seamless Sync**: Implements the native Supernote sync protocol.
 -   **AI Synthesis**: Automatically transcribes handwriting and identifies key insights using Google Gemini.
 -   **Knowledge Exploration**: Cross-notebook semantic search and web-based file browsing.
--   **Outbound Webhooks**: Sends HMAC-SHA256 signed HTTP POST notifications on note sync events.
 -   **Private & Local**: Store your notes and metadata on your own infrastructure.
 
 ## Getting Started
@@ -33,7 +32,7 @@ export SUPERNOTE_GEMINI_API_KEY="your-api-key"
 ```
 
 #### Outbound Webhooks
-Configure external webhook receivers in `config/config.yaml` (or enable via `SUPERNOTE_WEBHOOKS_ENABLED=true`):
+To send non-blocking HTTP `POST` notifications on server events (e.g., to Home Assistant, n8n, or Zapier), configure `webhooks` in `config/config.yaml` (or enable via `SUPERNOTE_WEBHOOKS_ENABLED=true`):
 ```yaml
 webhooks:
   enabled: true
@@ -43,7 +42,7 @@ webhooks:
       events:
         - "note.sync_completed"
 ```
-Each delivery sends `X-Supernote-Event` and (when `secret` is set) `X-Supernote-Signature: sha256=<hex>` headers with a JSON payload (see [`supernote.models.webhook`](https://allenporter.github.io/supernote/supernote/models/webhook.html) and [`supernote.server.services.webhook`](https://allenporter.github.io/supernote/supernote/server/services/webhook.html)).
+Each delivery includes `X-Supernote-Event` and (when `secret` is set) `X-Supernote-Signature: sha256=<hex>` headers with a JSON payload (see [`supernote.models.webhook`](https://allenporter.github.io/supernote/supernote/models/webhook.html) and [`supernote.server.services.webhook`](https://allenporter.github.io/supernote/supernote/server/services/webhook.html)).
 
 ### Running the Server
 
