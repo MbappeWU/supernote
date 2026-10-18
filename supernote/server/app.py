@@ -51,6 +51,7 @@ from .services.processor_modules.png_conversion import PngConversionModule
 from .services.processor_modules.summary import SummaryModule
 from .services.schedule import ScheduleService
 from .services.search import SearchService
+from .services.storage_cleanup import StorageCleanupService
 from .services.summary import SummaryService
 from .services.user import UserService
 from .services.webhook import WebhookService
@@ -61,6 +62,21 @@ from .utils.rate_limit import RateLimiter
 from .utils.url_signer import UrlSigner
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "bootstrap_ephemeral_user",
+    "create_app",
+    "create_coordination_service",
+    "create_db_session_manager",
+    "is_binary_content_type",
+    "jwt_auth_middleware",
+    "metrics_middleware",
+    "run",
+    "socketio_compat_middleware",
+    "trace_middleware",
+    "try_parse_json",
+]
+
 
 TRUNCATE_BODY_LOG = 10 * 1024
 
@@ -392,6 +408,13 @@ def create_app(config: ServerConfig) -> web.Application:
     webhook_service = WebhookService(config.webhooks, event_bus)
     app["webhook_service"] = webhook_service
 
+    storage_cleanup_service = StorageCleanupService(
+        blob_storage,
+        interval_seconds=config.storage_cleanup_interval_seconds,
+        temp_ttl_seconds=config.storage_temp_ttl_seconds,
+    )
+    app["storage_cleanup_service"] = storage_cleanup_service
+
     # Register modules
     png_enabled = gemini_service.is_configured or (
         config.web_enabled and config.web_notebook_preview
@@ -502,6 +525,8 @@ def create_app(config: ServerConfig) -> web.Application:
         logger.info("Starting background services...")
         await processor_service.start()
         webhook_service.start()
+        if config.storage_cleanup_enabled:
+            await storage_cleanup_service.start()
         logger.info("Startup sequence complete.")
 
         app["mcp_task"] = mcp_task
@@ -515,6 +540,9 @@ def create_app(config: ServerConfig) -> web.Application:
                 await mcp_task
             except asyncio.CancelledError:
                 pass
+
+        if config.storage_cleanup_enabled:
+            await storage_cleanup_service.stop()
 
         await webhook_service.stop()
         await processor_service.stop()

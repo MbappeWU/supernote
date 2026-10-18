@@ -5,8 +5,14 @@ import pytest
 from aiohttp.test_utils import TestClient
 from prometheus_client import REGISTRY
 
+from supernote.server import metrics as metrics_module
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
+from supernote.server.metrics import (
+    STORAGE_CLEANUP_BYTES_RECLAIMED_TOTAL,
+    STORAGE_CLEANUP_CHUNKS_REMOVED_TOTAL,
+    STORAGE_CLEANUP_TEMP_FILES_REMOVED_TOTAL,
+)
 from supernote.server.services.gemini import GeminiService
 
 
@@ -144,3 +150,72 @@ async def test_gemini_service_metrics() -> None:
     )
 
     assert after_fail_calls == before_fail_calls + 1.0
+
+
+def test_metrics_exports() -> None:
+    """Verify explicit __all__ exports of supernote.server.metrics."""
+    assert hasattr(metrics_module, "__all__")
+    expected = [
+        "DB_SESSIONS_ACTIVE",
+        "DB_SESSION_ERRORS_TOTAL",
+        "GEMINI_API_CALLS_TOTAL",
+        "GEMINI_API_DURATION_SECONDS",
+        "HTTP_REQUESTS_TOTAL",
+        "HTTP_REQUEST_DURATION_SECONDS",
+        "PROCESSOR_FILES_PROCESSING",
+        "PROCESSOR_MISSING_TASKS_RECOVERED_TOTAL",
+        "PROCESSOR_QUEUE_SIZE",
+        "PROCESSOR_STALLED_TASKS_RECOVERED_TOTAL",
+        "PROCESSOR_TASKS_TOTAL",
+        "PROCESSOR_TASK_DURATION_SECONDS",
+        "STORAGE_CLEANUP_BYTES_RECLAIMED_TOTAL",
+        "STORAGE_CLEANUP_CHUNKS_REMOVED_TOTAL",
+        "STORAGE_CLEANUP_TEMP_FILES_REMOVED_TOTAL",
+    ]
+    assert sorted(metrics_module.__all__) == sorted(expected)
+    for name in expected:
+        assert hasattr(metrics_module, name)
+
+
+async def test_storage_cleanup_metrics_endpoint(client: TestClient) -> None:
+    """Verify that storage cleanup metrics are exposed on the /metrics endpoint."""
+    resp = await client.get("/metrics")
+    assert resp.status == 200
+    body = await resp.text()
+
+    assert "supernote_storage_cleanup_temp_files_removed_total" in body
+    assert "supernote_storage_cleanup_chunks_removed_total" in body
+    assert "supernote_storage_cleanup_bytes_reclaimed_total" in body
+
+
+async def test_storage_cleanup_metrics_tracking() -> None:
+    """Verify that storage cleanup counter increments are reflected in REGISTRY sample values."""
+    before_files = (
+        REGISTRY.get_sample_value("supernote_storage_cleanup_temp_files_removed_total")
+        or 0.0
+    )
+    before_chunks = (
+        REGISTRY.get_sample_value("supernote_storage_cleanup_chunks_removed_total")
+        or 0.0
+    )
+    before_bytes = (
+        REGISTRY.get_sample_value("supernote_storage_cleanup_bytes_reclaimed_total")
+        or 0.0
+    )
+
+    STORAGE_CLEANUP_TEMP_FILES_REMOVED_TOTAL.inc(3)
+    STORAGE_CLEANUP_CHUNKS_REMOVED_TOTAL.inc(5)
+    STORAGE_CLEANUP_BYTES_RECLAIMED_TOTAL.inc(2048)
+
+    assert (
+        REGISTRY.get_sample_value("supernote_storage_cleanup_temp_files_removed_total")
+        == before_files + 3.0
+    )
+    assert (
+        REGISTRY.get_sample_value("supernote_storage_cleanup_chunks_removed_total")
+        == before_chunks + 5.0
+    )
+    assert (
+        REGISTRY.get_sample_value("supernote_storage_cleanup_bytes_reclaimed_total")
+        == before_bytes + 2048.0
+    )

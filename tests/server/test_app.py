@@ -7,12 +7,15 @@ when deployed behind a reverse proxy, with different proxy modes.
 import dataclasses
 import subprocess
 import sys
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 from aiohttp.test_utils import TestClient
 from pytest_aiohttp import AiohttpClient
 
 from supernote.models.file_device import FileUploadApplyLocalDTO
+from supernote.server import app as app_module
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
 from supernote.server.services.processor_modules.png_conversion import (
@@ -240,3 +243,85 @@ def test_png_module_registration_matrix(
     page_modules = app["processor_service"].page_modules
     has_png = any(isinstance(m, PngConversionModule) for m in page_modules)
     assert has_png is expected_png
+
+
+def test_app_exports() -> None:
+    """Verify explicit __all__ exports of supernote.server.app."""
+    assert hasattr(app_module, "__all__")
+    expected = [
+        "bootstrap_ephemeral_user",
+        "create_app",
+        "create_coordination_service",
+        "create_db_session_manager",
+        "is_binary_content_type",
+        "jwt_auth_middleware",
+        "metrics_middleware",
+        "run",
+        "socketio_compat_middleware",
+        "trace_middleware",
+        "try_parse_json",
+    ]
+    assert sorted(app_module.__all__) == sorted(expected)
+    for name in expected:
+        assert hasattr(app_module, name)
+
+
+async def test_app_cleanup_service_di(server_config: ServerConfig) -> None:
+    """Verify StorageCleanupService receives primitive config parameters and FileService is initialized without storage_root."""
+    server_config.storage_cleanup_interval_seconds = 7200
+    server_config.storage_temp_ttl_seconds = 172800
+
+    app = create_app(server_config)
+
+    cleanup_service = app["storage_cleanup_service"]
+    assert cleanup_service is not None
+    assert cleanup_service.interval_seconds == 7200
+    assert cleanup_service.temp_ttl_seconds == 172800
+
+
+async def test_storage_cleanup_lifespan_enabled(
+    server_config: ServerConfig,
+    aiohttp_client: Any,
+) -> None:
+    """Verify StorageCleanupService starts and stops cleanly with app lifespan when enabled."""
+    server_config.storage_cleanup_enabled = True
+    app = create_app(server_config)
+    cleanup_service = app["storage_cleanup_service"]
+
+    with (
+        patch.object(
+            cleanup_service, "start", wraps=cleanup_service.start
+        ) as mock_start,
+        patch.object(cleanup_service, "stop", wraps=cleanup_service.stop) as mock_stop,
+    ):
+        client = await aiohttp_client(app)
+        mock_start.assert_awaited_once()
+        assert cleanup_service._polling_task is not None
+        assert not cleanup_service._polling_task.done()
+
+        await client.close()
+        mock_stop.assert_awaited_once()
+        assert cleanup_service._polling_task is None
+
+
+async def test_storage_cleanup_lifespan_disabled(
+    server_config: ServerConfig,
+    aiohttp_client: Any,
+) -> None:
+    """Verify StorageCleanupService is not started or stopped when storage_cleanup_enabled is False."""
+    server_config.storage_cleanup_enabled = False
+    app = create_app(server_config)
+    cleanup_service = app["storage_cleanup_service"]
+
+    with (
+        patch.object(
+            cleanup_service, "start", wraps=cleanup_service.start
+        ) as mock_start,
+        patch.object(cleanup_service, "stop", wraps=cleanup_service.stop) as mock_stop,
+    ):
+        client = await aiohttp_client(app)
+        mock_start.assert_not_called()
+        assert cleanup_service._polling_task is None
+
+        await client.close()
+        mock_stop.assert_not_called()

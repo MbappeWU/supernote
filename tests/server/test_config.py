@@ -223,3 +223,63 @@ def test_server_config_web_flags(tmp_path: Path) -> None:
         loaded = ServerConfig.load(config_dir)
         assert loaded.web_enabled is False
         assert loaded.web_notebook_preview is False
+
+
+def test_storage_cleanup_defaults() -> None:
+    """Verify default values for storage cleanup settings in ServerConfig."""
+    config = ServerConfig()
+    assert config.storage_cleanup_enabled is True
+    assert config.storage_cleanup_interval_seconds == 3600
+    assert config.storage_temp_ttl_seconds == 86400
+
+
+def test_storage_cleanup_config_load_from_file(tmp_path: Path) -> None:
+    """Verify loading storage cleanup settings from yaml config file."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+
+    data = {
+        "storage_cleanup_enabled": False,
+        "storage_cleanup_interval_seconds": 1800,
+        "storage_temp_ttl_seconds": 7200,
+    }
+    with open(config_file, "w") as f:
+        yaml.safe_dump(data, f)
+
+    config = ServerConfig.load(config_dir)
+    assert config.storage_cleanup_enabled is False
+    assert config.storage_cleanup_interval_seconds == 1800
+    assert config.storage_temp_ttl_seconds == 7200
+
+
+def test_storage_cleanup_env_var_overrides(tmp_path: Path) -> None:
+    """Verify environment variables override storage cleanup config file settings."""
+    config_dir = tmp_path / "config"
+    with patch.dict(
+        os.environ,
+        {
+            "SUPERNOTE_STORAGE_CLEANUP_ENABLED": "false",
+            "SUPERNOTE_STORAGE_CLEANUP_INTERVAL_SECONDS": "7200",
+            "SUPERNOTE_STORAGE_TEMP_TTL_SECONDS": "14400",
+        },
+    ):
+        config = ServerConfig.load(config_dir)
+        assert config.storage_cleanup_enabled is False
+        assert config.storage_cleanup_interval_seconds == 7200
+        assert config.storage_temp_ttl_seconds == 14400
+
+
+def test_storage_cleanup_invalid_env_vars_fallback(tmp_path: Path) -> None:
+    """Verify non-integer environment variables fall back to default values gracefully."""
+    config_dir = tmp_path / "config"
+    with patch.dict(
+        os.environ,
+        {
+            "SUPERNOTE_STORAGE_CLEANUP_INTERVAL_SECONDS": "not_an_int",
+            "SUPERNOTE_STORAGE_TEMP_TTL_SECONDS": "also_invalid",
+        },
+    ):
+        config = ServerConfig.load(config_dir)
+        assert config.storage_cleanup_interval_seconds == 3600
+        assert config.storage_temp_ttl_seconds == 86400

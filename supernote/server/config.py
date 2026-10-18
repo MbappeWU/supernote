@@ -224,6 +224,24 @@ BaseConfig
     Env Var: `SUPERNOTE_WEB_NOTEBOOK_PREVIEW`
     """
 
+    storage_cleanup_enabled: bool = True
+    """Whether to enable periodic cleanup of temp staging files and abandoned upload chunks.
+
+    Env Var: `SUPERNOTE_STORAGE_CLEANUP_ENABLED`
+    """
+
+    storage_cleanup_interval_seconds: int = 3600
+    """Interval in seconds between cleanup runs.
+
+    Env Var: `SUPERNOTE_STORAGE_CLEANUP_INTERVAL_SECONDS`
+    """
+
+    storage_temp_ttl_seconds: int = 86400
+    """Time-to-live in seconds before staging files and abandoned chunks are pruned.
+
+    Env Var: `SUPERNOTE_STORAGE_TEMP_TTL_SECONDS`
+    """
+
     @property
     def configured_base_url(self) -> str | None:
         """Get the explicitly configured base URL, or None if unset.
@@ -430,6 +448,32 @@ BaseConfig
                 "SUPERNOTE_WEB_NOTEBOOK_PREVIEW", config.web_notebook_preview
             )
             logger.info(f"Web Notebook Preview: {config.web_notebook_preview}")
+
+        if os.getenv("SUPERNOTE_STORAGE_CLEANUP_ENABLED"):
+            config.storage_cleanup_enabled = _get_bool_env(
+                "SUPERNOTE_STORAGE_CLEANUP_ENABLED", config.storage_cleanup_enabled
+            )
+            logger.info(f"Storage Cleanup Enabled: {config.storage_cleanup_enabled}")
+
+        if storage_cleanup_interval := os.getenv(
+            "SUPERNOTE_STORAGE_CLEANUP_INTERVAL_SECONDS"
+        ):
+            try:
+                config.storage_cleanup_interval_seconds = int(storage_cleanup_interval)
+                logger.info(
+                    f"Using SUPERNOTE_STORAGE_CLEANUP_INTERVAL_SECONDS: {config.storage_cleanup_interval_seconds}"
+                )
+            except ValueError:
+                pass
+
+        if storage_temp_ttl := os.getenv("SUPERNOTE_STORAGE_TEMP_TTL_SECONDS"):
+            try:
+                config.storage_temp_ttl_seconds = int(storage_temp_ttl)
+                logger.info(
+                    f"Using SUPERNOTE_STORAGE_TEMP_TTL_SECONDS: {config.storage_temp_ttl_seconds}"
+                )
+            except ValueError:
+                pass
 
         if config.trace_log_file is None:
             config.trace_log_file = str(
