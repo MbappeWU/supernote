@@ -389,7 +389,7 @@ def create_app(config: ServerConfig) -> web.Application:
     )
     app["processor_service"] = processor_service
 
-    webhook_service = WebhookService(config.webhooks, event_bus)
+    webhook_service = WebhookService(config.webhooks, event_bus, user_service)
     app["webhook_service"] = webhook_service
 
     # Register modules
@@ -501,7 +501,7 @@ def create_app(config: ServerConfig) -> web.Application:
 
         logger.info("Starting background services...")
         await processor_service.start()
-        webhook_service.start()
+        await webhook_service.start()
         logger.info("Startup sequence complete.")
 
         app["mcp_task"] = mcp_task

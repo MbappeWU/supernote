@@ -38,6 +38,7 @@ webhooks:
   enabled: true
   endpoints:
     - url: "https://n8n.homelab.local/webhook/supernote"
+      user: "user@example.com"
       secret: "CHANGE_ME_TO_A_SECURE_RANDOM_STRING"
       events:
         - "note.sync_completed"
