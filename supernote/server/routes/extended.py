@@ -23,6 +23,7 @@ from supernote.models.extended import (
     WebTranscriptRequestDTO,
     WebTranscriptResponseVO,
 )
+from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import SystemTaskDO
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.search import SearchService
@@ -71,11 +72,16 @@ async def handle_extended_file_summary_list(request: web.Request) -> web.Respons
 async def handle_list_system_tasks(request: web.Request) -> web.Response:
     # Endpoint: GET /api/extended/system/tasks
     # Purpose: Extended API to list system tasks for the control panel.
-
+    user_email = request["user"]
+    user_service: UserService = request.app["user_service"]
     processor_service = request.app["processor_service"]
 
+    user_id = await user_service.get_user_id(user_email)
+    if not user_id:
+        return web.json_response({"error": "User not found"}, status=404)
+
     try:
-        tasks = await processor_service.list_system_tasks()
+        tasks = await processor_service.list_system_tasks(user_id=user_id)
     except Exception as err:
         logger.exception("Error listing system tasks")
         return SupernoteError.uncaught(err).to_response()
@@ -101,21 +107,33 @@ async def handle_list_system_tasks(request: web.Request) -> web.Response:
 async def handle_file_processing_status(request: web.Request) -> web.Response:
     # Endpoint: POST /api/extended/file/processing/status
     # Purpose: Get aggregated processing status for a list of files.
-
+    user_email = request["user"]
     try:
         data = await request.json()
         req_dto = FileProcessingStatusDTO.from_dict(data)
     except Exception as e:
         return web.json_response({"error": f"Invalid Request: {e}"}, status=400)
 
+    user_service: UserService = request.app["user_service"]
     session_manager = request.app["session_manager"]
+
+    user_id = await user_service.get_user_id(user_email)
+    if not user_id:
+        return web.json_response({"error": "User not found"}, status=404)
 
     try:
         status_map = {}
         async with session_manager.session() as session:
             for file_id in req_dto.file_ids:
-                # Aggregate tasks for this file
-                stmt = select(SystemTaskDO).where(SystemTaskDO.file_id == file_id)
+                # Aggregate tasks for this file belonging to the requesting user
+                stmt = (
+                    select(SystemTaskDO)
+                    .join(UserFileDO, SystemTaskDO.file_id == UserFileDO.id)
+                    .where(
+                        SystemTaskDO.file_id == file_id,
+                        UserFileDO.user_id == user_id,
+                    )
+                )
                 result = await session.execute(stmt)
                 tasks = result.scalars().all()
 
