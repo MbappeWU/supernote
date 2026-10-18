@@ -4,7 +4,8 @@ import asyncio
 import hashlib
 import hmac
 import json
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import ANY, patch
 
@@ -176,15 +177,27 @@ def test_verify_signature_rejects_malformed_or_empty_inputs() -> None:
     )
 
 
+@asynccontextmanager
+async def _running_service(
+    config: WebhookConfig,
+    event_bus: LocalEventBus | None = None,
+) -> AsyncGenerator[WebhookService]:
+    service = WebhookService(config, event_bus or LocalEventBus())
+    service.start()
+    try:
+        yield service
+    finally:
+        await service.stop()
+
+
 async def test_dispatch_sends_signed_post_to_subscribed_endpoint(
     webhook_receiver: WebhookReceiver,
 ) -> None:
     endpoint = _endpoint(webhook_receiver.url)
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
-
     payload = _sample_payload()
-    await service.dispatch(payload)
+    async with _running_service(config) as service:
+        await service.dispatch(payload)
 
     assert len(webhook_receiver.calls) == 1
     call = webhook_receiver.calls[0]
@@ -201,9 +214,8 @@ async def test_dispatch_skips_endpoints_not_subscribed_to_event(
 ) -> None:
     endpoint = _endpoint(webhook_receiver.url, events=["task.created"])
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
-
-    await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        await service.dispatch(_sample_payload())
 
     assert webhook_receiver.calls == []
 
@@ -214,10 +226,11 @@ async def test_dispatch_endpoint_with_no_events_receives_everything(
     """An endpoint with no `events` configured defaults to receiving all events."""
     endpoint = _endpoint(webhook_receiver.url, events=[])
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
-
-    await service.dispatch(_sample_payload())
-    await service.dispatch(WebhookPayload(event="task.created", timestamp=1730000000))
+    async with _running_service(config) as service:
+        await service.dispatch(_sample_payload())
+        await service.dispatch(
+            WebhookPayload(event="task.created", timestamp=1730000000)
+        )
 
     assert len(webhook_receiver.calls) == 2
 
@@ -227,9 +240,8 @@ async def test_dispatch_omits_signature_header_when_no_secret(
 ) -> None:
     endpoint = _endpoint(webhook_receiver.url, secret="")
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
-
-    await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        await service.dispatch(_sample_payload())
 
     assert SIGNATURE_HEADER not in webhook_receiver.calls[0]["headers"]
 
@@ -240,27 +252,27 @@ async def test_note_updated_event_triggers_note_sync_completed_webhook(
     endpoint = _endpoint(webhook_receiver.url)
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     event_bus = LocalEventBus()
-    service = WebhookService(config, event_bus)
-    service.start()
+    async with _running_service(config, event_bus):
+        await event_bus.publish(
+            NoteUpdatedEvent(
+                file_id=42, user_id=7, file_path="Note/Daily/2026-08-04.note"
+            )
+        )
+        # LocalEventBus dispatches via asyncio.create_task; let it run.
+        await _drain_event_loop()
 
-    await event_bus.publish(
-        NoteUpdatedEvent(file_id=42, user_id=7, file_path="Note/Daily/2026-08-04.note")
-    )
-    # LocalEventBus dispatches via asyncio.create_task; let it run.
-    await _drain_event_loop()
-
-    assert len(webhook_receiver.calls) == 1
-    body = json.loads(webhook_receiver.calls[0]["data"])
-    assert body == {
-        "event": EVENT_NOTE_SYNC_COMPLETED,
-        "timestamp": ANY,
-        "file": {
-            "id": 42,
-            "name": "2026-08-04.note",
-            "path": "Note/Daily/2026-08-04.note",
-        },
-    }
-    assert isinstance(body["timestamp"], int)
+        assert len(webhook_receiver.calls) == 1
+        body = json.loads(webhook_receiver.calls[0]["data"])
+        assert body == {
+            "event": EVENT_NOTE_SYNC_COMPLETED,
+            "timestamp": ANY,
+            "file": {
+                "id": 42,
+                "name": "2026-08-04.note",
+                "path": "Note/Daily/2026-08-04.note",
+            },
+        }
+        assert isinstance(body["timestamp"], int)
 
 
 async def test_note_processing_completed_event_triggers_webhook(
@@ -269,28 +281,26 @@ async def test_note_processing_completed_event_triggers_webhook(
     endpoint = _endpoint(webhook_receiver.url, events=[EVENT_NOTE_PROCESSING_COMPLETED])
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
     event_bus = LocalEventBus()
-    service = WebhookService(config, event_bus)
-    service.start()
-
-    await event_bus.publish(
-        NoteProcessingCompletedEvent(
-            file_id=42, user_id=7, file_path="Note/Daily/2026-08-04.note"
+    async with _running_service(config, event_bus):
+        await event_bus.publish(
+            NoteProcessingCompletedEvent(
+                file_id=42, user_id=7, file_path="Note/Daily/2026-08-04.note"
+            )
         )
-    )
-    await _drain_event_loop()
+        await _drain_event_loop()
 
-    assert len(webhook_receiver.calls) == 1
-    body = json.loads(webhook_receiver.calls[0]["data"])
-    assert body == {
-        "event": EVENT_NOTE_PROCESSING_COMPLETED,
-        "timestamp": ANY,
-        "file": {
-            "id": 42,
-            "name": "2026-08-04.note",
-            "path": "Note/Daily/2026-08-04.note",
-        },
-    }
-    assert isinstance(body["timestamp"], int)
+        assert len(webhook_receiver.calls) == 1
+        body = json.loads(webhook_receiver.calls[0]["data"])
+        assert body == {
+            "event": EVENT_NOTE_PROCESSING_COMPLETED,
+            "timestamp": ANY,
+            "file": {
+                "id": 42,
+                "name": "2026-08-04.note",
+                "path": "Note/Daily/2026-08-04.note",
+            },
+        }
+        assert isinstance(body["timestamp"], int)
 
 
 async def test_start_does_not_subscribe_when_disabled(
@@ -298,13 +308,11 @@ async def test_start_does_not_subscribe_when_disabled(
 ) -> None:
     config = WebhookConfig(enabled=False, endpoints=[_endpoint(webhook_receiver.url)])
     event_bus = LocalEventBus()
-    service = WebhookService(config, event_bus)
-    service.start()
-
-    await event_bus.publish(
-        NoteUpdatedEvent(file_id=1, user_id=1, file_path="Note/a.note")
-    )
-    await _drain_event_loop()
+    async with _running_service(config, event_bus):
+        await event_bus.publish(
+            NoteUpdatedEvent(file_id=1, user_id=1, file_path="Note/a.note")
+        )
+        await _drain_event_loop()
 
     assert webhook_receiver.calls == []
 
@@ -315,10 +323,10 @@ async def test_send_does_not_raise_on_repeated_server_errors(
     webhook_receiver.queue_responses(500, 500, 500)
     endpoint = _endpoint(webhook_receiver.url)
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
 
     # Must not raise even though every attempt fails.
-    await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == MAX_ATTEMPTS
 
@@ -329,10 +337,10 @@ async def test_send_does_not_raise_on_timeout(
     webhook_receiver.queue_responses(STALL, STALL, STALL)
     endpoint = _endpoint(webhook_receiver.url)
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
 
-    with patch("supernote.server.services.webhook.REQUEST_TIMEOUT_SECONDS", 0.05):
-        await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        with patch("supernote.server.services.webhook.REQUEST_TIMEOUT_SECONDS", 0.05):
+            await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == MAX_ATTEMPTS
 
@@ -343,9 +351,9 @@ async def test_send_does_not_retry_client_errors(
     webhook_receiver.queue_responses(404, 200, 200)
     endpoint = _endpoint(webhook_receiver.url)
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
 
-    await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == 1
 
@@ -356,10 +364,10 @@ async def test_send_does_not_follow_redirects_or_retry_3xx(
     webhook_receiver.queue_responses(307, 200, 200)
     endpoint = _endpoint(webhook_receiver.url)
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
 
-    with caplog.at_level("WARNING"):
-        await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        with caplog.at_level("WARNING"):
+            await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == 1
     assert webhook_receiver.calls[0]["url"] == webhook_receiver.url
@@ -372,9 +380,9 @@ async def test_send_recovers_after_transient_failure(
     webhook_receiver.queue_responses(500, 200)
     endpoint = _endpoint(webhook_receiver.url)
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
 
-    await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == 2
 
@@ -385,10 +393,10 @@ async def test_dispatch_does_not_leak_secret_or_full_signature_in_logs(
     webhook_receiver.queue_responses(500, 500, 500)
     endpoint = _endpoint(webhook_receiver.url, secret="super-secret-value")
     config = WebhookConfig(enabled=True, endpoints=[endpoint])
-    service = WebhookService(config, LocalEventBus())
 
-    with caplog.at_level("WARNING"):
-        await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        with caplog.at_level("WARNING"):
+            await service.dispatch(_sample_payload())
 
     assert "super-secret-value" not in caplog.text
 
@@ -407,12 +415,73 @@ async def test_dispatch_never_raises_on_unexpected_error(
             ),
         ],
     )
-    service = WebhookService(config, LocalEventBus())
-
-    with patch(
-        "supernote.server.services.webhook.sign_payload",
-        side_effect=RuntimeError("unexpected signing failure"),
-    ):
-        await service.dispatch(_sample_payload())
+    async with _running_service(config) as service:
+        with patch(
+            "supernote.server.services.webhook.sign_payload",
+            side_effect=RuntimeError("unexpected signing failure"),
+        ):
+            await service.dispatch(_sample_payload())
 
     assert "RuntimeError" in caplog.text
+
+
+async def test_started_service_reuses_client_session_until_stopped(
+    webhook_receiver: WebhookReceiver,
+) -> None:
+    endpoint = _endpoint(webhook_receiver.url)
+    config = WebhookConfig(enabled=True, endpoints=[endpoint])
+    service = WebhookService(config, LocalEventBus())
+    service.start()
+    try:
+        shared_session = service._session
+        assert shared_session is not None
+        assert not shared_session.closed
+
+        await service.dispatch(_sample_payload())
+        await service.dispatch(_sample_payload())
+
+        assert len(webhook_receiver.calls) == 2
+        assert service._session is shared_session
+        assert not shared_session.closed
+    finally:
+        await service.stop()
+
+    assert service._session is None
+    assert shared_session.closed
+
+
+async def test_dispatch_bounds_concurrent_requests_via_semaphore(
+    aiohttp_client: AiohttpClient,
+) -> None:
+    active = 0
+    max_active = 0
+    release = asyncio.Event()
+
+    async def slow_handler(request: web.Request) -> web.Response:
+        nonlocal active, max_active
+        await request.read()
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.02)
+        await release.wait()
+        active -= 1
+        return web.Response(status=200)
+
+    app = web.Application()
+    app.router.add_post("/webhook", slow_handler)
+    client = await aiohttp_client(app)
+    url = str(client.make_url("/webhook"))
+
+    endpoints = [_endpoint(url) for _ in range(4)]
+    config = WebhookConfig(enabled=True, endpoints=endpoints)
+    service = WebhookService(config, LocalEventBus(), max_concurrency=2)
+    service.start()
+    try:
+        dispatch_task = asyncio.create_task(service.dispatch(_sample_payload()))
+        await asyncio.sleep(0.05)
+        assert max_active == 2
+        release.set()
+        await dispatch_task
+        assert max_active == 2
+    finally:
+        await service.stop()

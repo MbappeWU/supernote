@@ -516,6 +516,7 @@ def create_app(config: ServerConfig) -> web.Application:
             except asyncio.CancelledError:
                 pass
 
+        await webhook_service.stop()
         await processor_service.stop()
         await session_manager.close()
 
