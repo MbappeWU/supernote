@@ -14,10 +14,8 @@ from supernote.models.socket import (
     SocketMessageData,
 )
 from supernote.server.config import ServerConfig
-from supernote.server.socket_auth import (
-    verify_handshake_signature,
-    verify_handshake_token,
-)
+from supernote.server.services.user import UserService
+from supernote.server.socket_auth import verify_handshake_signature
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +45,9 @@ def _extract_handshake_params(environ: dict) -> SocketHandshakeParams:
 class SocketIOServerManager:
     """Manages the Socket.IO server lifecycle, authentication, session rooms, and message delivery."""
 
-    def __init__(self, config: ServerConfig) -> None:
+    def __init__(self, config: ServerConfig, user_service: UserService) -> None:
         self.config = config
+        self.user_service = user_service
         self._sio = socketio.AsyncServer(
             async_mode="aiohttp",
             cors_allowed_origins="*",
@@ -57,6 +56,7 @@ class SocketIOServerManager:
             engineio_logger=False,
         )
         self._sid_to_user: dict[str, str] = {}
+        self._sid_to_token: dict[str, str] = {}
         self._setup_handlers()
 
     @property
@@ -81,11 +81,29 @@ class SocketIOServerManager:
             to=sid,
         )
 
+    async def _verify_active_session(self, sid: str) -> bool:
+        """Verify that a connected Socket.IO session still holds an active token."""
+        token = self._sid_to_token.get(sid)
+        if token and await self.user_service.verify_token(token):
+            return True
+
+        user_id = self._sid_to_user.pop(sid, None)
+        self._sid_to_token.pop(sid, None)
+        logger.warning(
+            "Socket.IO session no longer valid for user=%s (sid=%s); disconnecting",
+            user_id,
+            sid,
+        )
+        if user_id:
+            await self._sio.leave_room(sid, f"user_{user_id}")
+        await self._send_error(sid, HTTPStatus.FORBIDDEN, "token verification failed")
+        await self._sio.disconnect(sid)
+        return False
+
     def _setup_handlers(self) -> None:
         @self._sio.event
         async def connect(sid: str, environ: dict) -> bool:
             params = _extract_handshake_params(environ)
-            secret_key = self.config.auth.secret_key
 
             # Verify handshake signature
             if not verify_handshake_signature(params):
@@ -97,9 +115,9 @@ class SocketIOServerManager:
                 )
                 return False
 
-            # Verify JWT authentication token
-            user_id = verify_handshake_token(params.token, secret_key)
-            if not user_id:
+            # Verify stateful session token
+            session = await self.user_service.verify_token(params.token)
+            if not session:
                 logger.error("Socket.IO connect rejected: invalid token (sid=%s)", sid)
                 await self._send_error(
                     sid, HTTPStatus.FORBIDDEN, "token verification failed"
@@ -107,7 +125,9 @@ class SocketIOServerManager:
                 return False
 
             # Associate session ID with user_id and join user room
+            user_id = session.email
             self._sid_to_user[sid] = user_id
+            self._sid_to_token[sid] = params.token
             user_room = f"user_{user_id}"
             await self._sio.enter_room(sid, user_room)
             logger.info(
@@ -121,10 +141,14 @@ class SocketIOServerManager:
         @self._sio.event
         async def disconnect(sid: str) -> None:
             user_id = self._sid_to_user.pop(sid, None)
+            self._sid_to_token.pop(sid, None)
             logger.info("Socket.IO disconnected for user=%s (sid=%s)", user_id, sid)
 
         @self._sio.on(SocketIoEvent.CLIENT_MESSAGE.value)
         async def on_client_message(sid: str, data: str) -> None:
+            if not await self._verify_active_session(sid):
+                return
+
             user_id = self._sid_to_user.get(sid)
             logger.debug(
                 "Received ClientMessage from user=%s (sid=%s): %s", user_id, sid, data
@@ -143,6 +167,9 @@ class SocketIOServerManager:
 
         @self._sio.on(SocketIoEvent.RATTA_PING.value)
         async def on_ratta_ping(sid: str, data: str) -> None:
+            if not await self._verify_active_session(sid):
+                return
+
             user_id = self._sid_to_user.get(sid)
             logger.debug(
                 "Received ratta_ping from user=%s (sid=%s): %s", user_id, sid, data
@@ -160,6 +187,10 @@ class SocketIOServerManager:
             user_id: Target user email or identifier.
             message: SocketMessageData payload to deliver.
         """
+        sids = [sid for sid, uid in list(self._sid_to_user.items()) if uid == user_id]
+        for sid in sids:
+            await self._verify_active_session(sid)
+
         user_room = f"user_{user_id}"
         payload_str = message.to_json()
         logger.debug("Emitting ServerMessage to room=%s: %s", user_room, payload_str)
@@ -170,16 +201,19 @@ class SocketIOServerManager:
         )
 
 
-def setup_socketio(app: web.Application, config: ServerConfig) -> SocketIOServerManager:
+def setup_socketio(
+    app: web.Application, config: ServerConfig, user_service: UserService
+) -> SocketIOServerManager:
     """Initialize and attach Socket.IO server manager to an aiohttp Application.
 
     Args:
         app: The aiohttp web Application.
         config: The server configuration instance.
+        user_service: The user authentication and session service.
 
     Returns:
         The configured SocketIOServerManager instance.
     """
-    manager = SocketIOServerManager(config)
+    manager = SocketIOServerManager(config, user_service)
     manager.attach_to_app(app)
     return manager

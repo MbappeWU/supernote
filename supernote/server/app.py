@@ -418,7 +418,7 @@ def create_app(config: ServerConfig) -> web.Application:
     app.add_routes(extended.routes)
 
     # Attach Socket.IO real-time server manager
-    setup_socketio(app, config)
+    setup_socketio(app, config, user_service)
 
     # Serve static frontend files
     static_path = Path(str(importlib.resources.files("supernote.server") / "static"))
