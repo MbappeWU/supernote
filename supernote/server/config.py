@@ -4,6 +4,7 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 from mashumaro.config import TO_DICT_ADD_OMIT_NONE_FLAG, BaseConfig
 from mashumaro.mixins.yaml import DataClassYAMLMixin
@@ -71,6 +72,13 @@ class WebhookEndpointConfig(DataClassYAMLMixin):
 
     If empty (the default), the endpoint receives every event.
     """
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(
+                f"Webhook endpoint URL must use http or https scheme with a valid host: {self.url!r}"
+            )
 
     class Config(BaseConfig):
         omit_none = True
