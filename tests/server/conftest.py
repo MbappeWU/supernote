@@ -300,9 +300,14 @@ def user_service(
     server_config: ServerConfig,
     coordination_service: SqliteCoordinationService,
     session_manager: DatabaseSessionManager,
-) -> UserService:
-    """Provides a UserService instance for testing."""
-    return UserService(server_config.auth, coordination_service, session_manager)
+) -> Generator[UserService]:
+    """Provides a shared UserService instance for testing."""
+    service = UserService(server_config.auth, coordination_service, session_manager)
+    with patch(
+        "supernote.server.app.create_user_service",
+        return_value=service,
+    ):
+        yield service
 
 
 @pytest.fixture(name="client")
@@ -311,6 +316,7 @@ async def client_fixture(
     server_config: ServerConfig,
     session_manager: DatabaseSessionManager,
     coordination_service: SqliteCoordinationService,
+    user_service: UserService,
 ) -> TestClient:
     """Create a test client for server tests."""
     app = create_app(server_config)

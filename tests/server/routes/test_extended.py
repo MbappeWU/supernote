@@ -15,6 +15,7 @@ from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import SupernoteError
+from supernote.server.services.user import UserService
 
 
 @pytest.fixture
@@ -272,7 +273,9 @@ async def test_file_processing_status(
 
 
 async def test_extended_search_invalid_dto_and_errors(
-    client: TestClient, extended_client: ExtendedClient
+    client: TestClient,
+    extended_client: ExtendedClient,
+    user_service: UserService,
 ) -> None:
     # Invalid DTO
     with pytest.raises(ApiException):
@@ -283,7 +286,7 @@ async def test_extended_search_invalid_dto_and_errors(
 
     # User not found
     with (
-        patch.object(client.app["user_service"], "get_user_id", return_value=None),
+        patch.object(user_service, "get_user_id", return_value=None),
         pytest.raises(ApiException),
     ):
         await extended_client.search(query="test")
@@ -301,7 +304,9 @@ async def test_extended_search_invalid_dto_and_errors(
 
 
 async def test_extended_transcript_invalid_dto_and_errors(
-    client: TestClient, extended_client: ExtendedClient
+    client: TestClient,
+    extended_client: ExtendedClient,
+    user_service: UserService,
 ) -> None:
     # Invalid DTO
     with pytest.raises(ApiException):
@@ -312,7 +317,7 @@ async def test_extended_transcript_invalid_dto_and_errors(
 
     # User not found
     with (
-        patch.object(client.app["user_service"], "get_user_id", return_value=None),
+        patch.object(user_service, "get_user_id", return_value=None),
         pytest.raises(ApiException),
     ):
         await extended_client.get_transcript(file_id=101)
