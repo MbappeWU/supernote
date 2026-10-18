@@ -42,6 +42,7 @@ EVENT_HEADER = "X-Supernote-Event"
 REQUEST_TIMEOUT_SECONDS = 10.0
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 1.0
+MAX_CONCURRENT_REQUESTS = 5
 
 
 def sign_payload(secret: str, body: bytes) -> str:
@@ -65,15 +66,23 @@ def verify_signature(secret: str, body: bytes, signature_header: str) -> bool:
 class WebhookService:
     """Dispatches signed outbound webhook notifications for subscribed events."""
 
-    def __init__(self, config: WebhookConfig, event_bus: LocalEventBus) -> None:
+    def __init__(
+        self,
+        config: WebhookConfig,
+        event_bus: LocalEventBus,
+        max_concurrency: int = MAX_CONCURRENT_REQUESTS,
+    ) -> None:
         self.config = config
         self.event_bus = event_bus
+        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._session: aiohttp.ClientSession | None = None
 
     def start(self) -> None:
         """Subscribe to the events that can trigger webhook dispatch."""
         if not self.config.enabled or not self.config.endpoints:
             logger.debug("Webhook dispatch disabled or no endpoints configured.")
             return
+        self._session = aiohttp.ClientSession()
         self.event_bus.subscribe(NoteUpdatedEvent, self._handle_note_updated)
         self.event_bus.subscribe(
             NoteProcessingCompletedEvent, self._handle_note_processing_completed
@@ -81,6 +90,12 @@ class WebhookService:
         logger.info(
             f"WebhookService started with {len(self.config.endpoints)} endpoint(s)."
         )
+
+    async def stop(self) -> None:
+        """Close the shared HTTP client session."""
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
     async def _handle_note_updated(self, event: Event) -> None:
         """Translate a NoteUpdatedEvent into a note.sync_completed webhook."""
@@ -157,18 +172,23 @@ class WebhookService:
         up to MAX_ATTEMPTS with a linear backoff. All failures are logged
         (without the secret or signature) and swallowed.
         """
+        if self._session is None:
+            raise RuntimeError("WebhookService is not started")
+
         headers = {"Content-Type": "application/json", EVENT_HEADER: event_name}
         if endpoint.secret:
             headers[SIGNATURE_HEADER] = sign_payload(endpoint.secret, body)
 
         timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        session = self._session
+        async with self._semaphore:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
                     async with session.post(
                         endpoint.url,
                         data=body,
                         headers=headers,
+                        timeout=timeout,
                         allow_redirects=False,
                     ) as response:
                         if 200 <= response.status < 300:
