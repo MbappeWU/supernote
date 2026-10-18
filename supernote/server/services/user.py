@@ -119,16 +119,32 @@ class UserService:
             self._session_key(user_id, equipment_no, token)
         )
 
+    @staticmethod
+    def _to_user_vo(user: UserDO) -> UserVO:
+        """Convert a UserDO database record to a UserVO API model."""
+        return UserVO(
+            user_id=user.id,
+            user_name=user.display_name or user.email,
+            email=user.email,
+            phone=user.phone or "",
+            total_capacity=user.total_capacity,
+            file_server="",
+            avatars_url=user.avatar or "",
+            birthday="",
+            sex="",
+        )
+
     async def list_users(self) -> list[UserDO]:
         async with self._session_manager.session() as session:
             result = await session.execute(select(UserDO))
             return list(result.scalars().all())
 
+    async def list_user_profiles(self) -> list[UserVO]:
+        """List all users as UserVO profile models."""
+        return [self._to_user_vo(u) for u in await self.list_users()]
+
     async def check_user_exists(self, account: str) -> bool:
-        async with self._session_manager.session() as session:
-            stmt = select(UserDO).where(UserDO.email == account)
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none() is not None
+        return (await self.get_user_by_email(account)) is not None
 
     async def _create_user_entry(
         self, session: AsyncSession, dto: UserRegisterDTO, is_admin: bool = False
@@ -256,12 +272,6 @@ class UserService:
 
         return random_code, timestamp
 
-    async def _get_user_do(self, account: str) -> UserDO | None:
-        async with self._session_manager.session() as session:
-            stmt = select(UserDO).where(UserDO.email == account)
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none()
-
     async def _get_user_by_id(self, user_id: int) -> UserDO | None:
         async with self._session_manager.session() as session:
             stmt = select(UserDO).where(UserDO.id == user_id)
@@ -270,22 +280,25 @@ class UserService:
 
     async def get_user_by_email(self, account: str) -> UserDO | None:
         """Get a user by their email address."""
-        return await self._get_user_do(account)
+        async with self._session_manager.session() as session:
+            stmt = select(UserDO).where(UserDO.email == account)
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
 
     async def get_user_id(self, account: str) -> int:
-        user = await self._get_user_do(account)
+        user = await self.get_user_by_email(account)
         if user:
             return user.id
         raise ValueError(f"User {account} not found")
 
-    async def verify_login_hash(
-        self, account: str, client_hash: str, timestamp: str
+    async def _verify_login_hash(
+        self,
+        account: str,
+        password_md5: str,
+        client_hash: str,
+        timestamp: str,
     ) -> bool:
         if not timestamp:
-            return False
-
-        user = await self._get_user_do(account)
-        if not user or not user.is_active:
             return False
 
         random_code = await self._coordination_service.pop_value(
@@ -294,7 +307,7 @@ class UserService:
         if not random_code:
             return False
 
-        expected_hash = hash_with_salt(user.password_md5, random_code)
+        expected_hash = hash_with_salt(password_md5, random_code)
         return hmac.compare_digest(expected_hash, client_hash)
 
     async def login(
@@ -307,12 +320,14 @@ class UserService:
         ip: str | None = None,
         login_method: str | None = None,
     ) -> LoginVO | None:
-        user = await self._get_user_do(account)
+        user = await self.get_user_by_email(account)
         if not user or not user.is_active:
             logger.debug("User %s not found or not active", account)
             return None
 
-        if not await self.verify_login_hash(account, password_hash, timestamp):
+        if not await self._verify_login_hash(
+            account, user.password_md5, password_hash, timestamp
+        ):
             logger.debug("Invalid login hash for user %s", account)
             return None
 
@@ -342,8 +357,8 @@ class UserService:
             session.add(record)
             await session.commit()
 
-        token = await self.create_session(
-            account=user.email,
+        token = await self._create_session_for_user(
+            user=user,
             equipment_no=equipment_no,
             equipment=equipment,
         )
@@ -363,10 +378,17 @@ class UserService:
         equipment: Equipment = Equipment.WEB,
     ) -> str:
         """Create and persist a new authenticated session token for an active account."""
-        user = await self._get_user_do(account)
+        user = await self.get_user_by_email(account)
         if not user or not user.is_active:
             raise ValueError(f"Active user {account} not found")
+        return await self._create_session_for_user(user, equipment_no, equipment)
 
+    async def _create_session_for_user(
+        self,
+        user: UserDO,
+        equipment_no: str | None = None,
+        equipment: Equipment = Equipment.WEB,
+    ) -> str:
         if equipment in (Equipment.TERMINAL, Equipment.APP):
             ttl = self._config.device_expiration_hours * 3600
         else:
@@ -450,27 +472,16 @@ class UserService:
         return session_state
 
     async def get_user_profile(self, account: str) -> UserVO | None:
-        user = await self._get_user_do(account)
+        user = await self.get_user_by_email(account)
         if not user:
             return None
+        return self._to_user_vo(user)
 
-        return UserVO(
-            user_id=user.id,
-            user_name=user.display_name or account,
-            email=user.email or account,
-            phone=user.phone or "",
-            total_capacity=user.total_capacity,
-            file_server="",
-            avatars_url=user.avatar or "",
-            birthday="",
-            sex="",
-        )
-
-    async def bind_equipment(self, account: str, equipment_no: str) -> bool:
+    async def bind_equipment(self, account: str, equipment_no: str) -> None:
         """Bind a device to the user."""
-        user = await self._get_user_do(account)
+        user = await self.get_user_by_email(account)
         if not user:
-            return False
+            return
 
         async with self._session_manager.session() as session:
             # Upsert
@@ -487,9 +498,8 @@ class UserService:
             else:
                 session.add(DeviceDO(user_id=user.id, equipment_no=equipment_no))
             await session.commit()
-            return True
 
-    async def unlink_equipment(self, equipment_no: str) -> bool:
+    async def unlink_equipment(self, equipment_no: str) -> None:
         """Unlink a device and revoke its sessions."""
         async with self._session_manager.session() as session:
             existing = await session.execute(
@@ -503,9 +513,8 @@ class UserService:
 
         for uid in user_ids:
             await self.revoke_equipment_sessions(uid, equipment_no)
-        return True
 
-    async def update_password(self, account: str, dto: UpdatePasswordDTO) -> bool:
+    async def update_password(self, account: str, dto: UpdatePasswordDTO) -> None:
         """Update user password and revoke active sessions."""
         if not re.match(MD5_REGEX, dto.password):
             raise ValueError("Invalid password format, must be md5 hash")
@@ -522,9 +531,8 @@ class UserService:
             await session.commit()
 
         await self.revoke_user_sessions(user_id)
-        return True
 
-    async def update_email(self, account: str, dto: UpdateEmailDTO) -> bool:
+    async def update_email(self, account: str, dto: UpdateEmailDTO) -> None:
         """Update user email and revoke active sessions bound to the old email."""
         if not re.match(EMAIL_REGEX, dto.email):
             raise ValueError("Invalid email address format")
@@ -553,7 +561,6 @@ class UserService:
                 raise ValueError("Email already registered") from err
 
         await self.revoke_user_sessions(user_id)
-        return True
 
     async def admin_reset_password(self, email: str, password_md5: str) -> None:
         """Force reset user password (Admin only) and revoke active sessions."""
@@ -602,7 +609,7 @@ class UserService:
         self, account: str, page: int, size: int
     ) -> tuple[list[LoginRecordVO], int]:
         """Query login records."""
-        user = await self._get_user_do(account)
+        user = await self.get_user_by_email(account)
         if not user:
             return [], 0
 

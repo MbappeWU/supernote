@@ -493,3 +493,22 @@ async def test_session_adversarial_edge_cases(
         email, hashlib.md5(b"newadminpw").hexdigest()
     )
     assert await user_service.verify_token(tok_before_admin_reset) is None
+
+
+async def test_user_profiles(user_service: UserService) -> None:
+    """Verify get_user_profile and list_user_profiles map UserDO to UserVO."""
+    pw_md5 = hashlib.md5(b"password123").hexdigest()
+    await user_service.register(
+        UserRegisterDTO(email="profile@example.com", password=pw_md5, user_name="Prof")
+    )
+
+    assert await user_service.get_user_profile("missing@example.com") is None
+    profile = await user_service.get_user_profile("profile@example.com")
+    assert profile is not None
+    assert profile.email == "profile@example.com"
+    assert profile.user_name == "Prof"
+
+    profiles = await user_service.list_user_profiles()
+    assert any(
+        p.email == "profile@example.com" and p.user_name == "Prof" for p in profiles
+    )
