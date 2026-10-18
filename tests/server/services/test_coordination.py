@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 
 import freezegun
@@ -90,3 +91,24 @@ async def test_delete_by_prefix(
     await coordination_service.delete_by_prefix("session:1:")
     assert await coordination_service.get_value("session:1:EQ2:tok2") is None
     assert await coordination_service.get_value("session:2:EQ1:tok3") == "v3"
+
+
+async def test_pop_value_atomic_and_expiry(
+    coordination_service: SqliteCoordinationService,
+) -> None:
+    """Verify pop_value atomically consumes a key once and respects TTL expiry."""
+    assert await coordination_service.pop_value("missing") is None
+
+    await coordination_service.set_value("nonce:1", "secret", ttl=60)
+    results = await asyncio.gather(
+        *[coordination_service.pop_value("nonce:1") for _ in range(10)]
+    )
+    assert results.count("secret") == 1
+    assert results.count(None) == 9
+    assert await coordination_service.get_value("nonce:1") is None
+
+    with freezegun.freeze_time("2024-01-01 12:00:00"):
+        await coordination_service.set_value("nonce:expired", "old", ttl=10)
+
+    with freezegun.freeze_time("2024-01-01 12:00:15"):
+        assert await coordination_service.pop_value("nonce:expired") is None
