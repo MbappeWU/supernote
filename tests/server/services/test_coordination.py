@@ -3,7 +3,9 @@ from collections.abc import AsyncGenerator
 
 import freezegun
 import pytest
+from sqlalchemy import select
 
+from supernote.server.db.models.kv import KeyValueDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.coordination import (
     CoordinationService,
@@ -112,3 +114,22 @@ async def test_pop_value_atomic_and_expiry(
 
     with freezegun.freeze_time("2024-01-01 12:00:15"):
         assert await coordination_service.pop_value("nonce:expired") is None
+
+
+async def test_set_value_prunes_expired_keys(
+    coordination_service: SqliteCoordinationService,
+) -> None:
+    """Verify set_value removes expired rows from key_values even if never read."""
+    with freezegun.freeze_time("2024-01-01 12:00:00"):
+        await coordination_service.set_value("abandoned:1", "v1", ttl=10)
+        await coordination_service.set_value("active:1", "v2", ttl=100)
+
+    with freezegun.freeze_time("2024-01-01 12:00:20"):
+        await coordination_service.set_value("active:2", "v3", ttl=100)
+
+    async with coordination_service._session_manager.session() as session:
+        result = await session.execute(select(KeyValueDO.key))
+        keys = set(result.scalars().all())
+
+    assert "abandoned:1" not in keys
+    assert keys >= {"active:1", "active:2"}
