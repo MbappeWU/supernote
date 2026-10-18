@@ -429,3 +429,64 @@ async def test_list_notebooks(
 
     limited = await search_service.list_notebooks(user_id=user_id, limit=1)
     assert [n.file_id for n in limited] == [102]
+
+
+async def test_search_chunks_skips_zero_norm_and_corrupt_embeddings(
+    search_service: SearchService,
+    session_manager: DatabaseSessionManager,
+    mock_gemini_service: MagicMock,
+) -> None:
+    user_id = 1
+    file_id = 101
+
+    async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=file_id, user_id=user_id, file_name="Journal.note", directory_id=0
+            )
+        )
+        session.add_all(
+            [
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=0,
+                    page_id="p0",
+                    text_content="Zero norm page",
+                    embedding=json.dumps([0.0, 0.0]),
+                ),
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=1,
+                    page_id="p1",
+                    text_content="Corrupt JSON page",
+                    embedding="not-valid-json",
+                ),
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=2,
+                    page_id="p2",
+                    text_content="Valid page",
+                    embedding=json.dumps([1.0, 0.0]),
+                ),
+            ]
+        )
+        await session.commit()
+
+    # Valid query embedding returns only the valid candidate without NaN scores
+    mock_response = MagicMock()
+    mock_embedding = MagicMock()
+    mock_embedding.values = [1.0, 0.0]
+    mock_response.embeddings = [mock_embedding]
+    mock_gemini_service.embed_content.return_value = mock_response
+
+    results = await search_service.search_chunks(
+        user_id=user_id, query="valid", top_n=5
+    )
+    assert len(results) == 1
+    assert results[0].page_index == 2
+
+    # Zero-norm query embedding returns empty list
+    mock_embedding.values = [0.0, 0.0]
+    assert (
+        await search_service.search_chunks(user_id=user_id, query="zero", top_n=5) == []
+    )

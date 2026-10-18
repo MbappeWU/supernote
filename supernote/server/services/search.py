@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -33,6 +35,75 @@ class NotebookInfo:
     file_name: str
     create_time: int
     update_time: int
+
+
+def _rank_candidates(
+    query_embedding: np.ndarray,
+    candidates: Sequence[tuple[NotePageContentDO, str]],
+    top_n: int,
+    after_dt: datetime | None,
+    before_dt: datetime | None,
+) -> list[SearchResult]:
+    """Decode candidate embeddings, compute cosine similarity, and return top_n results."""
+    query_norm = float(np.linalg.norm(query_embedding))
+    if query_norm == 0.0:
+        return []
+
+    results: list[SearchResult] = []
+    for content_do, file_name in candidates:
+        if not content_do.embedding:
+            continue
+
+        # Date Inference (Phase 2)
+        page_date = infer_page_date(content_do.page_id)
+
+        # Date Filtering (Inferred)
+        # TODO: In the future we can replace this with LLM based date filtering
+        if after_dt and (not page_date or page_date < after_dt):
+            continue
+        if before_dt and (not page_date or page_date > before_dt):
+            continue
+
+        try:
+            embedding_list = json.loads(content_do.embedding)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"Failed to decode embedding JSON for result {content_do.id}: {e}"
+            )
+            continue
+
+        try:
+            candidate_embedding = np.array(embedding_list)
+            candidate_norm = float(np.linalg.norm(candidate_embedding))
+            if candidate_norm == 0.0:
+                continue
+
+            # Cosine Similarity
+            score = np.dot(query_embedding, candidate_embedding) / (
+                query_norm * candidate_norm
+            )
+
+            results.append(
+                SearchResult(
+                    file_id=content_do.file_id,
+                    file_name=file_name,
+                    page_index=content_do.page_index,
+                    page_id=content_do.page_id,
+                    score=float(score),
+                    text_preview=content_do.text_content[:200]
+                    if content_do.text_content
+                    else "",
+                    date=page_date.strftime("%Y-%m-%d") if page_date else None,
+                )
+            )
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                f"Failed to process embedding math for result {content_do.id}: {e}"
+            )
+            continue
+
+    results.sort(key=lambda x: x.score, reverse=True)
+    return results[:top_n]
 
 
 class SearchService:
@@ -132,8 +203,6 @@ class SearchService:
             logger.error(f"Failed to fetch or process query embedding: {e}")
             return []
 
-        query_norm = np.linalg.norm(query_embedding)
-
         # 2. Fetch Candidates
         async with self.session_manager.session() as session:
             # Metadata-based page filtering (Phase 2)
@@ -156,60 +225,15 @@ class SearchService:
         if not candidates:
             return []
 
-        # 3. Calculate Similarity
-        results = []
-        for content_do, file_name in candidates:
-            if not content_do.embedding:
-                continue
-
-            try:
-                embedding_list = json.loads(content_do.embedding)
-            except json.JSONDecodeError as e:
-                logger.warning(
-                    f"Failed to decode embedding JSON for result {content_do.id}: {e}"
-                )
-                continue
-
-            try:
-                candidate_embedding = np.array(embedding_list)
-
-                # Cosine Similarity
-                score = np.dot(query_embedding, candidate_embedding) / (
-                    query_norm * np.linalg.norm(candidate_embedding)
-                )
-
-                # Date Inference (Phase 2)
-                page_date = infer_page_date(content_do.page_id)
-
-                # Date Filtering (Inferred)
-                # TODO: In the future we can replace this with LLM based date filtering
-                if after_dt and (not page_date or page_date < after_dt):
-                    continue
-                if before_dt and (not page_date or page_date > before_dt):
-                    continue
-
-                results.append(
-                    SearchResult(
-                        file_id=content_do.file_id,
-                        file_name=file_name,
-                        page_index=content_do.page_index,
-                        page_id=content_do.page_id,
-                        score=float(score),
-                        text_preview=content_do.text_content[:200]
-                        if content_do.text_content
-                        else "",
-                        date=page_date.strftime("%Y-%m-%d") if page_date else None,
-                    )
-                )
-            except (ValueError, TypeError) as e:
-                logger.warning(
-                    f"Failed to process embedding math for result {content_do.id}: {e}"
-                )
-                continue
-
-        # 4. Rank and Limit
-        results.sort(key=lambda x: x.score, reverse=True)
-        return results[:top_n]
+        # 3. Calculate Similarity and Rank off the event loop
+        return await asyncio.to_thread(
+            _rank_candidates,
+            query_embedding,
+            [tuple(row) for row in candidates],
+            top_n,
+            after_dt,
+            before_dt,
+        )
 
     async def get_transcript(
         self,
