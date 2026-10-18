@@ -16,6 +16,7 @@ import time
 from pathlib import PurePosixPath
 
 import aiohttp
+from yarl import URL
 
 from supernote.models.webhook import (
     EVENT_NOTE_PROCESSING_COMPLETED,
@@ -61,6 +62,22 @@ def verify_signature(secret: str, body: bytes, signature_header: str) -> bool:
         return False
     expected = sign_payload(secret, body)
     return hmac.compare_digest(expected, signature_header)
+
+
+def _redact_url(raw_url: str) -> str:
+    """Strip credentials, query parameters, and fragments from a URL before logging."""
+    try:
+        parsed = URL(raw_url)
+        if not parsed.scheme or not parsed.host:
+            return "<invalid-url>"
+        return str(
+            parsed.with_user(None)
+            .with_password(None)
+            .with_query(None)
+            .with_fragment(None)
+        )
+    except ValueError:
+        return "<invalid-url>"
 
 
 class WebhookService:
@@ -154,8 +171,9 @@ class WebhookService:
         )
         for endpoint, result in zip(endpoints, results, strict=True):
             if isinstance(result, BaseException):
+                safe_url = _redact_url(endpoint.url)
                 logger.error(
-                    f"Webhook {event_name} to {endpoint.url} raised "
+                    f"Webhook {event_name} to {safe_url} raised "
                     f"{type(result).__name__}: {result}"
                 )
 
@@ -170,7 +188,8 @@ class WebhookService:
         Redirects (3xx) are not followed and client errors (4xx) are not
         retried. Network errors, timeouts, and server errors (5xx) are retried
         up to MAX_ATTEMPTS with a linear backoff. All failures are logged
-        (without the secret or signature) and swallowed.
+        (without the secret, signature, or URL credentials/query parameters)
+        and swallowed.
         """
         if self._session is None:
             raise RuntimeError("WebhookService is not started")
@@ -179,6 +198,7 @@ class WebhookService:
         if endpoint.secret:
             headers[SIGNATURE_HEADER] = sign_payload(endpoint.secret, body)
 
+        safe_url = _redact_url(endpoint.url)
         timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
         session = self._session
         async with self._semaphore:
@@ -195,17 +215,17 @@ class WebhookService:
                             return
                         if response.status < 500:
                             logger.warning(
-                                f"Webhook {event_name} to {endpoint.url} rejected "
+                                f"Webhook {event_name} to {safe_url} rejected "
                                 f"with status {response.status}; not retrying."
                             )
                             return
                         logger.warning(
-                            f"Webhook {event_name} to {endpoint.url} failed with "
+                            f"Webhook {event_name} to {safe_url} failed with "
                             f"status {response.status} (attempt {attempt}/{MAX_ATTEMPTS})."
                         )
                 except (aiohttp.ClientError, TimeoutError) as e:
                     logger.warning(
-                        f"Webhook {event_name} to {endpoint.url} failed: "
+                        f"Webhook {event_name} to {safe_url} failed: "
                         f"{type(e).__name__} (attempt {attempt}/{MAX_ATTEMPTS})."
                     )
 
@@ -213,6 +233,6 @@ class WebhookService:
                     await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
         logger.error(
-            f"Webhook {event_name} to {endpoint.url} failed after "
+            f"Webhook {event_name} to {safe_url} failed after "
             f"{MAX_ATTEMPTS} attempts; giving up."
         )

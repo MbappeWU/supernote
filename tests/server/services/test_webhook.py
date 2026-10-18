@@ -485,3 +485,52 @@ async def test_dispatch_bounds_concurrent_requests_via_semaphore(
         assert max_active == 2
     finally:
         await service.stop()
+
+
+async def test_dispatch_redacts_url_credentials_and_query_params_in_logs(
+    webhook_receiver: WebhookReceiver, caplog: pytest.LogCaptureFixture
+) -> None:
+    webhook_receiver.queue_responses(403, 500, 500, 500)
+    url_with_secrets = (
+        webhook_receiver.url.replace("http://", "http://hook-user:hook-password@")
+        + "?token=secret-query-token#secret-fragment"
+    )
+    endpoint_4xx = _endpoint(url_with_secrets)
+    endpoint_5xx = _endpoint(url_with_secrets)
+    config = WebhookConfig(enabled=True, endpoints=[endpoint_4xx, endpoint_5xx])
+
+    async with _running_service(config) as service:
+        with caplog.at_level("WARNING"):
+            await service.dispatch(_sample_payload())
+
+    assert "hook-user" not in caplog.text
+    assert "hook-password" not in caplog.text
+    assert "secret-query-token" not in caplog.text
+    assert "secret-fragment" not in caplog.text
+    assert webhook_receiver.url in caplog.text
+
+
+async def test_dispatch_redacts_url_secrets_on_unexpected_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = WebhookConfig(
+        enabled=True,
+        endpoints=[
+            WebhookEndpointConfig(
+                url="https://api-user:api-pass@example.invalid/hook?api_key=top-secret-key",
+                secret="test-secret",
+                events=[EVENT_NOTE_SYNC_COMPLETED],
+            ),
+        ],
+    )
+    async with _running_service(config) as service:
+        with patch(
+            "supernote.server.services.webhook.sign_payload",
+            side_effect=RuntimeError("unexpected signing failure"),
+        ):
+            await service.dispatch(_sample_payload())
+
+    assert "api-user" not in caplog.text
+    assert "api-pass" not in caplog.text
+    assert "top-secret-key" not in caplog.text
+    assert "https://example.invalid/hook" in caplog.text
