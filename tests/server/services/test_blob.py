@@ -174,3 +174,41 @@ async def test_get_range_large(tmp_path: Path) -> None:
     data = b"".join(chunks)
     assert len(data) == 5
     assert data == b"xxyyy"
+
+
+@pytest.mark.parametrize(
+    ("bucket", "key"),
+    [
+        ("..", "valid-key"),
+        (".", "valid-key"),
+        ("", "valid-key"),
+        ("test-bucket", ".."),
+        ("test-bucket", "."),
+        ("test-bucket", ""),
+        ("test-bucket", "foo/.."),
+    ],
+)
+async def test_invalid_blob_path_rejected(
+    tmp_path: Path, bucket: str, key: str
+) -> None:
+    """Verify invalid bucket or key names that do not resolve within the bucket dir raise ValueError."""
+    storage = LocalBlobStorage(tmp_path)
+
+    with pytest.raises(ValueError, match="Invalid blob path"):
+        storage.get_blob_path(bucket, key)
+
+    with pytest.raises(ValueError, match="Invalid blob path"):
+        await storage.put(bucket, key, b"data")
+
+
+async def test_storage_root_containment(tmp_path: Path) -> None:
+    """Verify resolved blob paths are strictly contained within the storage root."""
+    storage = LocalBlobStorage(tmp_path)
+    bucket = "secure-bucket"
+    key = "normal-key-abc"
+
+    await storage.put(bucket, key, b"safe content")
+    blob_path = storage.get_blob_path(bucket, key)
+
+    assert blob_path.is_file()
+    assert blob_path.is_relative_to(tmp_path.resolve())

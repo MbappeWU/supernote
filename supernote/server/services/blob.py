@@ -76,7 +76,7 @@ class LocalBlobStorage(BlobStorage):
 
     def __init__(self, storage_root: Path) -> None:
         """Create a local blob storage instance."""
-        self.root = storage_root
+        self.root = storage_root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _get_path(self, bucket: str, key: str) -> Path:
@@ -85,7 +85,13 @@ class LocalBlobStorage(BlobStorage):
         clean_bucket = Path(bucket).name
         clean_key = Path(key).name
         prefix = clean_key[:2] if len(clean_key) >= 2 else "misc"
-        return self.root / clean_bucket / prefix / clean_key
+        blob_path = (self.root / clean_bucket / prefix / clean_key).resolve()
+        if (
+            not blob_path.is_relative_to(self.root)
+            or len(blob_path.relative_to(self.root).parts) != 3
+        ):
+            raise ValueError(f"Invalid blob path: {bucket}/{key}")
+        return blob_path
 
     async def put(
         self, bucket: str, key: str, stream: AsyncGenerator[bytes] | bytes
