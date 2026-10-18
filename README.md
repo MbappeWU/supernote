@@ -149,6 +149,7 @@ You can access the insights from the MCP server at `http://<your ip:port>/mcp`
 - **Notebook Parsing**: Native, high-fidelity conversion of `.note` files to PDF, PNG, SVG, or plain text.
 - **Developer API**: Modern `asyncio` client to build your own automation around Supernote data.
 - **iCalendar Feed Export (.ics)**: Preview, copy, and download task feeds in RFC 5545 VTODO `.ics` format for Home Assistant, Apple Calendar, Google Calendar, and Outlook.
+- **Outbound Webhooks**: Send HMAC-SHA256 signed HTTP POST notifications to Home Assistant, n8n, or Zapier when notes finish syncing.
 - **Observability**: Built-in request tracing and background task monitoring.
 
 <p align="center">
@@ -278,6 +279,45 @@ The server dynamically routes prompts based on the notebook's file name:
 2.  The server looks under the `ocr/` and `summary/` directories for a subfolder matching that stem (e.g., `daily/` or `weekly_review/`).
 3.  If found, the templates inside that custom folder are loaded. If not found, it falls back to the `default/` templates.
 4.  Templates found in the `common/` folder are always concatenated first.
+
+## Outbound Webhooks
+
+You can configure the server to send non-blocking HTTP `POST` notifications to external automation services (such as Home Assistant, n8n, or Zapier) when events occur.
+
+### 1. Configuration (`config.yaml`)
+
+```yaml
+webhooks:
+  enabled: true
+  endpoints:
+    - url: "https://n8n.homelab.local/webhook/supernote"
+      secret: "CHANGE_ME_TO_A_SECURE_RANDOM_STRING"
+      events:
+        - "note.sync_completed"
+```
+
+*   `SUPERNOTE_WEBHOOKS_ENABLED`: Environment variable override for `webhooks.enabled` (`true` / `false`).
+*   `events`: List of event names to subscribe to. If omitted or empty, the endpoint receives all events.
+*   `secret`: Optional shared secret used to sign the raw JSON request body with HMAC-SHA256.
+
+### 2. Request Headers & Payload Format
+
+Each webhook `POST` includes:
+*   `Content-Type: application/json`
+*   `X-Supernote-Event`: The event name (e.g., `note.sync_completed`).
+*   `X-Supernote-Signature`: Present when `secret` is configured, formatted as `sha256=<hex_digest>` over the raw request body.
+
+Example `note.sync_completed` payload:
+```json
+{
+  "event": "note.sync_completed",
+  "timestamp": 1785734400,
+  "file": {
+    "id": 42,
+    "path": "Note/Daily/2026-08-04.note"
+  }
+}
+```
 
 ## Contributing
 

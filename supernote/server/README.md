@@ -7,6 +7,7 @@ This package provides a self-hosted implementation of the Supernote Cloud server
 -   **Seamless Sync**: Implements the native Supernote sync protocol.
 -   **AI Synthesis**: Automatically transcribes handwriting and identifies key insights using Google Gemini.
 -   **Knowledge Exploration**: Cross-notebook semantic search and web-based file browsing.
+-   **Outbound Webhooks**: Sends HMAC-SHA256 signed HTTP POST notifications on note sync events.
 -   **Private & Local**: Store your notes and metadata on your own infrastructure.
 
 ## Getting Started
@@ -30,6 +31,19 @@ To enable AI features, set the Gemini API key:
 ```bash
 export SUPERNOTE_GEMINI_API_KEY="your-api-key"
 ```
+
+#### Outbound Webhooks
+Configure external webhook receivers in `config/config.yaml` (or enable via `SUPERNOTE_WEBHOOKS_ENABLED=true`):
+```yaml
+webhooks:
+  enabled: true
+  endpoints:
+    - url: "https://n8n.homelab.local/webhook/supernote"
+      secret: "CHANGE_ME_TO_A_SECURE_RANDOM_STRING"
+      events:
+        - "note.sync_completed"
+```
+Each delivery sends `X-Supernote-Event` and (when `secret` is set) `X-Supernote-Signature: sha256=<hex>` headers with a JSON payload (see [`supernote.models.webhook`](https://allenporter.github.io/supernote/supernote/models/webhook.html) and [`supernote.server.services.webhook`](https://allenporter.github.io/supernote/supernote/server/services/webhook.html)).
 
 ### Running the Server
 
