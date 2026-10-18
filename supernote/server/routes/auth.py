@@ -29,6 +29,7 @@ from supernote.models.user import (
 )
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.user import UserService
+from supernote.server.utils.auth_utils import get_token_from_request
 from supernote.server.utils.rate_limit import (
     LIMIT_LOGIN_ACCOUNT_MAX,
     LIMIT_LOGIN_ACCOUNT_WINDOW,
@@ -314,6 +315,7 @@ async def handle_register(request: web.Request) -> web.Response:
 
 
 @routes.post("/api/user/unregister")
+@routes.post("/api/user/account/clear")
 async def handle_unregister(request: web.Request) -> web.Response:
     """Unregister a user."""
     # Requires auth
@@ -328,6 +330,20 @@ async def handle_unregister(request: web.Request) -> web.Response:
         await user_service.unregister(str(account))
     except ValueError as e:
         return web.json_response(create_error_response(str(e)).to_dict(), status=400)
+    return web.json_response(BaseResponse().to_dict())
+
+
+@routes.post("/api/user/logout")
+async def handle_logout(request: web.Request) -> web.Response:
+    """Log out the current session and revoke its token."""
+    token = get_token_from_request(request)
+    if not token:
+        return web.json_response(
+            create_error_response("Unauthorized").to_dict(), status=401
+        )
+
+    user_service: UserService = request.app["user_service"]
+    await user_service.logout(token)
     return web.json_response(BaseResponse().to_dict())
 
 
