@@ -17,7 +17,13 @@ from ..constants import CACHE_BUCKET, DEFAULT_PAGE_CONCURRENCY
 from ..db.models.file import UserFileDO
 from ..db.models.note_processing import NotePageContentDO, SystemTaskDO
 from ..db.session import DatabaseSessionManager
-from ..events import Event, LocalEventBus, NoteDeletedEvent, NoteUpdatedEvent
+from ..events import (
+    Event,
+    LocalEventBus,
+    NoteDeletedEvent,
+    NoteProcessingCompletedEvent,
+    NoteUpdatedEvent,
+)
 from ..services.file import FileService
 from ..services.processor_modules import ProcessorModule
 from ..services.summary import SummaryService
@@ -396,6 +402,29 @@ class ProcessorService:
         # Pipeline Stage: Global Post-processing (Summary)
         for module in self.global_post_modules:
             await module.run(file_id, self.session_manager)
+
+        await self._publish_processing_completed(file_id)
+
+    async def _publish_processing_completed(self, file_id: int) -> None:
+        """Publish NoteProcessingCompletedEvent after pipeline stages complete."""
+        async with self.session_manager.session() as session:
+            result = await session.execute(
+                select(UserFileDO).where(UserFileDO.id == file_id)
+            )
+            user_file = result.scalar_one_or_none()
+            if not isinstance(user_file, UserFileDO):
+                return
+
+        file_path = await self.file_service.get_full_path_by_node(
+            user_file.user_id, file_id
+        )
+        await self.event_bus.publish(
+            NoteProcessingCompletedEvent(
+                file_id=file_id,
+                user_id=user_file.user_id,
+                file_path=file_path,
+            )
+        )
 
     async def _process_page(self, file_id: int, page_index: int, page_id: str) -> None:
         """Process all modules for a single page sequentially."""

@@ -13,18 +13,26 @@ import hashlib
 import hmac
 import logging
 import time
+from pathlib import PurePosixPath
 
 import aiohttp
 
 from supernote.models.webhook import (
+    EVENT_NOTE_PROCESSING_COMPLETED,
     EVENT_NOTE_SYNC_COMPLETED,
+    NoteProcessingCompletedPayload,
     NoteSyncCompletedPayload,
     WebhookFileVO,
     WebhookPayload,
 )
 
 from ..config import WebhookConfig, WebhookEndpointConfig
-from ..events import Event, LocalEventBus, NoteUpdatedEvent
+from ..events import (
+    Event,
+    LocalEventBus,
+    NoteProcessingCompletedEvent,
+    NoteUpdatedEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,9 @@ class WebhookService:
             logger.debug("Webhook dispatch disabled or no endpoints configured.")
             return
         self.event_bus.subscribe(NoteUpdatedEvent, self._handle_note_updated)
+        self.event_bus.subscribe(
+            NoteProcessingCompletedEvent, self._handle_note_processing_completed
+        )
         logger.info(
             f"WebhookService started with {len(self.config.endpoints)} endpoint(s)."
         )
@@ -82,7 +93,26 @@ class WebhookService:
         payload = NoteSyncCompletedPayload(
             event=EVENT_NOTE_SYNC_COMPLETED,
             timestamp=int(time.time()),
-            file=WebhookFileVO(id=event.file_id, path=event.file_path),
+            file=WebhookFileVO(
+                id=event.file_id,
+                name=PurePosixPath(event.file_path).name,
+                path=event.file_path,
+            ),
+        )
+        await self.dispatch(payload)
+
+    async def _handle_note_processing_completed(self, event: Event) -> None:
+        """Translate a NoteProcessingCompletedEvent into a note.processing_completed webhook."""
+        if not isinstance(event, NoteProcessingCompletedEvent):
+            return
+        payload = NoteProcessingCompletedPayload(
+            event=EVENT_NOTE_PROCESSING_COMPLETED,
+            timestamp=int(time.time()),
+            file=WebhookFileVO(
+                id=event.file_id,
+                name=PurePosixPath(event.file_path).name,
+                path=event.file_path,
+            ),
         )
         await self.dispatch(payload)
 

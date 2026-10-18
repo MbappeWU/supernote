@@ -9,7 +9,13 @@ from supernote.server.constants import CACHE_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
-from supernote.server.events import LocalEventBus, NoteDeletedEvent, NoteUpdatedEvent
+from supernote.server.events import (
+    Event,
+    LocalEventBus,
+    NoteDeletedEvent,
+    NoteProcessingCompletedEvent,
+    NoteUpdatedEvent,
+)
 from supernote.server.services.coordination import SqliteCoordinationService
 from supernote.server.services.gemini import GeminiService
 from supernote.server.services.processor import ProcessorService
@@ -534,3 +540,47 @@ async def test_process_file_without_page_modules(
 
     await processor_service.process_file(123)
     hashing.run.assert_called_once_with(123, processor_service.session_manager)
+
+
+async def test_process_file_publishes_processing_completed_event(
+    processor_service: ProcessorService,
+    session_manager: DatabaseSessionManager,
+    mock_file_service: MagicMock,
+) -> None:
+    """Verify process_file publishes NoteProcessingCompletedEvent when pipeline completes."""
+    file_id = 777
+    async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=file_id,
+                user_id=7,
+                file_name="Daily.note",
+                storage_key="key",
+                md5="hash",
+            )
+        )
+        await session.commit()
+
+    mock_file_service.get_full_path_by_node = AsyncMock(return_value="Note/Daily.note")
+    hashing = MagicMock(spec=ProcessorModule)
+    hashing.run = AsyncMock(return_value=True)
+    processor_service.register_modules(hashing=hashing, png=None)
+
+    received_events: list[Event] = []
+
+    async def capture_event(event: Event) -> None:
+        received_events.append(event)
+
+    processor_service.event_bus.subscribe(NoteProcessingCompletedEvent, capture_event)
+
+    await processor_service.process_file(file_id)
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert received_events == [
+        NoteProcessingCompletedEvent(
+            file_id=file_id,
+            user_id=7,
+            file_path="Note/Daily.note",
+        )
+    ]

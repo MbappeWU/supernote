@@ -9,14 +9,18 @@ from dataclasses import dataclass
 from mashumaro.mixins.json import DataClassJSONMixin
 
 EVENT_NOTE_SYNC_COMPLETED = "note.sync_completed"
+EVENT_NOTE_PROCESSING_COMPLETED = "note.processing_completed"
 
 
 @dataclass
 class WebhookFileVO(DataClassJSONMixin):
-    """File metadata included in a `note.sync_completed` webhook payload."""
+    """File metadata included in outbound note webhook payloads."""
 
     id: int
     """The internal ID of the synced file."""
+
+    name: str
+    """The filename of the note (e.g. `2026-08-04.note`)."""
 
     path: str
     """The full path of the file, relative to the user's root directory."""
@@ -46,3 +50,15 @@ class NoteSyncCompletedPayload(WebhookPayload):
 
     file: WebhookFileVO
     """Metadata about the file that finished syncing."""
+
+
+@dataclass
+class NoteProcessingCompletedPayload(WebhookPayload):
+    """Payload sent for the `note.processing_completed` outbound webhook event.
+
+    Corresponds to `EVENT_NOTE_PROCESSING_COMPLETED` in
+    `supernote.server.services.webhook`.
+    """
+
+    file: WebhookFileVO
+    """Metadata about the file that finished processing."""

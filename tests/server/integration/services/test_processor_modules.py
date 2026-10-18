@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from supernote.server.events import LocalEventBus
 from supernote.server.services.processor import ProcessorService
 from supernote.server.services.processor_modules.gemini_embedding import (
     GeminiEmbeddingModule,
@@ -18,7 +19,7 @@ from supernote.server.services.processor_modules.summary import SummaryModule
 @pytest.fixture
 def processor_service() -> ProcessorService:
     service = ProcessorService(
-        event_bus=MagicMock(),
+        event_bus=MagicMock(spec=LocalEventBus),
         session_manager=MagicMock(),
         file_service=MagicMock(),
         summary_service=MagicMock(),
