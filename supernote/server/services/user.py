@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import jwt
 from mashumaro.mixins.json import DataClassJSONMixin
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.auth import Equipment, LoginVO, UserVO
@@ -420,11 +421,30 @@ class UserService:
 
     async def update_email(self, account: str, dto: UpdateEmailDTO) -> bool:
         """Update user email."""
+        if not re.match(EMAIL_REGEX, dto.email):
+            raise ValueError("Invalid email address format")
+
         async with self._session_manager.session() as session:
-            await session.execute(
-                update(UserDO).where(UserDO.email == account).values(email=dto.email)
+            result = await session.execute(
+                select(UserDO).where(UserDO.email == account)
             )
-            await session.commit()
+            user = result.scalar_one_or_none()
+            if not user:
+                raise ValueError(f"User {account} not found")
+
+            if dto.email != account:
+                existing = await session.execute(
+                    select(UserDO).where(UserDO.email == dto.email)
+                )
+                if existing.scalar_one_or_none() is not None:
+                    raise ValueError("Email already registered")
+
+            user.email = dto.email
+            try:
+                await session.commit()
+            except IntegrityError as err:
+                await session.rollback()
+                raise ValueError("Email already registered") from err
         return True
 
     async def admin_reset_password(self, email: str, password_md5: str) -> None:
