@@ -477,14 +477,14 @@ async def test_logout_and_account_clear(
     token_b = await login_client.login("test@example.com", "testpassword")
 
     client_a = Client(client.session, auth=SimpleTokenAuth(token_a), host=base_url)
-    admin_a = AdminClient(client_a)
+    login_a = LoginClient(client_a)
     web_a = WebClient(client_a)
 
     client_b = Client(client.session, auth=SimpleTokenAuth(token_b), host=base_url)
     web_b = WebClient(client_b)
 
-    # Log out session A via AdminClient.logout()
-    await admin_a.logout()
+    # Log out session A via LoginClient.logout()
+    await login_a.logout()
 
     # Session A is revoked, Session B remains active
     with pytest.raises(ApiException):

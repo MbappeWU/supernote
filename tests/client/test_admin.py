@@ -25,10 +25,6 @@ async def test_admin_client_endpoints(aiohttp_client: AiohttpClient) -> None:
         recorded_requests.append(("unregister", None))
         return web.json_response({"success": True})
 
-    async def handler_logout(request: web.Request) -> web.Response:
-        recorded_requests.append(("logout", None))
-        return web.json_response({"success": True})
-
     async def handler_password(request: web.Request) -> web.Response:
         data = await request.json()
         recorded_requests.append(("password", data))
@@ -82,7 +78,6 @@ async def test_admin_client_endpoints(aiohttp_client: AiohttpClient) -> None:
     app.router.add_get("/api/csrf", handler_csrf)
     app.router.add_post("/api/user/register", handler_register)
     app.router.add_post("/api/user/unregister", handler_unregister)
-    app.router.add_post("/api/user/logout", handler_logout)
     app.router.add_put("/api/user/password", handler_password)
     app.router.add_put("/api/user/email", handler_email)
     app.router.add_post(
@@ -113,11 +108,6 @@ async def test_admin_client_endpoints(aiohttp_client: AiohttpClient) -> None:
     await admin.unregister()
     req, data = recorded_requests[-1]
     assert req == "unregister"
-
-    # 2b. logout
-    await admin.logout()
-    req, data = recorded_requests[-1]
-    assert req == "logout"
 
     # 3. update_password
     await admin.update_password("newpass123")
