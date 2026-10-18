@@ -122,7 +122,9 @@ def _sample_payload(event: str = EVENT_NOTE_SYNC_COMPLETED) -> NoteSyncCompleted
     return NoteSyncCompletedPayload(
         event=event,
         timestamp=1730000000,
-        file=WebhookFileVO(id=42, path="Note/Daily/2026-08-04.note"),
+        file=WebhookFileVO(
+            id=42, name="2026-08-04.note", path="Note/Daily/2026-08-04.note"
+        ),
     )
 
 
@@ -212,7 +214,11 @@ async def test_note_updated_event_triggers_note_sync_completed_webhook(
     assert body == {
         "event": EVENT_NOTE_SYNC_COMPLETED,
         "timestamp": ANY,
-        "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
+        "file": {
+            "id": 42,
+            "name": "2026-08-04.note",
+            "path": "Note/Daily/2026-08-04.note",
+        },
     }
     assert isinstance(body["timestamp"], int)
 
@@ -238,7 +244,11 @@ async def test_note_processing_completed_event_triggers_webhook(
     assert body == {
         "event": EVENT_NOTE_PROCESSING_COMPLETED,
         "timestamp": ANY,
-        "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
+        "file": {
+            "id": 42,
+            "name": "2026-08-04.note",
+            "path": "Note/Daily/2026-08-04.note",
+        },
     }
     assert isinstance(body["timestamp"], int)
 

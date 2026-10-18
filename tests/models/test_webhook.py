@@ -11,13 +11,19 @@ def test_note_sync_completed_payload_serializes_to_dict() -> None:
     payload = NoteSyncCompletedPayload(
         event="note.sync_completed",
         timestamp=1730000000,
-        file=WebhookFileVO(id=42, path="Note/Daily/2026-08-04.note"),
+        file=WebhookFileVO(
+            id=42, name="2026-08-04.note", path="Note/Daily/2026-08-04.note"
+        ),
     )
 
     assert payload.to_dict() == {
         "event": "note.sync_completed",
         "timestamp": 1730000000,
-        "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
+        "file": {
+            "id": 42,
+            "name": "2026-08-04.note",
+            "path": "Note/Daily/2026-08-04.note",
+        },
     }
 
 
@@ -25,13 +31,19 @@ def test_note_processing_completed_payload_serializes_to_dict() -> None:
     payload = NoteProcessingCompletedPayload(
         event="note.processing_completed",
         timestamp=1730000000,
-        file=WebhookFileVO(id=42, path="Note/Daily/2026-08-04.note"),
+        file=WebhookFileVO(
+            id=42, name="2026-08-04.note", path="Note/Daily/2026-08-04.note"
+        ),
     )
 
     assert payload.to_dict() == {
         "event": "note.processing_completed",
         "timestamp": 1730000000,
-        "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
+        "file": {
+            "id": 42,
+            "name": "2026-08-04.note",
+            "path": "Note/Daily/2026-08-04.note",
+        },
     }
 
 
@@ -40,7 +52,7 @@ def test_note_sync_completed_payload_excludes_user_id() -> None:
     payload = NoteSyncCompletedPayload(
         event="note.sync_completed",
         timestamp=1730000000,
-        file=WebhookFileVO(id=1, path="a.note"),
+        file=WebhookFileVO(id=1, name="a.note", path="a.note"),
     )
 
     assert "user_id" not in payload.to_dict()

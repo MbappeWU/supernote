@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import logging
 import time
+from pathlib import PurePosixPath
 
 import aiohttp
 
@@ -80,7 +81,11 @@ class WebhookService:
         payload = NoteSyncCompletedPayload(
             event=EVENT_NOTE_SYNC_COMPLETED,
             timestamp=int(time.time()),
-            file=WebhookFileVO(id=event.file_id, path=event.file_path),
+            file=WebhookFileVO(
+                id=event.file_id,
+                name=PurePosixPath(event.file_path).name,
+                path=event.file_path,
+            ),
         )
         await self.dispatch(payload)
 
@@ -91,7 +96,11 @@ class WebhookService:
         payload = NoteProcessingCompletedPayload(
             event=EVENT_NOTE_PROCESSING_COMPLETED,
             timestamp=int(time.time()),
-            file=WebhookFileVO(id=event.file_id, path=event.file_path),
+            file=WebhookFileVO(
+                id=event.file_id,
+                name=PurePosixPath(event.file_path).name,
+                path=event.file_path,
+            ),
         )
         await self.dispatch(payload)
 

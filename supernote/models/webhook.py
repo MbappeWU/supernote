@@ -19,6 +19,9 @@ class WebhookFileVO(DataClassJSONMixin):
     id: int
     """The internal ID of the synced file."""
 
+    name: str
+    """The filename of the note (e.g. `2026-08-04.note`)."""
+
     path: str
     """The full path of the file, relative to the user's root directory."""
 
