@@ -27,6 +27,14 @@ class SearchResult:
     date: str | None = None
 
 
+@dataclass
+class NotebookInfo:
+    file_id: int
+    file_name: str
+    create_time: int
+    update_time: int
+
+
 class SearchService:
     """Service for semantic search across notebook content."""
 
@@ -39,6 +47,37 @@ class SearchService:
         self.session_manager = session_manager
         self.gemini_service = gemini_service
         self.config = config
+
+    async def list_notebooks(
+        self,
+        user_id: int,
+        name_filter: str | None = None,
+        limit: int = 20,
+    ) -> list[NotebookInfo]:
+        """List active .note notebooks for a user ordered by most recently updated."""
+        async with self.session_manager.session() as session:
+            stmt = (
+                select(UserFileDO)
+                .where(UserFileDO.user_id == user_id)
+                .where(UserFileDO.is_active == "Y")
+                .where(UserFileDO.is_folder == "N")
+                .where(UserFileDO.file_name.ilike("%.note"))
+            )
+            if name_filter:
+                stmt = stmt.where(UserFileDO.file_name.ilike(f"%{name_filter}%"))
+            stmt = stmt.order_by(UserFileDO.update_time.desc()).limit(limit)
+            result = await session.execute(stmt)
+            files = result.scalars().all()
+
+        return [
+            NotebookInfo(
+                file_id=f.id,
+                file_name=f.file_name,
+                create_time=f.create_time,
+                update_time=f.update_time,
+            )
+            for f in files
+        ]
 
     async def search_chunks(
         self,

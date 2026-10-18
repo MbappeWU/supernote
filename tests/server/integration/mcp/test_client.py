@@ -117,8 +117,32 @@ async def test_mcp_list_tools(
     async with mcp_session(mcp_url, auth_headers) as session:
         result = await session.list_tools()
         tool_names = [t.name for t in result.tools]
+        assert "list_notebooks" in tool_names
         assert "search_notebook_chunks" in tool_names
         assert "get_notebook_transcript" in tool_names
+
+
+async def test_mcp_list_notebooks(
+    mcp_url: str,
+    auth_headers: dict[str, str],
+    notebook_file_id: int,
+) -> None:
+    """Integrated test for listing notebooks via MCP."""
+    token = auth_headers["x-access-token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    async with mcp_session(mcp_url, headers) as session:
+        call_result = await session.call_tool(
+            "list_notebooks",
+            arguments={"name_filter": "test_notes"},
+            meta={"token": token},
+        )
+        assert call_result.content
+        content = call_result.content[0]
+        assert isinstance(content, TextContent)
+        res_data = json.loads(content.text)
+        assert len(res_data["notebooks"]) == 1
+        assert res_data["notebooks"][0]["fileId"] == notebook_file_id
+        assert res_data["notebooks"][0]["fileName"] == "test_notes.note"
 
 
 async def test_mcp_search_notebook_chunks(
