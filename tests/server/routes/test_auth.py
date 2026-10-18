@@ -224,6 +224,7 @@ async def test_user_unregister(
 async def test_update_password_and_email(
     client: TestClient,
     admin_client: AdminClient,
+    login_client: LoginClient,
 ) -> None:
     base_url = str(client.make_url(""))
     unauth_client = Client(client.session, host=base_url)
@@ -253,10 +254,55 @@ async def test_update_password_and_email(
         resp = await client.post(path, json={})
         assert resp.status == 400
 
-    # Success paths
+    # Update password succeeds and revokes old session
     pwd_hash = hashlib.md5(b"newpassword").hexdigest()
     await admin_client.update_password(pwd_hash)
-    await admin_client.update_email("new@example.com")
+
+    with pytest.raises(ApiException):
+        await admin_client.update_email("new@example.com")
+
+    # Re-login with new password and update email
+    new_token = await login_client.login("test@example.com", "newpassword")
+    authed_client = Client(
+        client.session, auth=SimpleTokenAuth(new_token), host=base_url
+    )
+    reauthed_admin = AdminClient(authed_client)
+    await reauthed_admin.update_email("new@example.com")
+
+    # Old token for test@example.com is now revoked
+    with pytest.raises(ApiException):
+        await reauthed_admin.update_email("another@example.com")
+
+
+async def test_email_change_prevents_old_token_principal_confusion(
+    client: TestClient,
+    login_client: LoginClient,
+    create_test_user: None,
+) -> None:
+    """Ensure changing email revokes old tokens and prevents re-registered email takeover."""
+    base_url = str(client.make_url(""))
+    victim_old_token = await login_client.login("test@example.com", "testpassword")
+    victim_client = Client(
+        client.session, auth=SimpleTokenAuth(victim_old_token), host=base_url
+    )
+    victim_admin = AdminClient(victim_client)
+
+    # Victim changes email to victim_new@example.com
+    await victim_admin.update_email("victim_new@example.com")
+
+    # Attacker registers the freed test@example.com address
+    unauth_client = Client(client.session, host=base_url)
+    unauth_admin = AdminClient(unauth_client)
+    attacker_pw = hashlib.md5(b"attackerpw").hexdigest()
+    await unauth_admin.register("test@example.com", attacker_pw, "Attacker")
+
+    # Victim's pre-change token MUST NOT authenticate as Attacker
+    resp = await client.post(
+        "/api/user/query",
+        headers={"x-access-token": victim_old_token},
+        json={},
+    )
+    assert resp.status == 401
 
 
 async def test_retrieve_password_paths(

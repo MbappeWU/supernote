@@ -33,6 +33,10 @@ class CoordinationService(ABC):
         """Delete a key."""
 
     @abstractmethod
+    async def delete_by_prefix(self, prefix: str) -> None:
+        """Delete all keys starting with the given prefix."""
+
+    @abstractmethod
     async def pop_value(self, key: str) -> str | None:
         """Get and delete a value atomically (if possible) or sequentially."""
 
@@ -93,6 +97,17 @@ class SqliteCoordinationService(CoordinationService):
         """Delete a key."""
         async with self._session_manager.session() as session:
             stmt = delete(KeyValueDO).where(KeyValueDO.key == key)
+            await session.execute(stmt)
+            await session.commit()
+
+    async def delete_by_prefix(self, prefix: str) -> None:
+        """Delete all keys starting with the given prefix."""
+        if not prefix:
+            return
+        async with self._session_manager.session() as session:
+            stmt = delete(KeyValueDO).where(
+                KeyValueDO.key.startswith(prefix, autoescape=True)
+            )
             await session.execute(stmt)
             await session.commit()
 

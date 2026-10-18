@@ -384,3 +384,42 @@ async def test_update_email_validation_and_duplicate(user_service: UserService) 
         await user_service.update_email(
             "u1@example.com", UpdateEmailDTO(email="u2@example.com")
         )
+
+
+async def test_equipment_session_revocation(user_service: UserService) -> None:
+    """Verify unlinking equipment or re-logging in on same equipment revokes only that equipment's session."""
+    email = "equip_sess@example.com"
+    pw_md5 = hashlib.md5(b"password123").hexdigest()
+    await user_service.register(UserRegisterDTO(email=email, password=pw_md5))
+
+    # Login on dev1 and dev2
+    code1, ts1 = await user_service.generate_random_code(email)
+    vo1 = await user_service.login(
+        email, hash_with_salt(pw_md5, code1), ts1, equipment_no="dev1"
+    )
+    assert vo1 is not None
+
+    code2, ts2 = await user_service.generate_random_code(email)
+    vo2 = await user_service.login(
+        email, hash_with_salt(pw_md5, code2), ts2, equipment_no="dev2"
+    )
+    assert vo2 is not None
+
+    assert await user_service.verify_token(vo1.token) is not None
+    assert await user_service.verify_token(vo2.token) is not None
+
+    # Re-login on dev1 revokes vo1.token, leaves vo2.token active
+    code3, ts3 = await user_service.generate_random_code(email)
+    vo3 = await user_service.login(
+        email, hash_with_salt(pw_md5, code3), ts3, equipment_no="dev1"
+    )
+    assert vo3 is not None
+    assert await user_service.verify_token(vo1.token) is None
+    assert await user_service.verify_token(vo3.token) is not None
+    assert await user_service.verify_token(vo2.token) is not None
+
+    # Unlinking dev2 revokes vo2.token
+    await user_service.bind_equipment(email, "dev2")
+    await user_service.unlink_equipment("dev2")
+    assert await user_service.verify_token(vo2.token) is None
+    assert await user_service.verify_token(vo3.token) is not None

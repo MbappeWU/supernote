@@ -70,3 +70,20 @@ async def test_increment_expiry(
 
     # 2. Verify TTL is roughly logic (hard to verify exact value without inspecting DB directly)
     # But we can verify "expired" behavior by mocking time or inserting expired row manually.
+
+
+async def test_delete_by_prefix(
+    coordination_service: SqliteCoordinationService,
+) -> None:
+    await coordination_service.set_value("session:1:EQ1:tok1", "v1", ttl=60)
+    await coordination_service.set_value("session:1:EQ2:tok2", "v2", ttl=60)
+    await coordination_service.set_value("session:2:EQ1:tok3", "v3", ttl=60)
+
+    await coordination_service.delete_by_prefix("session:1:EQ1:")
+    assert await coordination_service.get_value("session:1:EQ1:tok1") is None
+    assert await coordination_service.get_value("session:1:EQ2:tok2") == "v2"
+    assert await coordination_service.get_value("session:2:EQ1:tok3") == "v3"
+
+    await coordination_service.delete_by_prefix("session:1:")
+    assert await coordination_service.get_value("session:1:EQ2:tok2") is None
+    assert await coordination_service.get_value("session:2:EQ1:tok3") == "v3"
