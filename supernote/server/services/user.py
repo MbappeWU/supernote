@@ -471,15 +471,12 @@ class UserService:
         if not user:
             return False
 
-        old_user_id: int | None = None
         async with self._session_manager.session() as session:
             # Upsert
             existing = await session.execute(
                 select(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
             )
-            existing_device = existing.scalar_one_or_none()
-            if existing_device:
-                old_user_id = existing_device.user_id
+            if existing.scalar_one_or_none():
                 # Device already exists, update binding to current user.
                 await session.execute(
                     update(DeviceDO)
@@ -489,10 +486,7 @@ class UserService:
             else:
                 session.add(DeviceDO(user_id=user.id, equipment_no=equipment_no))
             await session.commit()
-
-        if old_user_id is not None and old_user_id != user.id:
-            await self.revoke_equipment_sessions(old_user_id, equipment_no)
-        return True
+            return True
 
     async def unlink_equipment(self, equipment_no: str) -> bool:
         """Unlink a device and revoke its sessions."""

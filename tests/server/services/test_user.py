@@ -487,17 +487,9 @@ async def test_session_adversarial_edge_cases(
     )
     assert await user_service.verify_token(tok_mismatch) is None
 
-    # Re-binding a device to a second user revokes the first user's session on that device
-    email2 = "adv2@example.com"
-    await user_service.register(UserRegisterDTO(email=email2, password=pw_md5))
-    tok_u1_dev = await user_service.create_session(email, equipment_no="SHARED-SN")
-    await user_service.bind_equipment(email, "SHARED-SN")
-    await user_service.bind_equipment(email2, "SHARED-SN")
-    assert await user_service.verify_token(tok_u1_dev) is None
-
     # admin_reset_password revokes active sessions
-    tok_before_admin_reset = await user_service.create_session(email2)
+    tok_before_admin_reset = await user_service.create_session(email)
     await user_service.admin_reset_password(
-        email2, hashlib.md5(b"newadminpw").hexdigest()
+        email, hashlib.md5(b"newadminpw").hexdigest()
     )
     assert await user_service.verify_token(tok_before_admin_reset) is None

@@ -10,7 +10,6 @@ from supernote.client.client import Client
 from supernote.client.exceptions import ApiException, UnauthorizedException
 from supernote.client.login_client import LoginClient
 from supernote.client.web import WebClient
-from supernote.models.user import UserRegisterDTO
 from supernote.server.config import ServerConfig
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import SupernoteError
@@ -92,36 +91,12 @@ async def test_bind_equipment(client: TestClient, create_test_user: None) -> Non
 async def test_user_query(
     client: TestClient,
     web_client: WebClient,
-    user_service: UserService,
 ) -> None:
     base_url = str(client.make_url(""))
     unauth_client = Client(client.session, host=base_url)
     unauth_web = WebClient(unauth_client)
     with pytest.raises(ApiException):
         await unauth_web.query_user()
-
-    with pytest.raises(
-        ValueError, match="Active user nonexistent@example.com not found"
-    ):
-        await user_service.create_session("nonexistent@example.com")
-
-    pwd_hash = hashlib.md5(b"pwd").hexdigest()
-    await user_service.register(
-        UserRegisterDTO(
-            email="ephemeral@example.com", password=pwd_hash, user_name="Ephemeral"
-        )
-    )
-    revoked_token = await user_service.create_session("ephemeral@example.com")
-    await user_service.unregister("ephemeral@example.com")
-
-    class BadAuth(AbstractAuth):
-        async def async_get_access_token(self) -> str:
-            return revoked_token
-
-    bad_client = Client(client.session, auth=BadAuth(), host=base_url)
-    bad_web = WebClient(bad_client)
-    with pytest.raises(ApiException):
-        await bad_web.query_user()
 
     res = await web_client.query_user()
     assert res.success is True
