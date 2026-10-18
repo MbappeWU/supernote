@@ -237,6 +237,22 @@ async def test_update_password_and_email(
     with pytest.raises(ApiException):
         await unauth_admin.update_email("new@example.com")
 
+    # Invalid password format (not MD5) -> 400
+    with pytest.raises(ApiException):
+        await admin_client.update_password("not-an-md5-hash")
+
+    # Invalid email format -> 400
+    with pytest.raises(ApiException):
+        await admin_client.update_email("not-an-email")
+
+    # Malformed DTOs on auth endpoints -> 400
+    for path in (
+        "/api/official/user/query/random/code",
+        "/api/official/user/account/login/new",
+    ):
+        resp = await client.post(path, json={})
+        assert resp.status == 400
+
     # Success paths
     pwd_hash = hashlib.md5(b"newpassword").hexdigest()
     await admin_client.update_password(pwd_hash)

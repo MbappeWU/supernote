@@ -93,7 +93,13 @@ async def handle_check_user_exists(request: web.Request) -> web.Response:
     # Endpoint: POST /api/official/user/check/exists/server
     # Purpose: Check if the user exists on this server.
     req_data = await request.json()
-    user_check_req = UserCheckDTO.from_dict(req_data)
+    try:
+        user_check_req = UserCheckDTO.from_dict(req_data)
+    except (MissingField, ValueError):
+        return web.json_response(
+            create_error_response("Invalid request format").to_dict(),
+            status=400,
+        )
     user_service: UserService = request.app["user_service"]
     if await user_service.check_user_exists(user_check_req.email or ""):
         return web.json_response(BaseResponse().to_dict())
@@ -116,7 +122,13 @@ async def handle_random_code(request: web.Request) -> web.Response:
     # Endpoint: POST /api/official/user/query/random/code
     # Purpose: Get challenge for password hashing
     req_data = await request.json()
-    code_req = RandomCodeDTO.from_dict(req_data)
+    try:
+        code_req = RandomCodeDTO.from_dict(req_data)
+    except (MissingField, ValueError):
+        return web.json_response(
+            create_error_response("Invalid request format").to_dict(),
+            status=400,
+        )
     user_service: UserService = request.app["user_service"]
     random_code, timestamp = await user_service.generate_random_code(code_req.account)
     return web.json_response(
@@ -137,7 +149,13 @@ async def handle_login(request: web.Request) -> web.Response:
 
     user_service: UserService = request.app["user_service"]
     req_data = await request.json()
-    login_req = LoginDTO.from_dict(req_data)
+    try:
+        login_req = LoginDTO.from_dict(req_data)
+    except (MissingField, ValueError):
+        return web.json_response(
+            create_error_response("Invalid request format").to_dict(),
+            status=400,
+        )
 
     # Extract IP if possible
     ip = request.remote or "unknown"
@@ -306,7 +324,10 @@ async def handle_unregister(request: web.Request) -> web.Response:
         )
 
     user_service: UserService = request.app["user_service"]
-    await user_service.unregister(str(account))
+    try:
+        await user_service.unregister(str(account))
+    except ValueError as e:
+        return web.json_response(create_error_response(str(e)).to_dict(), status=400)
     return web.json_response(BaseResponse().to_dict())
 
 
@@ -320,9 +341,12 @@ async def handle_update_password(request: web.Request) -> web.Response:
         )
 
     req_data = await request.json()
-    dto = UpdatePasswordDTO.from_dict(req_data)
-    user_service: UserService = request.app["user_service"]
-    await user_service.update_password(str(account), dto)
+    try:
+        dto = UpdatePasswordDTO.from_dict(req_data)
+        user_service: UserService = request.app["user_service"]
+        await user_service.update_password(str(account), dto)
+    except (MissingField, ValueError) as e:
+        return web.json_response(create_error_response(str(e)).to_dict(), status=400)
     return web.json_response(BaseResponse().to_dict())
 
 
@@ -336,9 +360,12 @@ async def handle_update_email(request: web.Request) -> web.Response:
         )
 
     req_data = await request.json()
-    dto = UpdateEmailDTO.from_dict(req_data)
-    user_service: UserService = request.app["user_service"]
-    await user_service.update_email(str(account), dto)
+    try:
+        dto = UpdateEmailDTO.from_dict(req_data)
+        user_service: UserService = request.app["user_service"]
+        await user_service.update_email(str(account), dto)
+    except (MissingField, ValueError) as e:
+        return web.json_response(create_error_response(str(e)).to_dict(), status=400)
     return web.json_response(BaseResponse().to_dict())
 
 
@@ -353,8 +380,13 @@ async def handle_retrieve_password(request: web.Request) -> web.Response:
         )
 
     req_data = await request.json()
-    req_data = await request.json()
-    dto = RetrievePasswordDTO.from_dict(req_data)
+    try:
+        dto = RetrievePasswordDTO.from_dict(req_data)
+    except (MissingField, ValueError):
+        return web.json_response(
+            create_error_response("Invalid request format").to_dict(),
+            status=400,
+        )
     user_service: UserService = request.app["user_service"]
 
     # Extract target account and password from DTO
@@ -379,7 +411,12 @@ async def handle_retrieve_password(request: web.Request) -> web.Response:
     except RateLimitExceeded as e:
         return e.to_response()
 
-    if await user_service.retrieve_password(account, dto.password):
+    try:
+        updated = await user_service.retrieve_password(account, dto.password)
+    except ValueError as e:
+        return web.json_response(create_error_response(str(e)).to_dict(), status=400)
+
+    if updated:
         return web.json_response(BaseResponse().to_dict())
     else:
         return web.json_response(
@@ -400,15 +437,16 @@ async def handle_login_record(request: web.Request) -> web.Response:
         )
 
     req_data = await request.json()
-    dto = LoginRecordDTO.from_dict(req_data)
+    try:
+        dto = LoginRecordDTO.from_dict(req_data)
+        page_no = int(dto.page_no or 1)
+        page_size = int(dto.page_size or 20)
+    except (MissingField, ValueError):
+        return web.json_response(
+            create_error_response("Invalid request format").to_dict(),
+            status=400,
+        )
     user_service: UserService = request.app["user_service"]
-
-    page_no = int(dto.page_no or 1)
-    page_size = int(dto.page_size or 20)
-
-    records, total = await user_service.query_login_records(
-        str(account), page_no, page_size
-    )
 
     records, total = await user_service.query_login_records(
         str(account), page_no, page_size

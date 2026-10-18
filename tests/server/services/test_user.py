@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from supernote.models.auth import Equipment
-from supernote.models.user import UpdatePasswordDTO, UserRegisterDTO
+from supernote.models.user import UpdateEmailDTO, UpdatePasswordDTO, UserRegisterDTO
 from supernote.server.config import AuthConfig, ServerConfig
 from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
@@ -363,3 +363,24 @@ async def test_challenge_single_use_and_concurrent(user_service: UserService) ->
     # Second challenge still works once
     vo2 = await user_service.login(email, hash2, ts2, equipment_no="dev2")
     assert vo2 is not None
+
+
+async def test_update_email_validation_and_duplicate(user_service: UserService) -> None:
+    """Verify update_email validates format and rejects duplicate emails."""
+    pw_md5 = hashlib.md5(b"password123").hexdigest()
+    await user_service.register(
+        UserRegisterDTO(email="u1@example.com", password=pw_md5)
+    )
+    await user_service.register(
+        UserRegisterDTO(email="u2@example.com", password=pw_md5)
+    )
+
+    with pytest.raises(ValueError, match="Invalid email address format"):
+        await user_service.update_email(
+            "u1@example.com", UpdateEmailDTO(email="not-an-email")
+        )
+
+    with pytest.raises(ValueError, match="Email already registered"):
+        await user_service.update_email(
+            "u1@example.com", UpdateEmailDTO(email="u2@example.com")
+        )
