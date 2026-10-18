@@ -31,6 +31,19 @@ To enable AI features, set the Gemini API key:
 export SUPERNOTE_GEMINI_API_KEY="your-api-key"
 ```
 
+#### Outbound Webhooks
+To send non-blocking HTTP `POST` notifications on server events (e.g., to Home Assistant, n8n, or Zapier), configure `webhooks` in `config/config.yaml` (or enable via `SUPERNOTE_WEBHOOKS_ENABLED=true`):
+```yaml
+webhooks:
+  enabled: true
+  endpoints:
+    - url: "https://n8n.homelab.local/webhook/supernote"
+      secret: "CHANGE_ME_TO_A_SECURE_RANDOM_STRING"
+      events:
+        - "note.sync_completed"
+```
+Each delivery includes `X-Supernote-Event` and (when `secret` is set) `X-Supernote-Signature: sha256=<hex>` headers with a JSON payload (see [`supernote.models.webhook`](https://allenporter.github.io/supernote/supernote/models/webhook.html) and [`supernote.server.services.webhook`](https://allenporter.github.io/supernote/supernote/server/services/webhook.html)).
+
 ### Running the Server
 
 Start the server using the unified `supernote` CLI:
