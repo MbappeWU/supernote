@@ -291,19 +291,14 @@ class UserService:
             return user.id
         raise ValueError(f"User {account} not found")
 
-    async def verify_login_hash(
+    async def _verify_login_hash(
         self,
         account: str,
+        password_md5: str,
         client_hash: str,
         timestamp: str,
-        *,
-        _user: UserDO | None = None,
     ) -> bool:
         if not timestamp:
-            return False
-
-        user = _user or await self.get_user_by_email(account)
-        if not user or not user.is_active:
             return False
 
         random_code = await self._coordination_service.pop_value(
@@ -312,7 +307,7 @@ class UserService:
         if not random_code:
             return False
 
-        expected_hash = hash_with_salt(user.password_md5, random_code)
+        expected_hash = hash_with_salt(password_md5, random_code)
         return hmac.compare_digest(expected_hash, client_hash)
 
     async def login(
@@ -330,8 +325,8 @@ class UserService:
             logger.debug("User %s not found or not active", account)
             return None
 
-        if not await self.verify_login_hash(
-            account, password_hash, timestamp, _user=user
+        if not await self._verify_login_hash(
+            account, user.password_md5, password_hash, timestamp
         ):
             logger.debug("Invalid login hash for user %s", account)
             return None
@@ -362,11 +357,10 @@ class UserService:
             session.add(record)
             await session.commit()
 
-        token = await self.create_session(
-            account=user.email,
+        token = await self._create_session_for_user(
+            user=user,
             equipment_no=equipment_no,
             equipment=equipment,
-            _user=user,
         )
 
         return LoginVO(
@@ -382,14 +376,19 @@ class UserService:
         account: str,
         equipment_no: str | None = None,
         equipment: Equipment = Equipment.WEB,
-        *,
-        _user: UserDO | None = None,
     ) -> str:
         """Create and persist a new authenticated session token for an active account."""
-        user = _user or await self.get_user_by_email(account)
+        user = await self.get_user_by_email(account)
         if not user or not user.is_active:
             raise ValueError(f"Active user {account} not found")
+        return await self._create_session_for_user(user, equipment_no, equipment)
 
+    async def _create_session_for_user(
+        self,
+        user: UserDO,
+        equipment_no: str | None = None,
+        equipment: Equipment = Equipment.WEB,
+    ) -> str:
         if equipment in (Equipment.TERMINAL, Equipment.APP):
             ttl = self._config.device_expiration_hours * 3600
         else:
