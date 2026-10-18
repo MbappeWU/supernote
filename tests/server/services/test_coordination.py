@@ -79,6 +79,9 @@ async def test_delete_by_prefix(
     await coordination_service.set_value("session:1:EQ2:tok2", "v2", ttl=60)
     await coordination_service.set_value("session:2:EQ1:tok3", "v3", ttl=60)
 
+    await coordination_service.delete_by_prefix("")
+    assert await coordination_service.get_value("session:1:EQ1:tok1") == "v1"
+
     await coordination_service.delete_by_prefix("session:1:EQ1:")
     assert await coordination_service.get_value("session:1:EQ1:tok1") is None
     assert await coordination_service.get_value("session:1:EQ2:tok2") == "v2"

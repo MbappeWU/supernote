@@ -4,6 +4,7 @@ import logging
 import re
 import secrets
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 
 import jwt
@@ -45,7 +46,7 @@ MD5_REGEX = r"^[a-f0-9]{32}$"
 class SessionState(DataClassJSONMixin):
     token: str
     email: str
-    user_id: int | None = None
+    user_id: int
     equipment_no: str | None = None
     created_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
@@ -71,9 +72,15 @@ class UserService:
         self._session_manager = session_manager
 
     @staticmethod
-    def _session_key(user_id: int, equipment_no: str | None, token: str) -> str:
+    def _equipment_key_segment(equipment_no: str | None) -> str:
+        """Percent-encode equipment_no so colons cannot collide with key delimiters."""
+        return urllib.parse.quote(equipment_no or "", safe="")
+
+    @classmethod
+    def _session_key(cls, user_id: int, equipment_no: str | None, token: str) -> str:
         """Build the CoordinationService key for a user session."""
-        return f"session:{user_id}:{equipment_no or ''}:{token}"
+        encoded_eq = cls._equipment_key_segment(equipment_no)
+        return f"session:{user_id}:{encoded_eq}:{token}"
 
     async def revoke_user_sessions(self, user_id: int) -> None:
         """Revoke all active sessions for a user."""
@@ -83,12 +90,15 @@ class UserService:
         """Revoke all active sessions for a specific device belonging to a user."""
         if not equipment_no:
             return
+        encoded_eq = self._equipment_key_segment(equipment_no)
         await self._coordination_service.delete_by_prefix(
-            f"session:{user_id}:{equipment_no}:"
+            f"session:{user_id}:{encoded_eq}:"
         )
 
     async def logout(self, token: str) -> None:
         """Revoke a single session token."""
+        if not token:
+            return
         try:
             payload = jwt.decode(
                 token,
@@ -96,20 +106,17 @@ class UserService:
                 algorithms=[JWT_ALGORITHM],
                 options={"verify_exp": False},
             )
-            user_id = payload.get("user_id")
-            equipment_no = payload.get("equipment_no") or ""
-            if user_id is not None:
-                await self._coordination_service.delete_value(
-                    self._session_key(int(user_id), equipment_no, token)
-                )
-            elif sub := payload.get("sub"):
-                user = await self._get_user_do(str(sub))
-                if user:
-                    await self._coordination_service.delete_value(
-                        self._session_key(user.id, equipment_no, token)
-                    )
         except jwt.PyJWTError:
             logger.debug("Logout called with invalid JWT")
+            return
+
+        user_id = payload.get("user_id")
+        equipment_no = payload.get("equipment_no")
+        if type(user_id) is not int or not isinstance(equipment_no, str):
+            return
+        await self._coordination_service.delete_value(
+            self._session_key(user_id, equipment_no, token)
+        )
 
     async def list_users(self) -> list[UserDO]:
         async with self._session_manager.session() as session:
@@ -338,7 +345,6 @@ class UserService:
             account=user.email,
             equipment_no=equipment_no,
             equipment=equipment,
-            user_id=user.id,
         )
 
         return LoginVO(
@@ -354,28 +360,24 @@ class UserService:
         account: str,
         equipment_no: str | None = None,
         equipment: Equipment = Equipment.WEB,
-        user_id: int | None = None,
     ) -> str:
-        """Create and persist a new authenticated session token for an account."""
-        if user_id is None:
-            user = await self._get_user_do(account)
-            resolved_user_id = user.id if user else 0
-        else:
-            resolved_user_id = user_id
+        """Create and persist a new authenticated session token for an active account."""
+        user = await self._get_user_do(account)
+        if not user or not user.is_active:
+            raise ValueError(f"Active user {account} not found")
 
         if equipment in (Equipment.TERMINAL, Equipment.APP):
             ttl = self._config.device_expiration_hours * 3600
         else:
             ttl = self._config.expiration_hours * 3600
 
-        # Replace previous device sessions for the same equipment_no
-        if equipment_no and resolved_user_id:
-            await self.revoke_equipment_sessions(resolved_user_id, equipment_no)
+        if equipment_no:
+            await self.revoke_equipment_sessions(user.id, equipment_no)
 
         now = int(time.time())
         payload = {
-            "sub": account,
-            "user_id": resolved_user_id,
+            "sub": user.email,
+            "user_id": user.id,
             "equipment_no": equipment_no or "",
             "iat": now,
             "exp": now + ttl,
@@ -383,9 +385,16 @@ class UserService:
         }
         token = jwt.encode(payload, self._config.secret_key, algorithm=JWT_ALGORITHM)
 
-        session_key = self._session_key(resolved_user_id, equipment_no, token)
-        session_val = f"{resolved_user_id}|{account}|{equipment_no or ''}"
-        await self._coordination_service.set_value(session_key, session_val, ttl=ttl)
+        session_state = SessionState(
+            token=token,
+            email=user.email,
+            user_id=user.id,
+            equipment_no=equipment_no or None,
+        )
+        session_key = self._session_key(user.id, equipment_no, token)
+        await self._coordination_service.set_value(
+            session_key, str(session_state.to_json()), ttl=ttl
+        )
         return token
 
     async def verify_token(self, token: str) -> SessionState | None:
@@ -393,45 +402,51 @@ class UserService:
         if not token:
             return None
         try:
-            # 1. Decode and verify JWT signature and expiration
             payload = jwt.decode(
                 token, self._config.secret_key, algorithms=[JWT_ALGORITHM]
             )
-            sub = payload.get("sub")
-            if not sub:
-                return None
-
-            raw_user_id = payload.get("user_id")
-            equipment_no_claim = payload.get("equipment_no") or ""
-
-            # 2. Verify user exists, is active, and matches the token's identity
-            if raw_user_id is not None:
-                user = await self._get_user_by_id(int(raw_user_id))
-            else:
-                user = await self._get_user_do(str(sub))
-
-            if not user or not user.is_active or user.email != str(sub):
-                logger.warning("Token user invalid or inactive for sub=%s", sub)
-                return None
-
-            # 3. Check if session exists in CoordinationService
-            session_key = self._session_key(user.id, equipment_no_claim, token)
-            session_val = await self._coordination_service.get_value(session_key)
-            if not session_val:
-                logger.warning(
-                    "Session not found in coordination service: %s", token[:10]
-                )
-                return None
-
-            return SessionState(
-                token=token,
-                email=user.email,
-                user_id=user.id,
-                equipment_no=equipment_no_claim or None,
-            )
-        except (jwt.PyJWTError, ValueError, TypeError) as e:
-            logger.warning("Token verification failed: %s", e)
+        except jwt.PyJWTError as err:
+            logger.warning("Token verification failed: %s", err)
             return None
+
+        sub = payload.get("sub")
+        user_id = payload.get("user_id")
+        equipment_no = payload.get("equipment_no")
+        if (
+            not isinstance(sub, str)
+            or not sub
+            or type(user_id) is not int
+            or not isinstance(equipment_no, str)
+        ):
+            logger.warning("Token missing or malformed required claims")
+            return None
+
+        session_key = self._session_key(user_id, equipment_no, token)
+        session_val = await self._coordination_service.get_value(session_key)
+        if not session_val:
+            logger.warning("Session not found in coordination service: %s", token[:10])
+            return None
+
+        try:
+            session_state = SessionState.from_json(session_val)
+        except (ValueError, TypeError, KeyError) as err:
+            logger.warning("Invalid persisted session state: %s", err)
+            return None
+
+        if (
+            session_state.user_id != user_id
+            or session_state.email != sub
+            or (session_state.equipment_no or "") != equipment_no
+        ):
+            logger.warning("Persisted session state mismatch for user_id=%s", user_id)
+            return None
+
+        user = await self._get_user_by_id(user_id)
+        if not user or not user.is_active or user.email != sub:
+            logger.warning("Token user invalid or inactive for user_id=%s", user_id)
+            return None
+
+        return session_state
 
     async def get_user_profile(self, account: str) -> UserVO | None:
         user = await self._get_user_do(account)
