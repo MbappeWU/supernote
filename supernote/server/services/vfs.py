@@ -584,6 +584,7 @@ class VirtualFileSystem:
         self,
         user_id: int,
         recycle_ids: list[int] | None = None,
+        older_than_ms: int | None = None,
     ) -> list[UserFileDO]:
         """Permanently delete items from recycle bin and return purged file nodes."""
         stmt = select(RecycleFileDO).where(RecycleFileDO.user_id == user_id)
@@ -591,6 +592,8 @@ class VirtualFileSystem:
             if not recycle_ids:
                 return []
             stmt = stmt.where(RecycleFileDO.id.in_(recycle_ids))
+        if older_than_ms is not None:
+            stmt = stmt.where(RecycleFileDO.delete_time < older_than_ms)
         recycle_entries = list((await self.db.execute(stmt)).scalars().all())
         if not recycle_entries:
             return []

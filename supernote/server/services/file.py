@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -43,6 +44,8 @@ from .user import UserService
 from .vfs import VirtualFileSystem
 
 logger = logging.getLogger(__name__)
+
+RECYCLE_RETENTION_MS = 30 * 24 * 3600 * 1000  # 30 days
 
 
 __all__ = [
@@ -516,7 +519,8 @@ class FileService:
             success = await vfs.delete_node(user_id, id)
             if not success:
                 raise FileNotFound(f"Node {id} not found for user {email}")
-            return entity
+        await self._prune_expired_recycle(user_id)
+        return entity
 
     async def delete_items(self, user: str, id_list: list[int], parent_id: int) -> None:
         """Delete files or directories for a specific user using VFS (Web API)."""
@@ -553,6 +557,7 @@ class FileService:
                     )
 
                 await vfs.delete_node(user_id, file_id)
+        await self._prune_expired_recycle(user_id)
 
     async def get_storage_usage(self, user: str) -> int:
         """Get total storage usage for a specific user using VFS."""
@@ -814,6 +819,7 @@ class FileService:
     async def list_recycle(self, user: str) -> list[RecycleEntity]:
         """List files in recycle bin for a specific user using VFS."""
         user_id = await self.user_service.get_user_id(user)
+        await self._prune_expired_recycle(user_id)
 
         recycle_files: list[RecycleEntity] = []
 
@@ -826,10 +832,16 @@ class FileService:
 
         return recycle_files
 
+    async def _prune_expired_recycle(self, user_id: int) -> None:
+        """Opportunistically purge recycle bin entries older than the retention window."""
+        cutoff_ms = int(time.time() * 1000) - RECYCLE_RETENTION_MS
+        await self.purge_recycle(user_id=user_id, older_than_ms=cutoff_ms)
+
     async def purge_recycle(
         self,
         user_id: int,
         recycle_ids: list[int] | None = None,
+        older_than_ms: int | None = None,
     ) -> None:
         """Permanently purge items from recycle bin with reference-counted blob cleanup and event publishing."""
         async with self.session_manager.session() as session:
@@ -837,6 +849,7 @@ class FileService:
             purged_nodes = await vfs.purge_recycle(
                 user_id=user_id,
                 recycle_ids=recycle_ids,
+                older_than_ms=older_than_ms,
             )
             if not purged_nodes:
                 return
