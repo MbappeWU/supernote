@@ -39,7 +39,7 @@ def verify_handshake_signature(params: SocketHandshakeParams) -> bool:
     expected_sign = compute_handshake_signature(
         params.token, params.type, params.random
     )
-    if params.sign == expected_sign:
+    if hmac.compare_digest(params.sign, expected_sign):
         return True
 
     logger.warning("Handshake signature mismatch: received=%s", params.sign)

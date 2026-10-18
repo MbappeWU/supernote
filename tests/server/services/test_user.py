@@ -336,3 +336,30 @@ async def test_create_session_and_verify_token(user_service: UserService) -> Non
     assert state.email == email
     assert state.equipment_no == "SN123"
     assert state.token == token
+
+
+async def test_challenge_single_use_and_concurrent(user_service: UserService) -> None:
+    """Verify challenges are single-use (replay fails) and concurrent challenges do not overwrite each other."""
+    email = "challenge_test@example.com"
+    pw_md5 = hashlib.md5(b"password123").hexdigest()
+    await user_service.register(UserRegisterDTO(email=email, password=pw_md5))
+
+    # Generate two concurrent challenges for the same account
+    code1, ts1 = await user_service.generate_random_code(email)
+    code2, ts2 = await user_service.generate_random_code(email)
+    assert ts1 != ts2
+
+    hash1 = hash_with_salt(pw_md5, code1)
+    hash2 = hash_with_salt(pw_md5, code2)
+
+    # First challenge still works even though second challenge was issued
+    vo1 = await user_service.login(email, hash1, ts1, equipment_no="dev1")
+    assert vo1 is not None
+
+    # Replaying first challenge fails
+    replay = await user_service.login(email, hash1, ts1, equipment_no="dev1")
+    assert replay is None
+
+    # Second challenge still works once
+    vo2 = await user_service.login(email, hash2, ts2, equipment_no="dev2")
+    assert vo2 is not None
