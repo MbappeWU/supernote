@@ -1,4 +1,5 @@
 import datetime
+import hmac
 import logging
 import re
 import secrets
@@ -184,12 +185,19 @@ class UserService:
     async def generate_random_code(self, account: str) -> tuple[str, str]:
         """Generate a random code for login challenge."""
         random_code = secrets.token_hex(4)  # 8 chars
-        timestamp = str(int(time.time() * 1000))
+        ts_ms = int(time.time() * 1000)
+        while (
+            await self._coordination_service.get_value(f"challenge:{account}:{ts_ms}")
+            is not None
+        ):
+            ts_ms += 1
+        timestamp = str(ts_ms)
 
-        # Store in coordination service with short TTL (e.g. 5 mins)
-        value = f"{random_code}|{timestamp}"
+        # Store in coordination service with short TTL (e.g. 5 mins), scoped by account and timestamp
         await self._coordination_service.set_value(
-            f"challenge:{account}", value, ttl=int(RANDOM_CODE_TTL.total_seconds())
+            f"challenge:{account}:{timestamp}",
+            random_code,
+            ttl=int(RANDOM_CODE_TTL.total_seconds()),
         )
 
         return random_code, timestamp
@@ -213,22 +221,21 @@ class UserService:
     async def verify_login_hash(
         self, account: str, client_hash: str, timestamp: str
     ) -> bool:
+        if not timestamp:
+            return False
+
         user = await self._get_user_do(account)
         if not user or not user.is_active:
             return False
 
-        stored_value = await self._coordination_service.get_value(
-            f"challenge:{account}"
+        random_code = await self._coordination_service.pop_value(
+            f"challenge:{account}:{timestamp}"
         )
-        if not stored_value:
-            return False
-
-        random_code, stored_timestamp = stored_value.split("|")
-        if stored_timestamp != timestamp:
+        if not random_code:
             return False
 
         expected_hash = hash_with_salt(user.password_md5, random_code)
-        return expected_hash == client_hash
+        return hmac.compare_digest(expected_hash, client_hash)
 
     async def login(
         self,
