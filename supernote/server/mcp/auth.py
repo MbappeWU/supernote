@@ -11,8 +11,10 @@ from mcp.server.auth.provider import (
     AuthorizationParams,
     OAuthAuthorizationServerProvider,
     RefreshToken,
+    TokenError,
 )
 from mcp.server.auth.routes import create_auth_routes
+from mcp.server.auth.settings import RevocationOptions
 from mcp.shared.auth import (
     InvalidRedirectUriError,
     OAuthClientInformationFull,
@@ -130,9 +132,14 @@ class SupernoteOAuthProvider(
         authorization_code: SupernoteAuthorizationCode,
     ) -> OAuthToken:
         """Exchanges an authorization code for an access token and refresh token."""
-        # Validate PKCE if present (SDK usually handles this, but we store it in AuthorizationCode)
-        # In a real implementation, we would generate a JWT or random token.
-        # For now, we reuse the UserService login logic or just generate a dedicated MCP token.
+        consumed = await self._coordination.pop_value(
+            f"mcp:auth_code:{authorization_code.code}"
+        )
+        if not consumed:
+            raise TokenError(
+                error="invalid_grant",
+                error_description="authorization code has already been used",
+            )
 
         access_token = SupernoteAccessToken(
             token=secrets.token_urlsafe(32),
@@ -161,10 +168,6 @@ class SupernoteOAuthProvider(
             ttl=86400 * 30,
         )
 
-        # Delete auth code after use (single use only)
-        # We don't have the string code here easily, but the SDK should handle it if we return successfully.
-        # Actually, let's just let it expire or manually delete it in the bridge if needed.
-
         return OAuthToken(
             access_token=access_token.token,
             refresh_token=refresh_token.token,
@@ -190,8 +193,6 @@ class SupernoteOAuthProvider(
         scopes: list[str],
     ) -> OAuthToken:
         """Exchanges a refresh token for an access token and refresh token."""
-        # Similar to code exchange but using refresh token
-        # Similar to code exchange but using refresh token
         new_access_token = SupernoteAccessToken(
             token=secrets.token_urlsafe(32),
             user_id=refresh_token.user_id,
@@ -223,7 +224,10 @@ class SupernoteOAuthProvider(
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         """Revokes an access or refresh token."""
-        # TODO: Implement token revocation in UserService/CoordinationService
+        if isinstance(token, RefreshToken):
+            await self._coordination.delete_value(f"mcp:refresh_token:{token.token}")
+        else:
+            await self._coordination.delete_value(f"mcp:access_token:{token.token}")
 
 
 def create_auth_app(
@@ -236,6 +240,7 @@ def create_auth_app(
     routes = create_auth_routes(
         provider=provider,
         issuer_url=AnyHttpUrl(issuer_url),
+        revocation_options=RevocationOptions(enabled=True),
     )
     app = Starlette(routes=routes, debug=True)
 
