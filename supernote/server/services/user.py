@@ -72,27 +72,28 @@ class UserService:
         self._session_manager = session_manager
 
     @staticmethod
-    def _equipment_key_segment(equipment_no: str | None) -> str:
-        """Percent-encode equipment_no so colons cannot collide with key delimiters."""
-        return urllib.parse.quote(equipment_no or "", safe="")
+    def _session_prefix(user_id: int, equipment_no: str | None = None) -> str:
+        """Build the CoordinationService key prefix for user or device sessions."""
+        if equipment_no is None:
+            return f"session:{user_id}:"
+        encoded_eq = urllib.parse.quote(equipment_no, safe="")
+        return f"session:{user_id}:{encoded_eq}:"
 
     @classmethod
     def _session_key(cls, user_id: int, equipment_no: str | None, token: str) -> str:
         """Build the CoordinationService key for a user session."""
-        encoded_eq = cls._equipment_key_segment(equipment_no)
-        return f"session:{user_id}:{encoded_eq}:{token}"
+        return f"{cls._session_prefix(user_id, equipment_no or '')}{token}"
 
     async def revoke_user_sessions(self, user_id: int) -> None:
         """Revoke all active sessions for a user."""
-        await self._coordination_service.delete_by_prefix(f"session:{user_id}:")
+        await self._coordination_service.delete_by_prefix(self._session_prefix(user_id))
 
     async def revoke_equipment_sessions(self, user_id: int, equipment_no: str) -> None:
         """Revoke all active sessions for a specific device belonging to a user."""
         if not equipment_no:
             return
-        encoded_eq = self._equipment_key_segment(equipment_no)
         await self._coordination_service.delete_by_prefix(
-            f"session:{user_id}:{encoded_eq}:"
+            self._session_prefix(user_id, equipment_no)
         )
 
     async def logout(self, token: str) -> None:
