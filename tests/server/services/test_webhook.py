@@ -13,13 +13,18 @@ from aiohttp import web
 from pytest_aiohttp import AiohttpClient
 
 from supernote.models.webhook import (
+    EVENT_NOTE_PROCESSING_COMPLETED,
     EVENT_NOTE_SYNC_COMPLETED,
     NoteSyncCompletedPayload,
     WebhookFileVO,
     WebhookPayload,
 )
 from supernote.server.config import WebhookConfig, WebhookEndpointConfig
-from supernote.server.events import LocalEventBus, NoteUpdatedEvent
+from supernote.server.events import (
+    LocalEventBus,
+    NoteProcessingCompletedEvent,
+    NoteUpdatedEvent,
+)
 from supernote.server.services.webhook import (
     EVENT_HEADER,
     MAX_ATTEMPTS,
@@ -206,6 +211,32 @@ async def test_note_updated_event_triggers_note_sync_completed_webhook(
     body = json.loads(webhook_receiver.calls[0]["data"])
     assert body == {
         "event": EVENT_NOTE_SYNC_COMPLETED,
+        "timestamp": ANY,
+        "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
+    }
+    assert isinstance(body["timestamp"], int)
+
+
+async def test_note_processing_completed_event_triggers_webhook(
+    webhook_receiver: WebhookReceiver,
+) -> None:
+    endpoint = _endpoint(webhook_receiver.url, events=[EVENT_NOTE_PROCESSING_COMPLETED])
+    config = WebhookConfig(enabled=True, endpoints=[endpoint])
+    event_bus = LocalEventBus()
+    service = WebhookService(config, event_bus)
+    service.start()
+
+    await event_bus.publish(
+        NoteProcessingCompletedEvent(
+            file_id=42, user_id=7, file_path="Note/Daily/2026-08-04.note"
+        )
+    )
+    await _drain_event_loop()
+
+    assert len(webhook_receiver.calls) == 1
+    body = json.loads(webhook_receiver.calls[0]["data"])
+    assert body == {
+        "event": EVENT_NOTE_PROCESSING_COMPLETED,
         "timestamp": ANY,
         "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
     }

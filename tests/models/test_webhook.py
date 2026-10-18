@@ -1,6 +1,10 @@
 """Tests for outbound webhook payload models."""
 
-from supernote.models.webhook import NoteSyncCompletedPayload, WebhookFileVO
+from supernote.models.webhook import (
+    NoteProcessingCompletedPayload,
+    NoteSyncCompletedPayload,
+    WebhookFileVO,
+)
 
 
 def test_note_sync_completed_payload_serializes_to_dict() -> None:
@@ -12,6 +16,20 @@ def test_note_sync_completed_payload_serializes_to_dict() -> None:
 
     assert payload.to_dict() == {
         "event": "note.sync_completed",
+        "timestamp": 1730000000,
+        "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
+    }
+
+
+def test_note_processing_completed_payload_serializes_to_dict() -> None:
+    payload = NoteProcessingCompletedPayload(
+        event="note.processing_completed",
+        timestamp=1730000000,
+        file=WebhookFileVO(id=42, path="Note/Daily/2026-08-04.note"),
+    )
+
+    assert payload.to_dict() == {
+        "event": "note.processing_completed",
         "timestamp": 1730000000,
         "file": {"id": 42, "path": "Note/Daily/2026-08-04.note"},
     }
