@@ -53,6 +53,7 @@ class WebhookReceiver:
 
     def __init__(self) -> None:
         self.url = ""
+        self.redirect_target_url = ""
         self.calls: list[dict[str, Any]] = []
         self._responses: list[int | _StallResponse] = []
 
@@ -72,6 +73,10 @@ class WebhookReceiver:
             # asyncio.TimeoutError instead of a canned status.
             await asyncio.sleep(2)
             return web.Response(status=200)
+        if 300 <= response < 400:
+            return web.Response(
+                status=response, headers={"Location": self.redirect_target_url}
+            )
         return web.Response(status=response)
 
 
@@ -81,8 +86,10 @@ async def webhook_receiver(aiohttp_client: AiohttpClient) -> WebhookReceiver:
     receiver = WebhookReceiver()
     app = web.Application()
     app.router.add_post("/webhook", receiver.handle)
+    app.router.add_post("/redirected", receiver.handle)
     client = await aiohttp_client(app)
     receiver.url = str(client.make_url("/webhook"))
+    receiver.redirect_target_url = str(client.make_url("/redirected"))
     return receiver
 
 
@@ -300,6 +307,22 @@ async def test_send_does_not_retry_client_errors(
     await service.dispatch(_sample_payload())
 
     assert len(webhook_receiver.calls) == 1
+
+
+async def test_send_does_not_follow_redirects_or_retry_3xx(
+    webhook_receiver: WebhookReceiver, caplog: pytest.LogCaptureFixture
+) -> None:
+    webhook_receiver.queue_responses(307, 200, 200)
+    endpoint = _endpoint(webhook_receiver.url)
+    config = WebhookConfig(enabled=True, endpoints=[endpoint])
+    service = WebhookService(config, LocalEventBus())
+
+    with caplog.at_level("WARNING"):
+        await service.dispatch(_sample_payload())
+
+    assert len(webhook_receiver.calls) == 1
+    assert webhook_receiver.calls[0]["url"] == webhook_receiver.url
+    assert "rejected with status 307" in caplog.text
 
 
 async def test_send_recovers_after_transient_failure(

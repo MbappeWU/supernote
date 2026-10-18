@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from supernote.server.config import ServerConfig
+from supernote.server.config import ServerConfig, WebhookEndpointConfig
 
 
 @pytest.fixture(autouse=True)
@@ -171,6 +171,23 @@ def test_server_config_webhooks_enabled_env_var_override(tmp_path: Path) -> None
     with patch.dict(os.environ, {"SUPERNOTE_WEBHOOKS_ENABLED": "true"}):
         config = ServerConfig.load(config_dir)
         assert config.webhooks.enabled is True
+
+
+@pytest.mark.parametrize(
+    "invalid_url",
+    [
+        "",
+        "ftp://example.com/webhook",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "http:///missing-host",
+        "not-a-url",
+    ],
+)
+def test_webhook_endpoint_config_rejects_invalid_urls(invalid_url: str) -> None:
+    """WebhookEndpointConfig only accepts http and https URLs with a valid host."""
+    with pytest.raises(ValueError, match="http or https scheme"):
+        WebhookEndpointConfig(url=invalid_url)
 
 
 def test_server_config_proxy_env_vars(tmp_path: Path) -> None:

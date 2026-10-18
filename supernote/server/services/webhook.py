@@ -122,10 +122,10 @@ class WebhookService:
     ) -> None:
         """POST `body` to a single endpoint, retrying transient failures.
 
-        Client errors (4xx) are not retried. Network errors, timeouts, and
-        server errors (5xx) are retried up to MAX_ATTEMPTS with a linear
-        backoff. All failures are logged (without the secret or signature)
-        and swallowed.
+        Redirects (3xx) are not followed and client errors (4xx) are not
+        retried. Network errors, timeouts, and server errors (5xx) are retried
+        up to MAX_ATTEMPTS with a linear backoff. All failures are logged
+        (without the secret or signature) and swallowed.
         """
         headers = {"Content-Type": "application/json", EVENT_HEADER: event_name}
         if endpoint.secret:
@@ -136,9 +136,12 @@ class WebhookService:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
                     async with session.post(
-                        endpoint.url, data=body, headers=headers
+                        endpoint.url,
+                        data=body,
+                        headers=headers,
+                        allow_redirects=False,
                     ) as response:
-                        if response.status < 400:
+                        if 200 <= response.status < 300:
                             return
                         if response.status < 500:
                             logger.warning(
