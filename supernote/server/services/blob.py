@@ -105,14 +105,16 @@ class LocalBlobStorage(BlobStorage):
 
     def _get_path(self, bucket: str, key: str) -> Path:
         """Get physical path to the blob."""
-        # Clean inputs to prevent traversal
+        if len(key) < 3:
+            raise ValueError(f"Invalid blob path: {bucket}/{key}")
         clean_bucket = Path(bucket).name
-        clean_key = Path(key).name
-        prefix = clean_key[:2] if len(clean_key) >= 2 else "misc"
-        blob_path = (self.root / clean_bucket / prefix / clean_key).resolve()
+        prefix_dir = (self.root / clean_bucket / key[:2]).resolve()
+        blob_path = (prefix_dir / key).resolve()
         if (
-            not blob_path.is_relative_to(self.root)
-            or len(blob_path.relative_to(self.root).parts) != 3
+            not prefix_dir.is_relative_to(self.root)
+            or len(prefix_dir.relative_to(self.root).parts) != 2
+            or not blob_path.is_relative_to(prefix_dir)
+            or blob_path == prefix_dir
         ):
             raise ValueError(f"Invalid blob path: {bucket}/{key}")
         return blob_path

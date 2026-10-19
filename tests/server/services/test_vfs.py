@@ -121,17 +121,17 @@ async def test_soft_delete_folder_cascades_inactivation(
     child_dir = await vfs.create_directory(user_id, parent.id, "Work")
     grandchild_dir = await vfs.create_directory(user_id, child_dir.id, "2026")
 
-    await blob_storage.put(USER_DATA_BUCKET, "k1", b"content1")
-    await blob_storage.put(USER_DATA_BUCKET, "k2", b"content2")
-    await blob_storage.put(USER_DATA_BUCKET, "k3", b"content3")
+    await blob_storage.put(USER_DATA_BUCKET, "key1", b"content1")
+    await blob_storage.put(USER_DATA_BUCKET, "key2", b"content2")
+    await blob_storage.put(USER_DATA_BUCKET, "key3", b"content3")
     await vfs.create_or_update_file(
-        user_id, parent.id, "root_doc.txt", size=8, md5="m1", storage_key="k1"
+        user_id, parent.id, "root_doc.txt", size=8, md5="m1", storage_key="key1"
     )
     await vfs.create_or_update_file(
-        user_id, child_dir.id, "sub_doc.txt", size=8, md5="m2", storage_key="k2"
+        user_id, child_dir.id, "sub_doc.txt", size=8, md5="m2", storage_key="key2"
     )
     await vfs.create_or_update_file(
-        user_id, grandchild_dir.id, "deep_doc.txt", size=8, md5="m3", storage_key="k3"
+        user_id, grandchild_dir.id, "deep_doc.txt", size=8, md5="m3", storage_key="key3"
     )
 
     assert await vfs.get_total_usage(user_id) == 24

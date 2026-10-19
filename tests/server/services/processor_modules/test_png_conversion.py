@@ -90,6 +90,7 @@ async def test_process_png_conversion_success(
         if task.status != "COMPLETED":
             print(f"Task Failed with error: {task.last_error}")
         assert task.status == "COMPLETED"
+        assert task.data == "v2"
 
     # Check Blob Output
     expected_blob_path = get_page_png_path(file_id, "p0")

@@ -40,6 +40,10 @@ class PngConversionModule(ProcessorModule):
     def task_type(self) -> str:
         return "PNG_CONVERSION"
 
+    @property
+    def version(self) -> str | None:
+        return "v2"
+
     async def process(
         self,
         file_id: int,
