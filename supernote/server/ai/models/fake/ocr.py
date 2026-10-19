@@ -35,7 +35,8 @@ class FakeOcrModel(OcrModel):
         return f"Transcribed ({len(png_data)} bytes)"
 
 
-def create_ocr_model(config: ServerConfig) -> OcrModel:
-    """Create a `FakeOcrModel`."""
-    model_id = config.ai.ocr.model if config.ai.ocr else "fake-ocr-v1"
-    return FakeOcrModel(model_id=model_id)
+def create_ocr_model(config: ServerConfig) -> OcrModel | None:
+    """Create a `FakeOcrModel` from `ServerConfig`, or `None` if unconfigured."""
+    if config.ai.ocr is None:
+        return None
+    return FakeOcrModel(model_id=config.ai.ocr.model)

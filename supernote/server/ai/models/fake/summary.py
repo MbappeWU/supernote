@@ -51,7 +51,8 @@ class FakeSummaryModel(SummaryModel):
         )
 
 
-def create_summary_model(config: ServerConfig) -> SummaryModel:
-    """Create a `FakeSummaryModel`."""
-    model_id = config.ai.summary.model if config.ai.summary else "fake-summary-v1"
-    return FakeSummaryModel(model_id=model_id)
+def create_summary_model(config: ServerConfig) -> SummaryModel | None:
+    """Create a `FakeSummaryModel` from `ServerConfig`, or `None` if unconfigured."""
+    if config.ai.summary is None:
+        return None
+    return FakeSummaryModel(model_id=config.ai.summary.model)
