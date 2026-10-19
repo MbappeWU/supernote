@@ -37,6 +37,7 @@ from supernote.models.file_web import (
     RecycleFileListDTO,
     RecycleFileListVO,
     RecycleFileVO,
+    UserFileSearchVO,
     UserFileVO,
 )
 from supernote.server.constants import (
@@ -390,16 +391,18 @@ async def handle_file_list_query(request: web.Request) -> web.Response:
 async def handle_file_search(request: web.Request) -> web.Response:
     # Endpoint: POST /api/file/label/list/search
     # Purpose: Search for files by keyword.
-    # Response: FileSearchResponse
+    # Response: FileLabelSearchVO
 
     req_data = FileLabelSearchDTO.from_dict(await request.json())
     user_email = request["user"]
     file_service: FileService = request.app["file_service"]
 
     try:
-        file_entities = await file_service.search_files(user_email, req_data.keyword)
+        search_term = req_data.keyword or req_data.file_name or ""
+        file_entities = await file_service.search_files(user_email, search_term)
 
         entries_vos: list[EntriesVO] = []
+        search_vos: list[UserFileSearchVO] = []
         for entity in file_entities:
             # Web API expects flattened paths for system directories
             path_display = _flatten_path(entity.full_path)
@@ -420,8 +423,23 @@ async def handle_file_search(request: web.Request) -> web.Response:
                     is_downloadable=True,
                 )
             )
+            search_vos.append(
+                UserFileSearchVO(
+                    id=str(entity.id),
+                    directory_id=str(entity.parent_id),
+                    file_name=entity.name,
+                    directory_name=Path(parent_path).name if parent_path else "",
+                    size=entity.size,
+                    md5=entity.md5 or "",
+                    is_folder="Y" if entity.is_folder else "N",
+                    update_time=str(entity.update_time),
+                )
+            )
 
-        response = FileLabelSearchVO(entries=entries_vos)
+        response = FileLabelSearchVO(
+            entries=entries_vos,
+            user_file_search_vo_list=search_vos,
+        )
         return web.json_response(response.to_dict())
     except SupernoteError as err:
         return err.to_response()
