@@ -260,7 +260,7 @@ async def test_create_inbox_task(
     """Test creating an ungrouped Inbox task (group_id=None)."""
     user_id = 444
     inbox_task = await schedule_service.create_task(user_id, None, "Inbox Task 1")
-    assert inbox_task.task_list_id == ""
+    assert inbox_task.task_list_id is None
 
 
 async def test_move_task_between_groups_and_inbox(
@@ -287,4 +287,4 @@ async def test_move_task_between_groups_and_inbox(
     )
     back_in_inbox = await schedule_service.get_task(user_id, inbox_task.task_id)
     assert back_in_inbox is not None
-    assert back_in_inbox.task_list_id == ""
+    assert back_in_inbox.task_list_id is None

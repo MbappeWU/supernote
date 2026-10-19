@@ -49,7 +49,7 @@ async def test_export_ungrouped_inbox_task(
 ) -> None:
     """Test exporting an ungrouped Inbox task without a matching group."""
     user_id = 997
-    await schedule_service.create_task(user_id, "0", "Inbox Task")
+    await schedule_service.create_task(user_id, None, "Inbox Task")
 
     ics_text = await ical_export_service.export_calendar(user_id)
     calendar = IcsCalendarStream.calendar_from_ics(ics_text)

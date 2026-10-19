@@ -357,9 +357,7 @@ async def get_task(request: web.Request) -> web.Response:
             ScheduleTaskVO(
                 success=True,
                 task_id=task.task_id,
-                task_list_id=None
-                if task.task_list_id in ("", "0")
-                else task.task_list_id,
+                task_list_id=task.task_list_id,
                 title=task.title,
                 detail=task.detail,
                 status=task.status,
@@ -415,7 +413,7 @@ async def list_tasks(request: web.Request) -> web.Response:
         tasks_vos = [
             ScheduleTaskInfo(
                 task_id=t.task_id,
-                task_list_id=None if t.task_list_id in ("", "0") else t.task_list_id,
+                task_list_id=t.task_list_id,
                 title=t.title,
                 detail=t.detail,
                 status=t.status,
