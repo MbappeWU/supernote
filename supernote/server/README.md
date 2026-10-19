@@ -26,7 +26,27 @@ The server is configured via `config/config.yaml` or environment variables.
 For a comprehensive reference, see the [ServerConfig documentation](https://allenporter.github.io/supernote/supernote/server.html#ServerConfig).
 
 #### AI Configuration
-To enable AI features, set the Gemini API key:
+Configure AI providers and per-capability models (`ocr`, `summary`, `embedding`) in `config/config.yaml` (omitting any capability you want disabled):
+```yaml
+ai:
+  providers:
+    gemini:
+      api_key: "your-api-key"
+  ocr:
+    provider: gemini
+    model: gemini-3.6-flash
+    max_concurrency: 5
+  summary:
+    provider: gemini
+    model: gemini-3.6-flash
+    max_concurrency: 5
+  embedding:
+    provider: gemini
+    model: gemini-embedding-001
+    max_concurrency: 5
+```
+
+For quick setup with Google Gemini defaults, you can also set the environment variable:
 ```bash
 export SUPERNOTE_GEMINI_API_KEY="your-api-key"
 ```
