@@ -1,6 +1,7 @@
 import abc
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from supernote.models.base import ProcessingStatus
 from supernote.server.db.session import DatabaseSessionManager
@@ -9,6 +10,9 @@ from supernote.server.metrics import (
     PROCESSOR_TASKS_TOTAL,
 )
 from supernote.server.utils.tasks import get_task, update_task_status
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql import Select
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,10 @@ class ProcessorModule(abc.ABC):
         """The Task Type this module handles (e.g., 'PNG', 'OCR').
         Matches the `task_type` column in `f_system_task`.
         """
+
+    def missing_tasks_file_ids_stmt(self) -> "Select[tuple[int]] | None":
+        """Return a query selecting `file_id`s that need backfill for this module."""
+        return None
 
     def get_task_key(
         self, page_index: int | None = None, page_id: str | None = None

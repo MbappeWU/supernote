@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy import select
 
+from supernote.server.ai.models.fake.embedding import FakeEmbeddingModel
 from supernote.server.ai.models.fake.ocr import FakeOcrModel
+from supernote.server.ai.models.fake.summary import FakeSummaryModel
 from supernote.server.ai.models.ocr import ConcurrencyLimitedOcrModel
 from supernote.server.constants import CACHE_BUCKET
 from supernote.server.db.models.file import UserFileDO
@@ -22,7 +24,10 @@ from supernote.server.events import (
 from supernote.server.services.coordination import SqliteCoordinationService
 from supernote.server.services.processor import ProcessorService
 from supernote.server.services.processor_modules import ProcessorModule
+from supernote.server.services.processor_modules.embedding import EmbeddingModule
+from supernote.server.services.processor_modules.ocr import OcrModule
 from supernote.server.services.processor_modules.page_hashing import PageHashingModule
+from supernote.server.services.processor_modules.summary import SummaryModule
 from supernote.server.utils.hashing import get_md5_hash
 from supernote.server.utils.paths import get_page_png_path
 
@@ -637,3 +642,113 @@ async def test_recover_missing_tasks_skips_inactive_files(
     assert processor_service.queue.qsize() == 1
     enqueued = await processor_service.queue.get()
     assert enqueued == 9001
+
+
+async def test_recover_missing_tasks_backfills_embedding_model_and_ai_modules(
+    session_manager: DatabaseSessionManager,
+    processor_service: ProcessorService,
+    mock_file_service: MagicMock,
+) -> None:
+    """Verify recover_missing_tasks enqueues files needing OCR, embedding, or summary backfill."""
+    processor_service.register_modules(
+        hashing=PageHashingModule(file_service=mock_file_service),
+        png=None,
+        ocr=OcrModule(file_service=mock_file_service, ocr_model=FakeOcrModel()),
+        embedding=EmbeddingModule(
+            file_service=mock_file_service,
+            embedding_model=FakeEmbeddingModel(model_id="new-model"),
+        ),
+        summary=SummaryModule(
+            file_service=mock_file_service,
+            summary_service=MagicMock(),
+            summary_model=FakeSummaryModel(),
+        ),
+    )
+
+    async with session_manager.session() as session:
+        # File 9101: Fully processed with current model ("new-model") and summary task -> should NOT be enqueued
+        # File 9102: Has HASHING completed, but page has text_content=None -> needs OCR backfill
+        # File 9103: Has text_content, but embedding_model="old-model" -> needs embedding backfill
+        # File 9104: Has text_content and "new-model" embedding, but no SUMMARY_GENERATION task -> needs summary backfill
+        for fid in (9101, 9102, 9103, 9104):
+            session.add(
+                UserFileDO(
+                    id=fid,
+                    user_id=1,
+                    file_name=f"f{fid}.note",
+                    storage_key=f"k{fid}",
+                    md5="m",
+                    is_active="Y",
+                )
+            )
+            session.add(
+                SystemTaskDO(
+                    file_id=fid,
+                    task_type="HASHING",
+                    key="global",
+                    status="COMPLETED",
+                )
+            )
+
+        session.add_all(
+            [
+                NotePageContentDO(
+                    file_id=9101,
+                    page_index=0,
+                    page_id="p0",
+                    content_hash="h",
+                    text_content="done",
+                    embedding="[0.1]",
+                    embedding_model="new-model",
+                ),
+                SystemTaskDO(
+                    file_id=9101,
+                    task_type="SUMMARY_GENERATION",
+                    key="global",
+                    status="COMPLETED",
+                ),
+                NotePageContentDO(
+                    file_id=9102,
+                    page_index=0,
+                    page_id="p0",
+                    content_hash="h",
+                    text_content=None,
+                ),
+                SystemTaskDO(
+                    file_id=9102,
+                    task_type="SUMMARY_GENERATION",
+                    key="global",
+                    status="COMPLETED",
+                ),
+                NotePageContentDO(
+                    file_id=9103,
+                    page_index=0,
+                    page_id="p0",
+                    content_hash="h",
+                    text_content="done",
+                    embedding="[0.1]",
+                    embedding_model="old-model",
+                ),
+                SystemTaskDO(
+                    file_id=9103,
+                    task_type="SUMMARY_GENERATION",
+                    key="global",
+                    status="COMPLETED",
+                ),
+                NotePageContentDO(
+                    file_id=9104,
+                    page_index=0,
+                    page_id="p0",
+                    content_hash="h",
+                    text_content="done",
+                    embedding="[0.1]",
+                    embedding_model="new-model",
+                ),
+            ]
+        )
+        await session.commit()
+
+    await processor_service.recover_missing_tasks()
+
+    assert 9101 not in processor_service.processing_files
+    assert {9102, 9103, 9104}.issubset(processor_service.processing_files)

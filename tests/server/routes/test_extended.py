@@ -76,6 +76,7 @@ async def test_extended_search(
                 text_content="The quick brown fox jumps over the lazy dog.",
                 # Mock embedding [1, 0, 0] for simplicity in SQL
                 embedding="[1.0, 0.0, 0.0]",
+                embedding_model="fake-embedding-v1",
             )
         )
         await session.commit()
@@ -110,6 +111,7 @@ async def test_extended_search_with_mock(
                 page_id="p0",
                 text_content="The quick brown fox.",
                 embedding="[1.0, 0.0, 0.0]",
+                embedding_model="fake-embedding-v1",
             )
         )
         await session.commit()

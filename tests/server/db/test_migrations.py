@@ -77,7 +77,7 @@ def test_migration_upgrades_successfully(migrated_db: str) -> None:
         # Check if the 'alembic_version' table exists and has the head revision
         result = conn.execute(text("SELECT version_num FROM alembic_version"))
         version = result.scalar()
-        assert version == "b7397248a96b"
+        assert version == "c1d2e3f4a5b6"
 
         # Check if a known table exists (e.g. users)
         result = conn.execute(text("SELECT count(*) FROM users"))
@@ -161,7 +161,7 @@ def test_orphaned_v0_20_0_migration_self_healing(tmp_path: Path) -> None:
     engine = create_engine(migration_db_url)
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "b7397248a96b"
+        assert version == "c1d2e3f4a5b6"
 
         # Verify task columns and types
         tasks = conn.execute(
@@ -428,4 +428,44 @@ def test_mixed_case_system_roots_deletes_retired_folders_and_reparents_recycled(
         ).scalar()
         assert recycled_parent_id == 9000
 
+    engine.dispose()
+
+
+def test_embedding_model_migration_backfill(
+    tmp_path: Path, alembic_config: Config
+) -> None:
+    """Verify migration c1d2e3f4a5b6 adds embedding_model and backfills existing embeddings."""
+    db_path = tmp_path / "embedding_model_backfill.db"
+    shutil.copy(Path("tests/fixtures/db_v1.sqlite").absolute(), db_path)
+    url = f"sqlite:///{db_path}"
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "b7397248a96b")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO f_note_page_content "
+                "(id, file_id, page_index, page_id, content_hash, text_content, embedding, create_time, update_time) "
+                "VALUES "
+                "(9001, 1001, 0, 'p0', 'h0', 'text with embedding', '[0.1, 0.2]', 0, 0), "
+                "(9002, 1001, 1, 'p1', 'h1', 'text without embedding', NULL, 0, 0)"
+            )
+        )
+
+    command.upgrade(alembic_config, "c1d2e3f4a5b6")
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT page_index, embedding_model FROM f_note_page_content "
+                "WHERE file_id = 1001 ORDER BY page_index"
+            )
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [
+            (0, "gemini-embedding-001"),
+            (1, None),
+        ]
+
+    command.downgrade(alembic_config, "b7397248a96b")
     engine.dispose()

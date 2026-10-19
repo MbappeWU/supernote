@@ -1,7 +1,11 @@
 import json
 import logging
 
+from sqlalchemy import or_, select
+from sqlalchemy.sql import Select
+
 from supernote.server.ai.models.embedding import EmbeddingModel, EmbeddingTaskType
+from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.file import FileService
 from supernote.server.services.processor_modules import ProcessorModule
@@ -29,6 +33,22 @@ class EmbeddingModule(ProcessorModule):
     def task_type(self) -> str:
         return "EMBEDDING_GENERATION"
 
+    def missing_tasks_file_ids_stmt(self) -> Select[tuple[int]] | None:
+        if self.embedding_model is None:
+            return None
+        return (
+            select(NotePageContentDO.file_id)
+            .where(NotePageContentDO.text_content.isnot(None))
+            .where(NotePageContentDO.text_content != "")
+            .where(
+                or_(
+                    NotePageContentDO.embedding.is_(None),
+                    NotePageContentDO.embedding_model.is_(None),
+                    NotePageContentDO.embedding_model != self.embedding_model.model_id,
+                )
+            )
+        )
+
     async def run_if_needed(
         self,
         file_id: int,
@@ -42,11 +62,6 @@ class EmbeddingModule(ProcessorModule):
         if self.embedding_model is None:
             return False
 
-        if not await super().run_if_needed(
-            file_id, session_manager, page_index, page_id
-        ):
-            return False
-
         async with session_manager.session() as session:
             # Check Prerequisites (Text Content must exist)
             content = await get_page_content_by_id(session, file_id, page_id)
@@ -55,7 +70,15 @@ class EmbeddingModule(ProcessorModule):
                 # Dependency not met yet (OCR not done or empty page)
                 return False
 
-        return True
+            if (
+                content.embedding is None
+                or content.embedding_model != self.embedding_model.model_id
+            ):
+                return True
+
+        return await super().run_if_needed(
+            file_id, session_manager, page_index, page_id
+        )
 
     async def process(
         self,
@@ -94,6 +117,7 @@ class EmbeddingModule(ProcessorModule):
 
             if content:
                 content.embedding = embedding_json
+                content.embedding_model = self.embedding_model.model_id
             await session.commit()
 
         logger.info(f"Completed Embedding for file {file_id} page {page_index}")

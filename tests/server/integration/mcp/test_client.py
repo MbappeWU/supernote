@@ -66,6 +66,7 @@ async def notebook_file_id(
             page_id="P001",
             text_content="This is a test note.",
             embedding=json.dumps([0.1] * 768),
+            embedding_model="fake-embedding-v1",
         )
         db.add(content_do)
         await db.commit()

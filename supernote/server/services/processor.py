@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from supernote.models.base import ProcessingStatus
 from supernote.server.metrics import (
@@ -297,20 +297,26 @@ class ProcessorService:
         self._update_queue_metrics()
 
     async def recover_missing_tasks(self) -> None:
-        """Find .note files that have no system tasks and enqueue them."""
+        """Find .note files that have missing or outdated tasks and enqueue them."""
         logger.info("Checking for files with missing tasks...")
-        async with self.session_manager.session() as session:
-            # Subquery to find file_ids that exist in f_system_task
-            task_exists_stmt = select(SystemTaskDO.file_id)
+        conditions = [UserFileDO.id.not_in(select(SystemTaskDO.file_id))]
+        for module in (
+            *self.global_pre_modules,
+            *self.page_modules,
+            *self.global_post_modules,
+        ):
+            module_stmt = module.missing_tasks_file_ids_stmt()
+            if module_stmt is not None:
+                conditions.append(UserFileDO.id.in_(module_stmt))
 
-            # Find all active UserFileDO with .note extension that are NOT in f_system_task
+        async with self.session_manager.session() as session:
             stmt = (
                 select(UserFileDO.id, UserFileDO.user_id)
                 .where(
                     UserFileDO.file_name.like("%.note"),
                     UserFileDO.is_active == "Y",
                 )
-                .where(UserFileDO.id.not_in(task_exists_stmt))
+                .where(or_(*conditions))
             )
             result = await session.execute(stmt)
             missing = result.all()

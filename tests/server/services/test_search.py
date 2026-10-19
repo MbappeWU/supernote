@@ -64,6 +64,7 @@ async def test_search_chunks_success(
                 page_id="p0",
                 text_content="This is the first chunk about cats.",
                 embedding=json.dumps(cats_vec),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         session.add(
@@ -73,6 +74,7 @@ async def test_search_chunks_success(
                 page_id="p0",
                 text_content="This is the second chunk about dogs.",
                 embedding=json.dumps(orthogonal_vec),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         await session.commit()
@@ -126,6 +128,7 @@ async def test_search_chunks_inactive_file(
                 page_id="p0",
                 text_content="Cats are active pets.",
                 embedding=json.dumps([1.0, 0.0, 0.0]),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         session.add(
@@ -135,6 +138,7 @@ async def test_search_chunks_inactive_file(
                 page_id="p0",
                 text_content="Cats were deleted pets.",
                 embedding=json.dumps([1.0, 0.0, 0.0]),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         await session.commit()
@@ -178,6 +182,7 @@ async def test_search_chunks_with_name_filter(
                 page_id="p0",
                 text_content="Cats are great.",
                 embedding=json.dumps([1.0, 0.0, 0.0]),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         session.add(
@@ -187,6 +192,7 @@ async def test_search_chunks_with_name_filter(
                 page_id="p0",
                 text_content="Dogs are great.",
                 embedding=json.dumps([1.0, 0.0, 0.0]),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         await session.commit()
@@ -290,6 +296,7 @@ async def test_search_chunks_with_date_filter_inferred(
                 page_id="P20231027120000abc",
                 text_content="Page 1 content.",
                 embedding=json.dumps([1.0, 0.0, 0.0]),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         # Page from 2023-10-28
@@ -300,6 +307,7 @@ async def test_search_chunks_with_date_filter_inferred(
                 page_id="P20231028120000def",
                 text_content="Page 2 content.",
                 embedding=json.dumps([1.0, 0.0, 0.0]),
+                embedding_model=fake_embedding_model.model_id,
             )
         )
         await session.commit()
@@ -324,6 +332,57 @@ async def test_search_chunks_with_date_filter_inferred(
         user_id=user_id, query="test", date_after="2023-10-27", date_before="2023-10-29"
     )
     assert len(results) == 2
+
+
+async def test_search_chunks_filters_by_embedding_model(
+    search_service: SearchService,
+    session_manager: DatabaseSessionManager,
+    fake_embedding_model: FakeEmbeddingModel,
+) -> None:
+    """Verify search_chunks ignores pages embedded with a different model or None."""
+    user_id = 1
+    file_id = 101
+
+    async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=file_id, user_id=user_id, file_name="Journal.note", directory_id=0
+            )
+        )
+        session.add_all(
+            [
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=0,
+                    page_id="p0",
+                    text_content="Matching model page.",
+                    embedding=json.dumps([1.0, 0.0, 0.0]),
+                    embedding_model=fake_embedding_model.model_id,
+                ),
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=1,
+                    page_id="p1",
+                    text_content="Other model page with different dimensions.",
+                    embedding=json.dumps([1.0] * 768),
+                    embedding_model="gemini-embedding-001",
+                ),
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=2,
+                    page_id="p2",
+                    text_content="Unannotated model page.",
+                    embedding=json.dumps([1.0, 0.0, 0.0]),
+                    embedding_model=None,
+                ),
+            ]
+        )
+        await session.commit()
+
+    results = await search_service.search_chunks(user_id=user_id, query="test", top_n=5)
+    assert len(results) == 1
+    assert results[0].page_index == 0
+    assert results[0].text_preview == "Matching model page."
 
 
 async def test_list_notebooks(

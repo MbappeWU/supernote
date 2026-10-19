@@ -76,6 +76,7 @@ async def test_process_embedding_success(
 
         assert updated_content is not None
         assert updated_content.embedding is not None
+        assert updated_content.embedding_model == fake_embedding_model.model_id
         embedding_list = json.loads(updated_content.embedding)
         assert embedding_list == await fake_embedding_model.embed(
             "This is the text to embed.",
@@ -97,6 +98,68 @@ async def test_process_embedding_success(
 
         assert task is not None
         assert task.status == "COMPLETED"
+
+
+async def test_embedding_reembeds_when_model_changes(
+    file_service: FileService,
+    session_manager: DatabaseSessionManager,
+) -> None:
+    """Verify EmbeddingModule re-runs when embedding_model changes even if SystemTaskDO is COMPLETED."""
+    file_id = 1000
+    model_v1 = FakeEmbeddingModel(model_id="model-v1")
+    model_v2 = FakeEmbeddingModel(model_id="model-v2", dimensions=4)
+
+    module_v1 = EmbeddingModule(file_service=file_service, embedding_model=model_v1)
+    module_v2 = EmbeddingModule(file_service=file_service, embedding_model=model_v2)
+
+    async with session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=file_id,
+                user_id=1,
+                storage_key="key",
+                file_name="note.note",
+                directory_id=0,
+            )
+        )
+        session.add(
+            NotePageContentDO(
+                file_id=file_id,
+                page_index=0,
+                page_id="p0",
+                content_hash="h0",
+                text_content="Page text.",
+            )
+        )
+        await session.commit()
+
+    # Initial run with model-v1
+    await module_v1.run(file_id, session_manager, page_index=0, page_id="p0")
+    assert (
+        await module_v1.run_if_needed(
+            file_id, session_manager, page_index=0, page_id="p0"
+        )
+        is False
+    )
+
+    # Switching to model-v2 should require re-running despite COMPLETED SystemTaskDO
+    assert (
+        await module_v2.run_if_needed(
+            file_id, session_manager, page_index=0, page_id="p0"
+        )
+        is True
+    )
+    await module_v2.run(file_id, session_manager, page_index=0, page_id="p0")
+
+    async with session_manager.session() as session:
+        content = (
+            await session.execute(
+                select(NotePageContentDO).where(NotePageContentDO.file_id == file_id)
+            )
+        ).scalar_one()
+        assert content.embedding_model == "model-v2"
+        assert content.embedding is not None
+        assert len(json.loads(content.embedding)) == 4
 
 
 async def test_embedding_run_if_needed_disabled(
