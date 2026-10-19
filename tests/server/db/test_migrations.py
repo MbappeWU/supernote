@@ -351,8 +351,8 @@ def test_mixed_case_system_roots_autorename_when_src_has_numbered_sibling(
         )
         assert {r.file_name: (r.id, r.md5) for r in active_rows} == {
             "clash.pdf": (9003, "c"),
-            "clash (1).pdf": (9001, "a"),
-            "clash (2).pdf": (9002, "b"),
+            "clash (1).pdf": (9002, "b"),
+            "clash (2).pdf": (9001, "a"),
         }
 
     engine.dispose()

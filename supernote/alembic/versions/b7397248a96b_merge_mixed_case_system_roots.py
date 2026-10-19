@@ -49,33 +49,79 @@ def _free_name(name: str, is_folder: str, taken: set[tuple[str, str]]) -> str:
     return candidate
 
 
+def _retire_duplicate_file(
+    bind: sa.Connection, src_file_id: int, dst_file_id: int, now: int
+) -> None:
+    """Repoint dependent records from `src_file_id` to `dst_file_id`, then delete `src_file_id`."""
+    bind.execute(
+        sa.text(
+            "UPDATE f_summary SET file_id = :dst, update_time = :now "
+            "WHERE file_id = :src"
+        ),
+        {"dst": dst_file_id, "src": src_file_id, "now": now},
+    )
+    bind.execute(
+        sa.text(
+            "UPDATE f_note_page_content SET file_id = :dst "
+            "WHERE file_id = :src "
+            "AND page_id NOT IN ("
+            "    SELECT page_id FROM f_note_page_content WHERE file_id = :dst"
+            ")"
+        ),
+        {"dst": dst_file_id, "src": src_file_id},
+    )
+    bind.execute(
+        sa.text("DELETE FROM f_note_page_content WHERE file_id = :src"),
+        {"src": src_file_id},
+    )
+    bind.execute(
+        sa.text(
+            "UPDATE f_system_task SET file_id = :dst "
+            "WHERE file_id = :src "
+            "AND NOT EXISTS ("
+            "    SELECT 1 FROM f_system_task t2 "
+            "    WHERE t2.file_id = :dst "
+            "    AND t2.task_type = f_system_task.task_type "
+            "    AND t2.key = f_system_task.key"
+            ")"
+        ),
+        {"dst": dst_file_id, "src": src_file_id},
+    )
+    bind.execute(
+        sa.text("DELETE FROM f_system_task WHERE file_id = :src"),
+        {"src": src_file_id},
+    )
+    bind.execute(
+        sa.text("DELETE FROM f_user_file WHERE id = :id"),
+        {"id": src_file_id},
+    )
+
+
 def _merge(
     bind: sa.Connection, user_id: int, src_id: int, dst_id: int, now: int
 ) -> None:
     """Move everything in folder `src_id` into folder `dst_id`, then retire `src_id`."""
     existing = {(c.file_name, c.is_folder): c for c in _children(bind, user_id, dst_id)}
-    taken = set(existing)
+    src_children = _children(bind, user_id, src_id)
+    placed = set(existing)
+    taken = set(existing) | {(c.file_name, c.is_folder) for c in src_children}
 
-    for child in _children(bind, user_id, src_id):
+    for child in src_children:
         clash = existing.get((child.file_name, child.is_folder))
         if clash is not None and child.is_folder == "Y":
             _merge(bind, user_id, child.id, clash.id, now)
             continue
         if clash is not None and child.md5 and child.md5 == clash.md5:
             # The same file in both folders: keep the one already in place.
-            bind.execute(
-                sa.text(
-                    "UPDATE f_user_file SET is_active = 'N', update_time = :now "
-                    "WHERE id = :id"
-                ),
-                {"id": child.id, "now": now},
-            )
+            _retire_duplicate_file(bind, child.id, clash.id, now)
             continue
 
         new_name = child.file_name
-        if clash is not None:
+        if (new_name, child.is_folder) in placed:
             new_name = _free_name(child.file_name, child.is_folder, taken)
+        placed.add((new_name, child.is_folder))
         taken.add((new_name, child.is_folder))
+        existing[(new_name, child.is_folder)] = child
         bind.execute(
             sa.text(
                 "UPDATE f_user_file SET directory_id = :dst, file_name = :name, "
@@ -84,11 +130,17 @@ def _merge(
             {"dst": dst_id, "name": new_name, "now": now, "id": child.id},
         )
 
+    # Reparent any soft-deleted (Recycle Bin) children so restoring them finds an active parent.
     bind.execute(
         sa.text(
-            "UPDATE f_user_file SET is_active = 'N', update_time = :now WHERE id = :id"
+            "UPDATE f_user_file SET directory_id = :dst, update_time = :now "
+            "WHERE user_id = :user_id AND directory_id = :src AND is_active = 'N'"
         ),
-        {"id": src_id, "now": now},
+        {"dst": dst_id, "src": src_id, "user_id": user_id, "now": now},
+    )
+    bind.execute(
+        sa.text("DELETE FROM f_user_file WHERE id = :id"),
+        {"id": src_id},
     )
 
 
