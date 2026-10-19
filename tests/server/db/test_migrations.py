@@ -8,7 +8,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
-from supernote.server.config import AiConfig, ModelConfig, ServerConfig
+from supernote.server.config import ServerConfig
 from supernote.server.db.migrations import run_migrations
 
 
@@ -466,11 +466,7 @@ def test_embedding_model_migration_backfill(
     run_migrations(
         url,
         "c1d2e3f4a5b6",
-        config=ServerConfig(
-            ai=AiConfig(
-                embedding=ModelConfig(provider="fake", model="fake-embedding-v1")
-            )
-        ),
+        config=ServerConfig(gemini_embedding_model="fake-embedding-v1"),
     )
 
     with engine.connect() as conn:

@@ -29,8 +29,6 @@ def _get_configured_embedding_model() -> str:
     )
     if server_config is None:
         server_config = ServerConfig.load()
-    if server_config.ai.embedding is not None:
-        return server_config.ai.embedding.model
     return server_config.gemini_embedding_model
 
 
