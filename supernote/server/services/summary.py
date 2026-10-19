@@ -3,7 +3,7 @@ import logging
 import time
 import uuid
 
-from sqlalchemy import and_, select
+from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.base import BooleanEnum
@@ -218,35 +218,57 @@ class SummaryService:
             await session.commit()
             return True
 
+    @staticmethod
+    def _build_summary_filters(
+        user_id: int,
+        parent_uuid: str | None = None,
+        ids: list[int] | None = None,
+    ) -> list[ColumnElement[bool]]:
+        """Build SQLAlchemy filter predicates for leaf summaries."""
+        filters: list[ColumnElement[bool]] = [
+            SummaryDO.user_id == user_id,
+            SummaryDO.is_deleted.is_(False),
+            SummaryDO.is_summary_group.is_(False),
+        ]
+        if parent_uuid is not None:
+            filters.append(SummaryDO.parent_unique_identifier == parent_uuid)
+        if ids:
+            filters.append(SummaryDO.id.in_(ids))
+        return filters
+
+    async def count_summaries(
+        self,
+        user_email: str,
+        parent_uuid: str | None = None,
+        ids: list[int] | None = None,
+    ) -> int:
+        """Count total matching summaries for pagination metadata."""
+        user_id = await self.user_service.get_user_id(user_email)
+        async with self.session_manager.session() as session:
+            filters = self._build_summary_filters(
+                user_id, parent_uuid=parent_uuid, ids=ids
+            )
+            stmt = select(func.count()).select_from(SummaryDO).where(and_(*filters))
+            return int((await session.execute(stmt)).scalar() or 0)
+
     async def list_summaries(
         self,
         user_email: str,
         parent_uuid: str | None = None,
         ids: list[int] | None = None,
-        page: int = 1,
-        size: int = 20,
+        page: int | None = 1,
+        size: int | None = 20,
     ) -> list[SummaryItem]:
         """List summaries based on filters."""
         user_id = await self.user_service.get_user_id(user_email)
         async with self.session_manager.session() as session:
-            filters = [
-                SummaryDO.user_id == user_id,
-                SummaryDO.is_deleted.is_(False),
-                SummaryDO.is_summary_group.is_(False),
-            ]
-
-            if parent_uuid is not None:
-                filters.append(SummaryDO.parent_unique_identifier == parent_uuid)
-
-            if ids:
-                filters.append(SummaryDO.id.in_(ids))
-
-            stmt = (
-                select(SummaryDO)
-                .where(and_(*filters))
-                .offset((page - 1) * size)
-                .limit(size)
+            filters = self._build_summary_filters(
+                user_id, parent_uuid=parent_uuid, ids=ids
             )
+            stmt = select(SummaryDO).where(and_(*filters)).order_by(SummaryDO.id.asc())
+            if size is not None and size > 0:
+                effective_page = page if (page and page > 0) else 1
+                stmt = stmt.offset((effective_page - 1) * size).limit(size)
             result = await session.execute(stmt)
             summaries = list(result.scalars().all())
             return [_to_summary_item(s) for s in summaries]
@@ -300,13 +322,26 @@ class SummaryService:
         # or recursively delete children. For now, we follow the leaf summary pattern.
         return await self.delete_summary(user_email, group_id)
 
+    async def count_groups(self, user_email: str) -> int:
+        """Count total non-deleted summary groups for a user."""
+        user_id = await self.user_service.get_user_id(user_email)
+        async with self.session_manager.session() as session:
+            stmt = (
+                select(func.count())
+                .select_from(SummaryDO)
+                .where(
+                    SummaryDO.user_id == user_id,
+                    SummaryDO.is_deleted.is_(False),
+                    SummaryDO.is_summary_group.is_(True),
+                )
+            )
+            return int((await session.execute(stmt)).scalar() or 0)
+
     async def list_groups(
         self, user_email: str, dto: QuerySummaryGroupDTO
     ) -> list[SummaryItem]:
         """List summary groups for a user."""
         user_id = await self.user_service.get_user_id(user_email)
-        page = dto.page or 1
-        size = dto.size or 20
         async with self.session_manager.session() as session:
             stmt = (
                 select(SummaryDO)
@@ -315,9 +350,12 @@ class SummaryService:
                     SummaryDO.is_deleted.is_(False),
                     SummaryDO.is_summary_group.is_(True),
                 )
-                .offset((page - 1) * size)
-                .limit(size)
+                .order_by(SummaryDO.id.asc())
             )
+            if dto.size is None or dto.size > 0:
+                page = dto.page if (dto.page and dto.page > 0) else 1
+                size = dto.size if (dto.size and dto.size > 0) else 20
+                stmt = stmt.offset((page - 1) * size).limit(size)
             result = await session.execute(stmt)
             groups = list(result.scalars().all())
             return [_to_summary_item(g) for g in groups]
@@ -361,29 +399,16 @@ class SummaryService:
     ) -> list[SummaryInfoItem]:
         """List lightweight summary info for integrity checking."""
         user_id = await self.user_service.get_user_id(user_email)
-        page = dto.page or 1
-        size = dto.size or 20
         async with self.session_manager.session() as session:
-            filters = [
-                SummaryDO.user_id == user_id,
-                SummaryDO.is_deleted.is_(False),
-                SummaryDO.is_summary_group.is_(False),
-            ]
-
-            if dto.parent_unique_identifier is not None:
-                filters.append(
-                    SummaryDO.parent_unique_identifier == dto.parent_unique_identifier
-                )
-
-            if dto.ids:
-                filters.append(SummaryDO.id.in_(dto.ids))
-
-            stmt = (
-                select(SummaryDO)
-                .where(and_(*filters))
-                .offset((page - 1) * size)
-                .limit(size)
+            filters = self._build_summary_filters(
+                user_id,
+                parent_uuid=dto.parent_unique_identifier,
+                ids=dto.ids,
             )
+            stmt = select(SummaryDO).where(and_(*filters)).order_by(SummaryDO.id.asc())
+            if dto.size is not None and dto.size > 0:
+                page = dto.page if (dto.page and dto.page > 0) else 1
+                stmt = stmt.offset((page - 1) * dto.size).limit(dto.size)
             result = await session.execute(stmt)
             summaries = list(result.scalars().all())
             return [_to_summary_info_item(s) for s in summaries]
@@ -396,8 +421,8 @@ class SummaryService:
             user_email,
             parent_uuid=dto.parent_unique_identifier,
             ids=dto.ids,
-            page=dto.page or 1,
-            size=dto.size or 20,
+            page=dto.page if (dto.page and dto.page > 0) else 1,
+            size=dto.size if (dto.size and dto.size > 0) else None,
         )
 
     async def _get_summary(

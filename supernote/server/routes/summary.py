@@ -178,20 +178,41 @@ async def handle_query_summary(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
+        current_page = req_data.page if (req_data.page and req_data.page > 0) else 1
+        if req_data.size is not None and req_data.size > 0:
+            size: int | None = req_data.size
+        elif (req_data.size is not None and req_data.size <= 0) or req_data.ids:
+            size = None
+        else:
+            size = 20
+
         summaries = await summary_service.list_summaries(
             user_email,
             parent_uuid=req_data.parent_unique_identifier,
             ids=req_data.ids,
-            page=req_data.page or 1,
-            size=req_data.size or 20,
+            page=current_page,
+            size=size,
         )
+        if size is not None:
+            total_records = await summary_service.count_summaries(
+                user_email,
+                parent_uuid=req_data.parent_unique_identifier,
+                ids=req_data.ids,
+            )
+            total_pages = max(1, (total_records + size - 1) // size)
+            page_size = size
+        else:
+            total_records = len(summaries)
+            total_pages = 1
+            page_size = len(summaries)
+
         return web.json_response(
             QuerySummaryVO(
                 summary_do_list=summaries,
-                total_records=len(summaries),
-                total_pages=1,
-                current_page=req_data.page,
-                page_size=req_data.size,
+                total_records=total_records,
+                total_pages=total_pages,
+                current_page=current_page,
+                page_size=page_size,
             ).to_dict()
         )
     except SupernoteError as err:
@@ -266,14 +287,24 @@ async def handle_query_summary_group(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
+        current_page = req_data.page if (req_data.page and req_data.page > 0) else 1
         groups = await summary_service.list_groups(user_email, req_data)
+        if req_data.size is None or req_data.size > 0:
+            page_size = req_data.size if (req_data.size and req_data.size > 0) else 20
+            total_records = await summary_service.count_groups(user_email)
+            total_pages = max(1, (total_records + page_size - 1) // page_size)
+        else:
+            total_records = len(groups)
+            total_pages = 1
+            page_size = len(groups)
+
         return web.json_response(
             QuerySummaryGroupVO(
                 summary_do_list=groups,
-                total_records=len(groups),
-                total_pages=1,
-                current_page=req_data.page or 1,
-                page_size=req_data.size or 20,
+                total_records=total_records,
+                total_pages=total_pages,
+                current_page=current_page,
+                page_size=page_size,
             ).to_dict()
         )
     except SupernoteError as err:
@@ -365,14 +396,28 @@ async def handle_query_summary_hash(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
+        current_page = req_data.page if (req_data.page and req_data.page > 0) else 1
         infos = await summary_service.list_summary_infos(user_email, req_data)
+        if req_data.size is not None and req_data.size > 0:
+            page_size = req_data.size
+            total_records = await summary_service.count_summaries(
+                user_email,
+                parent_uuid=req_data.parent_unique_identifier,
+                ids=req_data.ids,
+            )
+            total_pages = max(1, (total_records + page_size - 1) // page_size)
+        else:
+            total_records = len(infos)
+            total_pages = 1
+            page_size = len(infos)
+
         return web.json_response(
             QuerySummaryMD5HashVO(
                 summary_info_vo_list=infos,
-                total_records=len(infos),
-                total_pages=1,
-                current_page=req_data.page or 1,
-                page_size=req_data.size or 20,
+                total_records=total_records,
+                total_pages=total_pages,
+                current_page=current_page,
+                page_size=page_size,
             ).to_dict()
         )
     except SupernoteError as err:

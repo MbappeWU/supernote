@@ -380,3 +380,97 @@ async def test_summary_uuid_scoped_per_user(client: TestClient) -> None:
     assert grp_b.unique_identifier == shared_group_uuid
     assert grp_a.name == "Group A"
     assert grp_b.name == "Group B"
+
+
+async def test_summary_unpaginated_hash_and_batch_id_queries(
+    summary_client: SummaryClient,
+) -> None:
+    """Verify hash manifest and batch ID queries do not truncate at 20 items when unpaginated."""
+    created_ids: list[int] = []
+    for idx in range(25):
+        resp = await summary_client.add_summary(
+            AddSummaryDTO(
+                unique_identifier=f"unpaginated-uuid-{idx}",
+                content=f"Digest content {idx}",
+            )
+        )
+        assert resp.success and resp.id is not None
+        created_ids.append(resp.id)
+
+    # 1. Device hash manifest query with page=0, size=0 returns all 25 digests
+    hash_zero = await summary_client.query_summary_hash(QuerySummaryDTO(page=0, size=0))
+    assert hash_zero.success
+    assert len(hash_zero.summary_info_vo_list) == 25
+    assert hash_zero.total_records == 25
+    assert hash_zero.total_pages == 1
+    assert [item.id for item in hash_zero.summary_info_vo_list] == created_ids
+
+    # 2. Omitted page/size on hash manifest query also returns all 25 digests
+    hash_default = await summary_client.query_summary_hash(QuerySummaryDTO())
+    assert hash_default.success
+    assert len(hash_default.summary_info_vo_list) == 25
+    assert hash_default.total_records == 25
+    assert hash_default.total_pages == 1
+
+    # 3. Batch ID query via /api/file/query/summary/id with >20 IDs returns all 25
+    batch_resp = await summary_client.query_summary_id(QuerySummaryDTO(ids=created_ids))
+    assert batch_resp.success
+    assert [item.id for item in batch_resp.summary_do_list] == created_ids
+
+    # 4. Paginated /api/file/query/summary and /api/file/query/summary/hash return accurate totalRecords and totalPages
+    page1 = await summary_client.query_summaries(page=1, size=10)
+    assert page1.success
+    assert len(page1.summary_do_list) == 10
+    assert page1.total_records == 25
+    assert page1.total_pages == 3
+    assert page1.current_page == 1
+    assert page1.page_size == 10
+
+    page3 = await summary_client.query_summaries(page=3, size=10)
+    assert page3.success
+    assert len(page3.summary_do_list) == 5
+    assert page3.total_records == 25
+    assert page3.total_pages == 3
+    assert page3.current_page == 3
+    assert page3.page_size == 10
+
+    hash_page2 = await summary_client.query_summary_hash(
+        QuerySummaryDTO(page=2, size=10)
+    )
+    assert hash_page2.success
+    assert len(hash_page2.summary_info_vo_list) == 10
+    assert hash_page2.total_records == 25
+    assert hash_page2.total_pages == 3
+    assert hash_page2.current_page == 2
+    assert hash_page2.page_size == 10
+
+
+async def test_summary_group_pagination_metadata(
+    summary_client: SummaryClient,
+) -> None:
+    """Verify summary group queries return accurate totalRecords and totalPages across pages."""
+    for idx in range(5):
+        resp = await summary_client.add_group(
+            AddSummaryGroupDTO(
+                unique_identifier=f"group-page-uuid-{idx}",
+                name=f"Group {idx}",
+                md5_hash=f"hash-{idx}",
+            )
+        )
+        assert resp.success
+
+    page1 = await summary_client.query_groups(page=1, size=2)
+    assert page1.success
+    assert len(page1.summary_do_list) == 2
+    assert page1.total_records == 5
+    assert page1.total_pages == 3
+    assert page1.current_page == 1
+    assert page1.page_size == 2
+
+    page3 = await summary_client.query_groups(page=3, size=2)
+    assert page3.success
+    assert len(page3.summary_do_list) == 1
+    assert page3.total_records == 5
+    assert page3.total_pages == 3
+    assert page3.current_page == 3
+    assert page3.page_size == 2
