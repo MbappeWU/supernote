@@ -51,6 +51,16 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 
+async def _check_ip_rate_limit(request: web.Request) -> None:
+    ip = request.remote or "unknown"
+    rate_limiter = request.app["rate_limiter"]
+    await rate_limiter.check(
+        f"{LOGIN_KEY_IP}:{ip}",
+        limit=LIMIT_LOGIN_IP_MAX,
+        window=LIMIT_LOGIN_IP_WINDOW,
+    )
+
+
 @routes.post("/api/equipment/bind/status")
 @routes.get("/api/equipment/bind/status")
 @public_route
@@ -101,6 +111,10 @@ async def handle_check_user_exists(request: web.Request) -> web.Response:
             create_error_response("Invalid request format").to_dict(),
             status=400,
         )
+    try:
+        await _check_ip_rate_limit(request)
+    except RateLimitExceeded as e:
+        return e.to_response()
     user_service: UserService = request.app["user_service"]
     if await user_service.check_user_exists(user_check_req.email or ""):
         return web.json_response(BaseResponse().to_dict())
@@ -130,6 +144,10 @@ async def handle_random_code(request: web.Request) -> web.Response:
             create_error_response("Invalid request format").to_dict(),
             status=400,
         )
+    try:
+        await _check_ip_rate_limit(request)
+    except RateLimitExceeded as e:
+        return e.to_response()
     user_service: UserService = request.app["user_service"]
     random_code, timestamp = await user_service.generate_random_code(code_req.account)
     return web.json_response(
@@ -164,11 +182,7 @@ async def handle_login(request: web.Request) -> web.Response:
     # RATE LIMIT CHECKS
     rate_limiter = request.app["rate_limiter"]
     try:
-        await rate_limiter.check(
-            f"{LOGIN_KEY_IP}:{ip}",
-            limit=LIMIT_LOGIN_IP_MAX,
-            window=LIMIT_LOGIN_IP_WINDOW,
-        )
+        await _check_ip_rate_limit(request)
         await rate_limiter.check(
             f"{LOGIN_KEY_ACCOUNT}:{login_req.account}",
             limit=LIMIT_LOGIN_ACCOUNT_MAX,
@@ -301,6 +315,11 @@ async def handle_register(request: web.Request) -> web.Response:
         dto = UserRegisterDTO.from_dict(req_data)
     except (MissingField, ValueError) as e:
         return web.json_response(create_error_response(str(e)).to_dict(), status=400)
+
+    try:
+        await _check_ip_rate_limit(request)
+    except RateLimitExceeded as e:
+        return e.to_response()
 
     user_service: UserService = request.app["user_service"]
     try:
