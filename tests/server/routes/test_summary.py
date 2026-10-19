@@ -9,6 +9,9 @@ from supernote.models.summary import (
     AddSummaryDTO,
     AddSummaryGroupDTO,
     QuerySummaryDTO,
+    QuerySummaryGroupVO,
+    QuerySummaryMD5HashVO,
+    QuerySummaryVO,
     UpdateSummaryDTO,
     UpdateSummaryGroupDTO,
 )
@@ -397,52 +400,70 @@ async def test_summary_unpaginated_hash_and_batch_id_queries(
         assert resp.success and resp.id is not None
         created_ids.append(resp.id)
 
-    # 1. Device hash manifest query with page=0, size=0 returns all 25 digests
     hash_zero = await summary_client.query_summary_hash(QuerySummaryDTO(page=0, size=0))
-    assert hash_zero.success
-    assert len(hash_zero.summary_info_vo_list) == 25
-    assert hash_zero.total_records == 25
-    assert hash_zero.total_pages == 1
+    assert hash_zero == QuerySummaryMD5HashVO(
+        summary_info_vo_list=hash_zero.summary_info_vo_list,
+        total_records=25,
+        total_pages=1,
+        current_page=1,
+        page_size=25,
+    )
     assert [item.id for item in hash_zero.summary_info_vo_list] == created_ids
 
-    # 2. Omitted page/size on hash manifest query also returns all 25 digests
     hash_default = await summary_client.query_summary_hash(QuerySummaryDTO())
-    assert hash_default.success
-    assert len(hash_default.summary_info_vo_list) == 25
-    assert hash_default.total_records == 25
-    assert hash_default.total_pages == 1
+    assert hash_default == QuerySummaryMD5HashVO(
+        summary_info_vo_list=hash_default.summary_info_vo_list,
+        total_records=25,
+        total_pages=1,
+        current_page=1,
+        page_size=25,
+    )
 
-    # 3. Batch ID query via /api/file/query/summary/id with >20 IDs returns all 25
     batch_resp = await summary_client.query_summary_id(QuerySummaryDTO(ids=created_ids))
     assert batch_resp.success
     assert [item.id for item in batch_resp.summary_do_list] == created_ids
 
-    # 4. Paginated /api/file/query/summary and /api/file/query/summary/hash return accurate totalRecords and totalPages
+    ids_query_resp = await summary_client.query_summaries(ids=created_ids)
+    assert ids_query_resp == QuerySummaryVO(
+        summary_do_list=ids_query_resp.summary_do_list,
+        total_records=25,
+        total_pages=1,
+        current_page=1,
+        page_size=25,
+    )
+    assert [item.id for item in ids_query_resp.summary_do_list] == created_ids
+
     page1 = await summary_client.query_summaries(page=1, size=10)
-    assert page1.success
-    assert len(page1.summary_do_list) == 10
-    assert page1.total_records == 25
-    assert page1.total_pages == 3
-    assert page1.current_page == 1
-    assert page1.page_size == 10
+    assert page1 == QuerySummaryVO(
+        summary_do_list=page1.summary_do_list,
+        total_records=25,
+        total_pages=3,
+        current_page=1,
+        page_size=10,
+    )
+    assert [item.id for item in page1.summary_do_list] == created_ids[:10]
 
     page3 = await summary_client.query_summaries(page=3, size=10)
-    assert page3.success
-    assert len(page3.summary_do_list) == 5
-    assert page3.total_records == 25
-    assert page3.total_pages == 3
-    assert page3.current_page == 3
-    assert page3.page_size == 10
+    assert page3 == QuerySummaryVO(
+        summary_do_list=page3.summary_do_list,
+        total_records=25,
+        total_pages=3,
+        current_page=3,
+        page_size=10,
+    )
+    assert [item.id for item in page3.summary_do_list] == created_ids[20:]
 
     hash_page2 = await summary_client.query_summary_hash(
         QuerySummaryDTO(page=2, size=10)
     )
-    assert hash_page2.success
-    assert len(hash_page2.summary_info_vo_list) == 10
-    assert hash_page2.total_records == 25
-    assert hash_page2.total_pages == 3
-    assert hash_page2.current_page == 2
-    assert hash_page2.page_size == 10
+    assert hash_page2 == QuerySummaryMD5HashVO(
+        summary_info_vo_list=hash_page2.summary_info_vo_list,
+        total_records=25,
+        total_pages=3,
+        current_page=2,
+        page_size=10,
+    )
+    assert [item.id for item in hash_page2.summary_info_vo_list] == created_ids[10:20]
 
 
 async def test_summary_group_pagination_metadata(
@@ -460,17 +481,31 @@ async def test_summary_group_pagination_metadata(
         assert resp.success
 
     page1 = await summary_client.query_groups(page=1, size=2)
-    assert page1.success
+    assert page1 == QuerySummaryGroupVO(
+        summary_do_list=page1.summary_do_list,
+        total_records=5,
+        total_pages=3,
+        current_page=1,
+        page_size=2,
+    )
     assert len(page1.summary_do_list) == 2
-    assert page1.total_records == 5
-    assert page1.total_pages == 3
-    assert page1.current_page == 1
-    assert page1.page_size == 2
 
     page3 = await summary_client.query_groups(page=3, size=2)
-    assert page3.success
+    assert page3 == QuerySummaryGroupVO(
+        summary_do_list=page3.summary_do_list,
+        total_records=5,
+        total_pages=3,
+        current_page=3,
+        page_size=2,
+    )
     assert len(page3.summary_do_list) == 1
-    assert page3.total_records == 5
-    assert page3.total_pages == 3
-    assert page3.current_page == 3
-    assert page3.page_size == 2
+
+    unpaginated = await summary_client.query_groups(page=0, size=0)
+    assert unpaginated == QuerySummaryGroupVO(
+        summary_do_list=unpaginated.summary_do_list,
+        total_records=5,
+        total_pages=1,
+        current_page=1,
+        page_size=5,
+    )
+    assert len(unpaginated.summary_do_list) == 5

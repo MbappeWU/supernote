@@ -1,5 +1,6 @@
 import logging
 import urllib.parse
+from collections.abc import Awaitable, Callable
 
 from aiohttp import web
 
@@ -36,6 +37,24 @@ from supernote.server.utils.url_signer import UrlSigner, get_request_base_url
 
 logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
+
+
+async def _resolve_pagination_metadata(
+    items_count: int,
+    page: int | None,
+    size: int | None,
+    count_fn: Callable[[], Awaitable[int]],
+) -> tuple[int, int, int, int]:
+    """Compute (total_records, total_pages, current_page, page_size) for summary queries."""
+    current_page = page if (page and page > 0) else 1
+    if size is None or size <= 0:
+        return items_count, 1, current_page, items_count
+    if current_page == 1 and items_count < size:
+        total_records = items_count
+    else:
+        total_records = await count_fn()
+    total_pages = max(1, (total_records + size - 1) // size)
+    return total_records, total_pages, current_page, size
 
 
 @routes.post("/api/file/add/summary/tag")
@@ -178,34 +197,29 @@ async def handle_query_summary(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
-        current_page = req_data.page if (req_data.page and req_data.page > 0) else 1
-        if req_data.size is not None and req_data.size > 0:
-            size: int | None = req_data.size
-        elif (req_data.size is not None and req_data.size <= 0) or req_data.ids:
-            size = None
-        else:
-            size = 20
-
+        size = req_data.size if (req_data.size is not None or req_data.ids) else 20
         summaries = await summary_service.list_summaries(
             user_email,
             parent_uuid=req_data.parent_unique_identifier,
             ids=req_data.ids,
-            page=current_page,
+            page=req_data.page,
             size=size,
         )
-        if size is not None:
-            total_records = await summary_service.count_summaries(
+        (
+            total_records,
+            total_pages,
+            current_page,
+            page_size,
+        ) = await _resolve_pagination_metadata(
+            len(summaries),
+            req_data.page,
+            size,
+            lambda: summary_service.count_summaries(
                 user_email,
                 parent_uuid=req_data.parent_unique_identifier,
                 ids=req_data.ids,
-            )
-            total_pages = max(1, (total_records + size - 1) // size)
-            page_size = size
-        else:
-            total_records = len(summaries)
-            total_pages = 1
-            page_size = len(summaries)
-
+            ),
+        )
         return web.json_response(
             QuerySummaryVO(
                 summary_do_list=summaries,
@@ -287,17 +301,19 @@ async def handle_query_summary_group(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
-        current_page = req_data.page if (req_data.page and req_data.page > 0) else 1
+        size = 20 if req_data.size is None else req_data.size
         groups = await summary_service.list_groups(user_email, req_data)
-        if req_data.size is None or req_data.size > 0:
-            page_size = req_data.size if (req_data.size and req_data.size > 0) else 20
-            total_records = await summary_service.count_groups(user_email)
-            total_pages = max(1, (total_records + page_size - 1) // page_size)
-        else:
-            total_records = len(groups)
-            total_pages = 1
-            page_size = len(groups)
-
+        (
+            total_records,
+            total_pages,
+            current_page,
+            page_size,
+        ) = await _resolve_pagination_metadata(
+            len(groups),
+            req_data.page,
+            size,
+            lambda: summary_service.count_groups(user_email),
+        )
         return web.json_response(
             QuerySummaryGroupVO(
                 summary_do_list=groups,
@@ -396,21 +412,22 @@ async def handle_query_summary_hash(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
-        current_page = req_data.page if (req_data.page and req_data.page > 0) else 1
         infos = await summary_service.list_summary_infos(user_email, req_data)
-        if req_data.size is not None and req_data.size > 0:
-            page_size = req_data.size
-            total_records = await summary_service.count_summaries(
+        (
+            total_records,
+            total_pages,
+            current_page,
+            page_size,
+        ) = await _resolve_pagination_metadata(
+            len(infos),
+            req_data.page,
+            req_data.size,
+            lambda: summary_service.count_summaries(
                 user_email,
                 parent_uuid=req_data.parent_unique_identifier,
                 ids=req_data.ids,
-            )
-            total_pages = max(1, (total_records + page_size - 1) // page_size)
-        else:
-            total_records = len(infos)
-            total_pages = 1
-            page_size = len(infos)
-
+            ),
+        )
         return web.json_response(
             QuerySummaryMD5HashVO(
                 summary_info_vo_list=infos,

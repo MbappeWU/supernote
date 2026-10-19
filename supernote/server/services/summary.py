@@ -3,7 +3,7 @@ import logging
 import time
 import uuid
 
-from sqlalchemy import ColumnElement, and_, func, select
+from sqlalchemy import ColumnElement, Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.base import BooleanEnum
@@ -236,6 +236,18 @@ class SummaryService:
             filters.append(SummaryDO.id.in_(ids))
         return filters
 
+    @staticmethod
+    def _apply_pagination(
+        stmt: Select[tuple[SummaryDO]],
+        page: int | None,
+        size: int | None,
+    ) -> Select[tuple[SummaryDO]]:
+        """Apply SQL offset and limit when a positive page size is specified."""
+        if size is not None and size > 0:
+            effective_page = page if (page and page > 0) else 1
+            return stmt.offset((effective_page - 1) * size).limit(size)
+        return stmt
+
     async def count_summaries(
         self,
         user_email: str,
@@ -265,10 +277,11 @@ class SummaryService:
             filters = self._build_summary_filters(
                 user_id, parent_uuid=parent_uuid, ids=ids
             )
-            stmt = select(SummaryDO).where(and_(*filters)).order_by(SummaryDO.id.asc())
-            if size is not None and size > 0:
-                effective_page = page if (page and page > 0) else 1
-                stmt = stmt.offset((effective_page - 1) * size).limit(size)
+            stmt = self._apply_pagination(
+                select(SummaryDO).where(and_(*filters)).order_by(SummaryDO.id.asc()),
+                page,
+                size,
+            )
             result = await session.execute(stmt)
             summaries = list(result.scalars().all())
             return [_to_summary_item(s) for s in summaries]
@@ -343,19 +356,17 @@ class SummaryService:
         """List summary groups for a user."""
         user_id = await self.user_service.get_user_id(user_email)
         async with self.session_manager.session() as session:
-            stmt = (
+            stmt = self._apply_pagination(
                 select(SummaryDO)
                 .where(
                     SummaryDO.user_id == user_id,
                     SummaryDO.is_deleted.is_(False),
                     SummaryDO.is_summary_group.is_(True),
                 )
-                .order_by(SummaryDO.id.asc())
+                .order_by(SummaryDO.id.asc()),
+                dto.page,
+                20 if dto.size is None else dto.size,
             )
-            if dto.size is None or dto.size > 0:
-                page = dto.page if (dto.page and dto.page > 0) else 1
-                size = dto.size if (dto.size and dto.size > 0) else 20
-                stmt = stmt.offset((page - 1) * size).limit(size)
             result = await session.execute(stmt)
             groups = list(result.scalars().all())
             return [_to_summary_item(g) for g in groups]
@@ -405,10 +416,11 @@ class SummaryService:
                 parent_uuid=dto.parent_unique_identifier,
                 ids=dto.ids,
             )
-            stmt = select(SummaryDO).where(and_(*filters)).order_by(SummaryDO.id.asc())
-            if dto.size is not None and dto.size > 0:
-                page = dto.page if (dto.page and dto.page > 0) else 1
-                stmt = stmt.offset((page - 1) * dto.size).limit(dto.size)
+            stmt = self._apply_pagination(
+                select(SummaryDO).where(and_(*filters)).order_by(SummaryDO.id.asc()),
+                dto.page,
+                dto.size,
+            )
             result = await session.execute(stmt)
             summaries = list(result.scalars().all())
             return [_to_summary_info_item(s) for s in summaries]
@@ -421,8 +433,8 @@ class SummaryService:
             user_email,
             parent_uuid=dto.parent_unique_identifier,
             ids=dto.ids,
-            page=dto.page if (dto.page and dto.page > 0) else 1,
-            size=dto.size if (dto.size and dto.size > 0) else None,
+            page=dto.page,
+            size=dto.size,
         )
 
     async def _get_summary(
