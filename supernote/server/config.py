@@ -111,6 +111,68 @@ class WebhookConfig(DataClassYAMLMixin):
 
 
 @dataclass
+class ProviderConfig(DataClassYAMLMixin):
+    """Connection and authentication settings for an AI model provider."""
+
+    api_key: str | None = None
+    """API key for authenticating with the provider."""
+
+    base_url: str | None = None
+    """Optional custom base URL for the provider (e.g. local Ollama or vLLM server)."""
+
+    class Config(BaseConfig):
+        omit_none = True
+        code_generation_options = [TO_DICT_ADD_OMIT_NONE_FLAG]  # type: ignore[list-item]
+
+
+@dataclass
+class ModelConfig(DataClassYAMLMixin):
+    """Configuration for a task-specific AI model (`ocr`, `summary`, `embedding`)."""
+
+    provider: str = "gemini"
+    """Name of the provider entry in `ai.providers` (e.g. `'gemini'`, `'openai'`, `'mistral'`)."""
+
+    model: str = ""
+    """Provider-specific model identifier (e.g. `'gemini-3.6-flash'`)."""
+
+    max_concurrency: int = 5
+    """Maximum number of concurrent requests allowed for this model."""
+
+    def __post_init__(self) -> None:
+        if not self.provider or not self.provider.strip():
+            raise ValueError("ModelConfig must specify a non-empty provider.")
+        if not self.model or not self.model.strip():
+            raise ValueError("ModelConfig must specify a non-empty model.")
+        if self.max_concurrency < 1:
+            raise ValueError("ModelConfig max_concurrency must be >= 1.")
+
+    class Config(BaseConfig):
+        omit_none = True
+        code_generation_options = [TO_DICT_ADD_OMIT_NONE_FLAG]  # type: ignore[list-item]
+
+
+@dataclass
+class AiConfig(DataClassYAMLMixin):
+    """AI providers and per-capability model configuration."""
+
+    providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    """Configured AI providers keyed by provider name."""
+
+    ocr: ModelConfig | None = None
+    """Model configuration for page OCR extraction."""
+
+    summary: ModelConfig | None = None
+    """Model configuration for notebook summary generation."""
+
+    embedding: ModelConfig | None = None
+    """Model configuration for page embedding generation."""
+
+    class Config(BaseConfig):
+        omit_none = True
+        code_generation_options = [TO_DICT_ADD_OMIT_NONE_FLAG]  # type: ignore[list-item]
+
+
+@dataclass
 class ServerConfig(DataClassYAMLMixin):
     host: str = "0.0.0.0"
     """Host to bind the server to.
@@ -171,33 +233,37 @@ class ServerConfig(DataClassYAMLMixin):
 
     auth: AuthConfig = field(default_factory=AuthConfig)
 
+    ai: AiConfig = field(default_factory=AiConfig)
+    """Structured AI providers and per-capability model configuration."""
+
     gemini_api_key: str | None = None
-    """Google Gemini API Key for OCR and Embeddings.
+    """Legacy Google Gemini API Key for OCR, Summaries, and Embeddings.
+
+    Prefer configuring `ai.providers.gemini` and `ai.{ocr,summary,embedding}`.
 
     Env Var: `SUPERNOTE_GEMINI_API_KEY`
     """
 
     gemini_ocr_model: str = "gemini-3.6-flash"
-    """Gemini model to use for OCR.
+    """Legacy Gemini model to use for OCR and Summaries.
 
     Env Var: `SUPERNOTE_GEMINI_OCR_MODEL`
     """
 
     gemini_embedding_model: str = "gemini-embedding-001"
-    """Gemini model to use for Embeddings.
-BaseConfig
+    """Legacy Gemini model to use for Embeddings.
+
     Env Var: `SUPERNOTE_GEMINI_EMBEDDING_MODEL`
     """
 
-    # TODO(#301): Generalize `gemini_max_concurrency` to a provider-agnostic AI concurrency setting.
     gemini_max_concurrency: int = 5
-    """Maximum number of concurrent Gemini API calls.
+    """Legacy maximum number of concurrent Gemini API calls.
 
     Env Var: `SUPERNOTE_GEMINI_MAX_CONCURRENCY`
     """
 
     prompts_dir: str | None = None
-    """Directory where custom Gemini prompts are located.
+    """Directory where custom AI prompts are located.
 
     Env Var: `SUPERNOTE_PROMPTS_DIR`
     """
@@ -231,6 +297,40 @@ BaseConfig
 
     Env Var: `SUPERNOTE_WEB_NOTEBOOK_PREVIEW`
     """
+
+    def __post_init__(self) -> None:
+        self._sync_legacy_gemini_config()
+
+    def _sync_legacy_gemini_config(self) -> None:
+        """Synchronize legacy top-level `gemini_*` fields with `self.ai`."""
+        if self.gemini_api_key and self.gemini_api_key.strip():
+            gemini_provider = self.ai.providers.setdefault("gemini", ProviderConfig())
+            if not gemini_provider.api_key:
+                gemini_provider.api_key = self.gemini_api_key
+            if self.ai.ocr is None:
+                self.ai.ocr = ModelConfig(
+                    provider="gemini",
+                    model=self.gemini_ocr_model,
+                    max_concurrency=self.gemini_max_concurrency,
+                )
+            if self.ai.summary is None:
+                self.ai.summary = ModelConfig(
+                    provider="gemini",
+                    model=self.gemini_ocr_model,
+                    max_concurrency=self.gemini_max_concurrency,
+                )
+            if self.ai.embedding is None:
+                self.ai.embedding = ModelConfig(
+                    provider="gemini",
+                    model=self.gemini_embedding_model,
+                    max_concurrency=self.gemini_max_concurrency,
+                )
+        elif (
+            "gemini" in self.ai.providers
+            and self.ai.providers["gemini"].api_key
+            and not self.gemini_api_key
+        ):
+            self.gemini_api_key = self.ai.providers["gemini"].api_key
 
     @property
     def configured_base_url(self) -> str | None:
@@ -384,16 +484,25 @@ BaseConfig
 
         if gemini_api_key := os.getenv("SUPERNOTE_GEMINI_API_KEY"):
             config.gemini_api_key = gemini_api_key
+            config.ai.providers.setdefault(
+                "gemini", ProviderConfig()
+            ).api_key = gemini_api_key
             logger.info(
                 f"Using SUPERNOTE_GEMINI_API_KEY: xxx...{config.gemini_api_key[-3:]}"
             )
 
         if gemini_ocr_model := os.getenv("SUPERNOTE_GEMINI_OCR_MODEL"):
             config.gemini_ocr_model = gemini_ocr_model
+            if config.ai.ocr and config.ai.ocr.provider == "gemini":
+                config.ai.ocr.model = gemini_ocr_model
+            if config.ai.summary and config.ai.summary.provider == "gemini":
+                config.ai.summary.model = gemini_ocr_model
             logger.info(f"Using SUPERNOTE_GEMINI_OCR_MODEL: {config.gemini_ocr_model}")
 
         if gemini_embedding_model := os.getenv("SUPERNOTE_GEMINI_EMBEDDING_MODEL"):
             config.gemini_embedding_model = gemini_embedding_model
+            if config.ai.embedding and config.ai.embedding.provider == "gemini":
+                config.ai.embedding.model = gemini_embedding_model
             logger.info(
                 f"Using SUPERNOTE_GEMINI_EMBEDDING_MODEL: {config.gemini_embedding_model}"
             )
@@ -401,11 +510,20 @@ BaseConfig
         if gemini_max_concurrency := os.getenv("SUPERNOTE_GEMINI_MAX_CONCURRENCY"):
             try:
                 config.gemini_max_concurrency = int(gemini_max_concurrency)
+                for model_cfg in (
+                    config.ai.ocr,
+                    config.ai.summary,
+                    config.ai.embedding,
+                ):
+                    if model_cfg and model_cfg.provider == "gemini":
+                        model_cfg.max_concurrency = config.gemini_max_concurrency
                 logger.info(
                     f"Using SUPERNOTE_GEMINI_MAX_CONCURRENCY: {config.gemini_max_concurrency}"
                 )
             except ValueError:
                 pass
+
+        config._sync_legacy_gemini_config()
 
         if prompts_dir := os.getenv("SUPERNOTE_PROMPTS_DIR"):
             config.prompts_dir = prompts_dir

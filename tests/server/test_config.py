@@ -6,7 +6,13 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from supernote.server.config import ServerConfig, WebhookEndpointConfig
+from supernote.server.config import (
+    AiConfig,
+    ModelConfig,
+    ProviderConfig,
+    ServerConfig,
+    WebhookEndpointConfig,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -232,3 +238,141 @@ def test_server_config_web_flags(tmp_path: Path) -> None:
         loaded = ServerConfig.load(config_dir)
         assert loaded.web_enabled is False
         assert loaded.web_notebook_preview is False
+
+
+def test_server_config_ai_default_unconfigured() -> None:
+    """AI providers and models are unconfigured by default."""
+    config = ServerConfig()
+    assert config.ai == AiConfig()
+    assert config.ai.providers == {}
+    assert config.ai.ocr is None
+    assert config.ai.summary is None
+    assert config.ai.embedding is None
+
+
+def test_server_config_load_ai_from_file(tmp_path: Path) -> None:
+    """Structured ai configuration is parsed from config.yaml."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+
+    data = {
+        "ai": {
+            "providers": {
+                "gemini": {"api_key": "gemini-key"},
+                "openai": {
+                    "base_url": "http://localhost:11434/v1",
+                    "api_key": "ollama",
+                },
+            },
+            "ocr": {
+                "provider": "openai",
+                "model": "qwen2.5-vl:7b",
+                "max_concurrency": 2,
+            },
+            "summary": {
+                "provider": "gemini",
+                "model": "gemini-3.6-flash",
+                "max_concurrency": 4,
+            },
+            "embedding": {
+                "provider": "gemini",
+                "model": "gemini-embedding-001",
+                "max_concurrency": 8,
+            },
+        }
+    }
+    with open(config_file, "w") as f:
+        yaml.safe_dump(data, f)
+
+    config = ServerConfig.load(config_dir)
+
+    assert config.ai.providers == {
+        "gemini": ProviderConfig(api_key="gemini-key"),
+        "openai": ProviderConfig(
+            api_key="ollama",
+            base_url="http://localhost:11434/v1",
+        ),
+    }
+    assert config.ai.ocr == ModelConfig(
+        provider="openai",
+        model="qwen2.5-vl:7b",
+        max_concurrency=2,
+    )
+    assert config.ai.summary == ModelConfig(
+        provider="gemini",
+        model="gemini-3.6-flash",
+        max_concurrency=4,
+    )
+    assert config.ai.embedding == ModelConfig(
+        provider="gemini",
+        model="gemini-embedding-001",
+        max_concurrency=8,
+    )
+    assert config.gemini_api_key == "gemini-key"
+
+
+def test_server_config_legacy_gemini_syncs_to_ai(tmp_path: Path) -> None:
+    """Legacy gemini_* fields and env vars populate config.ai automatically."""
+    direct = ServerConfig(
+        gemini_api_key="legacy-key",
+        gemini_ocr_model="gemini-custom-ocr",
+        gemini_embedding_model="gemini-custom-embed",
+        gemini_max_concurrency=3,
+    )
+    assert direct.ai.providers["gemini"] == ProviderConfig(api_key="legacy-key")
+    assert direct.ai.ocr == ModelConfig(
+        provider="gemini",
+        model="gemini-custom-ocr",
+        max_concurrency=3,
+    )
+    assert direct.ai.summary == ModelConfig(
+        provider="gemini",
+        model="gemini-custom-ocr",
+        max_concurrency=3,
+    )
+    assert direct.ai.embedding == ModelConfig(
+        provider="gemini",
+        model="gemini-custom-embed",
+        max_concurrency=3,
+    )
+
+    config_dir = tmp_path / "config"
+    with patch.dict(
+        os.environ,
+        {
+            "SUPERNOTE_GEMINI_API_KEY": "env-gemini-key",
+            "SUPERNOTE_GEMINI_OCR_MODEL": "gemini-env-ocr",
+            "SUPERNOTE_GEMINI_EMBEDDING_MODEL": "gemini-env-embed",
+            "SUPERNOTE_GEMINI_MAX_CONCURRENCY": "7",
+        },
+    ):
+        loaded = ServerConfig.load(config_dir)
+        assert loaded.ai.providers["gemini"] == ProviderConfig(api_key="env-gemini-key")
+        assert loaded.ai.ocr == ModelConfig(
+            provider="gemini",
+            model="gemini-env-ocr",
+            max_concurrency=7,
+        )
+        assert loaded.ai.summary == ModelConfig(
+            provider="gemini",
+            model="gemini-env-ocr",
+            max_concurrency=7,
+        )
+        assert loaded.ai.embedding == ModelConfig(
+            provider="gemini",
+            model="gemini-env-embed",
+            max_concurrency=7,
+        )
+
+
+def test_model_config_validation() -> None:
+    """ModelConfig validates non-empty provider, model, and positive max_concurrency."""
+    with pytest.raises(ValueError, match="non-empty provider"):
+        ModelConfig(provider="  ", model="gemini-3.6-flash")
+
+    with pytest.raises(ValueError, match="non-empty model"):
+        ModelConfig(provider="gemini", model="")
+
+    with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
+        ModelConfig(provider="gemini", model="gemini-3.6-flash", max_concurrency=0)
