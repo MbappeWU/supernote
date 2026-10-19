@@ -78,7 +78,7 @@ def test_migration_upgrades_successfully(migrated_db: str) -> None:
         # Check if the 'alembic_version' table exists and has the head revision
         result = conn.execute(text("SELECT version_num FROM alembic_version"))
         version = result.scalar()
-        assert version == "d4e5f6a7b8c9"
+        assert version == "e7f8a9b0c1d2"
 
         # Check if a known table exists (e.g. users)
         result = conn.execute(text("SELECT count(*) FROM users"))
@@ -162,7 +162,7 @@ def test_orphaned_v0_20_0_migration_self_healing(tmp_path: Path) -> None:
     engine = create_engine(migration_db_url)
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "d4e5f6a7b8c9"
+        assert version == "e7f8a9b0c1d2"
 
         # Verify task columns and types
         tasks = conn.execute(
@@ -548,4 +548,39 @@ def test_embedding_model_migration_backfill(
         ]
 
     command.downgrade(alembic_config, "b7397248a96b")
+    engine.dispose()
+
+
+def test_add_update_time_to_schedule_task_group_migration(
+    tmp_path: Path, alembic_config: Config
+) -> None:
+    """Verify migration e7f8a9b0c1d2 adds update_time and backfills it from create_time."""
+    db_path = tmp_path / "group_update_time.db"
+    shutil.copy(Path("tests/fixtures/db_v1.sqlite").absolute(), db_path)
+    url = f"sqlite:///{db_path}"
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "d4e5f6a7b8c9")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_schedule_task_group (task_list_id, user_id, title, create_time) "
+                "VALUES ('grp-1', 1, 'Work', 1700000012345)"
+            )
+        )
+
+    command.upgrade(alembic_config, "e7f8a9b0c1d2")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT create_time, update_time FROM t_schedule_task_group "
+                "WHERE task_list_id = 'grp-1' AND user_id = 1"
+            )
+        ).fetchone()
+        assert row is not None
+        assert tuple(row) == (1700000012345, 1700000012345)
+
+    command.downgrade(alembic_config, "d4e5f6a7b8c9")
     engine.dispose()

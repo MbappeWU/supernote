@@ -63,7 +63,13 @@ async def create_group(request: web.Request) -> web.Response:
         schedule_service: ScheduleService = request.app["schedule_service"]
         user_id = await request.app["user_service"].get_user_id(user)
 
-        group = await schedule_service.create_group(user_id, dto.title)
+        group = await schedule_service.create_group(
+            user_id,
+            dto.title,
+            task_list_id=dto.task_list_id,
+            create_time_ms=dto.create_time,
+            last_modified_ms=dto.last_modified,
+        )
         return web.json_response(
             AddScheduleTaskGroupVO(
                 success=True, task_list_id=group.task_list_id
@@ -90,7 +96,10 @@ async def update_group(request: web.Request) -> web.Response:
         user_id = await request.app["user_service"].get_user_id(user)
 
         if not await schedule_service.update_group(
-            user_id, dto.task_list_id, dto.title
+            user_id,
+            dto.task_list_id,
+            dto.title,
+            last_modified_ms=dto.last_modified,
         ):
             raise SupernoteError("Not found", status_code=404)
         return web.json_response(BaseResponse(success=True).to_dict())
@@ -141,6 +150,8 @@ async def get_group(request: web.Request) -> web.Response:
                 task_list_id=group.task_list_id,
                 user_id=group.user_id,
                 title=group.title,
+                last_modified=group.update_time or group.create_time,
+                is_deleted=BooleanEnum.NO,
                 create_time=group.create_time,
             ).to_dict()
         )
@@ -184,7 +195,7 @@ async def list_groups(request: web.Request) -> web.Response:
                 task_list_id=g.task_list_id,
                 user_id=g.user_id,
                 title=g.title,
-                last_modified=g.create_time,
+                last_modified=g.update_time or g.create_time,
                 is_deleted=BooleanEnum.NO,
                 create_time=g.create_time,
             )
