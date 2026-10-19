@@ -172,43 +172,6 @@ pip install supernote[all]
 
 To set up the project for development, please refer to the [Contributing Guide](docs/CONTRIBUTING.md).
 
-### Parse a Notebook (Local)
-
-```python
-from supernote.notebook import parse_notebook
-
-notebook = parse_notebook("mynote.note")
-notebook.to_pdf("output.pdf")
-```
-
-The notebook parser is a fork and slightly lighter dependency version of [supernote-tool](https://github.com/jya-dev/supernote-tool). All credit goes to the original authors for providing an amazing low-level utility.
-
-### Run with Docker
-
-```bash
-# Build the image locally
-docker build -t supernote .
-
-# Run container (maps your local storage directory to the container's /data volume)
-docker run -d \
-  -p 8080:8080 \
-  -v $(pwd)/storage:/data \
-  --name supernote-server \
-  supernote
-```
-
-See [Server Documentation](https://github.com/allenporter/supernote/blob/main/supernote/server/README.md) for more configuration details.
-
-### Developer API
-
-Integrate Supernote into your own Python applications:
-
-```python
-from supernote.client import Supernote
-# See library docstrings for usage examples
-```
-
-
 ## CLI Usage
 
 ```bash
@@ -224,9 +187,9 @@ supernote cloud ls /                # List remote files
 supernote cloud download /Note.note # Download to local machine
 ```
 
-## Notebook Operations (Local)
+## Notebook Operations & Developer API
 
-You can use the built-in parser outside of the cloud server:
+You can use the built-in notebook parser or async client directly in your own Python applications:
 
 ```python
 from supernote.notebook import parse_notebook
@@ -235,7 +198,12 @@ note = parse_notebook("journal.note")
 note.to_pdf("journal.pdf")  # Multi-layer PDF conversion
 ```
 
-The notebook parser is a fork of the excellent [supernote-tool](https://github.com/jya-dev/supernote-tool) with updated dependencies and modern type hints.
+```python
+from supernote.client import Supernote
+# See library docstrings for usage examples
+```
+
+The notebook parser originally started as a fork of [supernote-tool](https://github.com/jya-dev/supernote-tool) with lighter dependencies and modern type hints. All credit goes to the original authors for providing the foundational parser utility.
 
 ## Customizing AI Prompts
 
