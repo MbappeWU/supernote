@@ -33,10 +33,10 @@ class ScheduleTaskLinkDTO(DataClassJSONMixin):
     app_name: str = field(metadata=field_options(alias="appName"))
     """Target app: 'Note' or 'Document'"""
 
-    path: str
+    path: str = field(metadata=field_options(alias="filePath"), default="")
     """Relative storage path to document (e.g. '/Note/Planner.note')"""
 
-    page: int
+    page: int = 1
     """1-indexed page number"""
 
     file_id: str | None = field(metadata=field_options(alias="fileId"), default=None)
@@ -44,6 +44,11 @@ class ScheduleTaskLinkDTO(DataClassJSONMixin):
 
     page_id: str | None = field(metadata=field_options(alias="pageId"), default=None)
     """Unique page layer GUID"""
+
+    task_title: str | None = field(
+        metadata=field_options(alias="taskTitle"), default=None
+    )
+    """Optional task title embedded in link metadata"""
 
     def to_b64(self) -> str:
         """Encode this link object to a Base64 JSON string."""

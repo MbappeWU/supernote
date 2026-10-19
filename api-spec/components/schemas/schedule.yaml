@@ -106,7 +106,7 @@ ScheduleTaskInfo:
       format: int64
     links:
       type: string
-      description: Base64 encoded json description of a link to a document with fields 'appName', 'fileId', 'path', "page', 'pageId'
+      description: Base64 encoded json description of a link to a document with fields 'appName', 'fileId', 'filePath', 'page', 'pageId', 'taskTitle'
     isDeleted:
       type: string
     sort:

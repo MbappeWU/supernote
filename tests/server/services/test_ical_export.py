@@ -1,8 +1,12 @@
 """Unit tests for ICalExportService task conversion and iCalendar stream export."""
 
+import base64
+import json
+
 import pytest
 from ical.calendar_stream import IcsCalendarStream
 
+from supernote.models.schedule import ScheduleTaskLinkDTO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.ical_export import ICalExportService
 from supernote.server.services.schedule import ScheduleService
@@ -125,3 +129,40 @@ async def test_export_calendar_task_list_filtering(
     calendar_a = IcsCalendarStream.calendar_from_ics(ics_text_a)
     assert len(calendar_a.todos) == 1
     assert calendar_a.todos[0].summary == "Work Task"
+
+
+async def test_export_task_with_file_path_link(
+    schedule_service: ScheduleService,
+    ical_export_service: ICalExportService,
+) -> None:
+    """Test decoding and exporting a task link encoded with 'filePath' and 'taskTitle'."""
+    user_id = 666
+    group = await schedule_service.create_group(user_id, "Daily Notes")
+    raw_link = {
+        "appName": "Note",
+        "filePath": "Note/2026_Daily.note",
+        "fileId": "99887766",
+        "page": 3,
+        "pageId": "P20260101",
+        "taskTitle": "Follow up on design",
+    }
+    links_b64 = base64.b64encode(json.dumps(raw_link).encode("utf-8")).decode("utf-8")
+
+    decoded = ScheduleTaskLinkDTO.from_b64(links_b64)
+    assert decoded.path == "Note/2026_Daily.note"
+    assert decoded.task_title == "Follow up on design"
+
+    await schedule_service.create_task(
+        user_id,
+        group.task_list_id,
+        "Follow up on design",
+        links=links_b64,
+    )
+
+    ics_text = await ical_export_service.export_calendar(user_id)
+    calendar = IcsCalendarStream.calendar_from_ics(ics_text)
+    assert len(calendar.todos) == 1
+    todo = calendar.todos[0]
+    assert todo.summary == "Follow up on design"
+    assert todo.description is not None
+    assert "Note/2026_Daily.note" in todo.description
