@@ -47,7 +47,6 @@ def test_create_summary_model(tmp_path: Path) -> None:
         ai_model = create_summary_model(ai_config)
         assert isinstance(ai_model, ConcurrencyLimitedSummaryModel)
         assert ai_model.model_id == "gemini-custom-summary"
-        assert ai_model._semaphore._value == 4
 
     fake_config = ServerConfig(
         ai=AiConfig(

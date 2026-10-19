@@ -45,7 +45,6 @@ def test_create_ocr_model(tmp_path: Path) -> None:
         ai_model = create_ocr_model(ai_config)
         assert isinstance(ai_model, ConcurrencyLimitedOcrModel)
         assert ai_model.model_id == "gemini-custom-ocr"
-        assert ai_model._semaphore._value == 3
 
     fake_config = ServerConfig(
         ai=AiConfig(

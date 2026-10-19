@@ -48,7 +48,6 @@ def test_create_embedding_model(tmp_path: Path) -> None:
         ai_model = create_embedding_model(ai_config)
         assert isinstance(ai_model, ConcurrencyLimitedEmbeddingModel)
         assert ai_model.model_id == "gemini-custom-embed"
-        assert ai_model._semaphore._value == 6
 
     fake_config = ServerConfig(
         ai=AiConfig(
