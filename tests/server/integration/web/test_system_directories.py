@@ -129,3 +129,15 @@ async def test_device_paths_are_stable_across_upload_query_and_list(
     listed = await device_client.list_folder("/INBOX", equipment_no="SN123456")
     assert [e.path_display for e in listed.entries] == [queried.entries_vo.path_display]
     assert queried.entries_vo.path_display == "INBOX/a.pdf"
+
+
+async def test_web_path_query_capitalizes_firmware_names(
+    web_client: WebClient,
+) -> None:
+    """/api/file/path/query capitalizes firmware root folder names like the root listing."""
+    res = await web_client.list_query(directory_id=0)
+    export = next(f for f in res.user_file_vo_list if f.file_name == "Export")
+    sub = await web_client.create_folder(parent_id=int(export.id), name="Sub")
+
+    path_vo = await web_client.path_query(id=int(sub.id))
+    assert path_vo.path == "Export/Sub"
