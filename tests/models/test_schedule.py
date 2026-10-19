@@ -9,8 +9,30 @@ from supernote.models.schedule import (
     ScheduleTaskGroupItem,
     ScheduleTaskGroupVO,
     ScheduleTaskInfo,
+    ScheduleTaskLinkDTO,
     UpdateScheduleTaskDTO,
 )
+
+
+def test_schedule_task_link_dto() -> None:
+    link = ScheduleTaskLinkDTO(
+        app_name="Note",
+        path="Note/2026_Daily.note",
+        page=3,
+        file_id="99887766",
+        page_id="P20260101",
+        task_title="Follow up on design",
+    )
+    assert link.to_dict() == {
+        "appName": "Note",
+        "filePath": "Note/2026_Daily.note",
+        "page": 3,
+        "fileId": "99887766",
+        "pageId": "P20260101",
+        "taskTitle": "Follow up on design",
+    }
+    decoded = ScheduleTaskLinkDTO.from_b64(link.to_b64())
+    assert decoded == link
 
 
 def test_schedule_task_group_item() -> None:
