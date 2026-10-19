@@ -29,6 +29,14 @@ class EmbeddingModule(ProcessorModule):
     def task_type(self) -> str:
         return "EMBEDDING_GENERATION"
 
+    @property
+    def enabled(self) -> bool:
+        return self.embedding_model is not None
+
+    @property
+    def version(self) -> str | None:
+        return self.embedding_model.model_id if self.embedding_model else None
+
     async def run_if_needed(
         self,
         file_id: int,
@@ -39,20 +47,15 @@ class EmbeddingModule(ProcessorModule):
         if not page_id:
             return False
 
-        if self.embedding_model is None:
-            return False
-
         if not await super().run_if_needed(
             file_id, session_manager, page_index, page_id
         ):
             return False
 
         async with session_manager.session() as session:
-            # Check Prerequisites (Text Content must exist)
+            # Check Prerequisites (OCR must have run so text_content is not None)
             content = await get_page_content_by_id(session, file_id, page_id)
-
-            if not content or not content.text_content:
-                # Dependency not met yet (OCR not done or empty page)
+            if not content or content.text_content is None:
                 return False
 
         return True
@@ -77,8 +80,8 @@ class EmbeddingModule(ProcessorModule):
             content = await get_page_content_by_id(session, file_id, page_id)
 
             if not content or not content.text_content:
-                logger.warning(
-                    f"No text content found for embedding: file {file_id} page {page_id} (idx {page_index})"
+                logger.debug(
+                    f"No text content to embed for file {file_id} page {page_id} (idx {page_index})"
                 )
                 return
             text_content = content.text_content
@@ -94,6 +97,7 @@ class EmbeddingModule(ProcessorModule):
 
             if content:
                 content.embedding = embedding_json
+                content.embedding_model = self.embedding_model.model_id
             await session.commit()
 
         logger.info(f"Completed Embedding for file {file_id} page {page_index}")

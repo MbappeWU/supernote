@@ -32,6 +32,10 @@ class OcrModule(ProcessorModule):
     def task_type(self) -> str:
         return "OCR_EXTRACTION"
 
+    @property
+    def enabled(self) -> bool:
+        return self.ocr_model is not None
+
     async def run_if_needed(
         self,
         file_id: int,
@@ -40,9 +44,6 @@ class OcrModule(ProcessorModule):
         page_id: str | None = None,
     ) -> bool:
         if page_index is None:
-            return False
-
-        if self.ocr_model is None:
             return False
 
         if not await super().run_if_needed(

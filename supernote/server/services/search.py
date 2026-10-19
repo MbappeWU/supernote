@@ -133,6 +133,9 @@ class SearchService:
                 .where(UserFileDO.user_id == user_id)
                 .where(UserFileDO.is_active == "Y")
                 .where(NotePageContentDO.embedding.isnot(None))
+                .where(
+                    NotePageContentDO.embedding_model == self.embedding_model.model_id
+                )
             )
 
             if name_filter:

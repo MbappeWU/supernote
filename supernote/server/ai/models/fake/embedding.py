@@ -19,13 +19,18 @@ __all__ = [
 class FakeEmbeddingModel(EmbeddingModel):
     """Fake embedding model returning deterministic vectors."""
 
-    def __init__(self, dimensions: int = 3) -> None:
+    def __init__(
+        self,
+        dimensions: int = 3,
+        model_id: str = "fake-embedding-v1",
+    ) -> None:
         self.dimensions = dimensions
+        self._model_id = model_id
         self.calls: list[tuple[str, EmbeddingTaskType]] = []
 
     @property
     def model_id(self) -> str:
-        return "fake-embedding-v1"
+        return self._model_id
 
     async def _embed(
         self,

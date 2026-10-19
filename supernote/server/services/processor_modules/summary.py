@@ -56,6 +56,10 @@ class SummaryModule(ProcessorModule):
     def task_type(self) -> str:
         return "SUMMARY_GENERATION"
 
+    @property
+    def enabled(self) -> bool:
+        return self.summary_model is not None
+
     async def run_if_needed(
         self,
         file_id: int,
@@ -68,13 +72,7 @@ class SummaryModule(ProcessorModule):
         if page_index is not None:
             return False
 
-        if self.summary_model is None:
-            return False
-
-        if not await super().run_if_needed(file_id, session_manager, page_index):
-            return False
-
-        return True
+        return await super().run_if_needed(file_id, session_manager, page_index)
 
     async def process(
         self,

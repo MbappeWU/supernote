@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from supernote.models.base import ProcessingStatus
 from supernote.server.metrics import (
@@ -297,20 +297,50 @@ class ProcessorService:
         self._update_queue_metrics()
 
     async def recover_missing_tasks(self) -> None:
-        """Find .note files that have no system tasks and enqueue them."""
+        """Find .note files that have missing or outdated tasks and enqueue them."""
         logger.info("Checking for files with missing tasks...")
-        async with self.session_manager.session() as session:
-            # Subquery to find file_ids that exist in f_system_task
-            task_exists_stmt = select(SystemTaskDO.file_id)
+        conditions = [UserFileDO.id.not_in(select(SystemTaskDO.file_id))]
 
-            # Find all active UserFileDO with .note extension that are NOT in f_system_task
+        for module in (*self.global_pre_modules, *self.global_post_modules):
+            if not module.enabled:
+                continue
+            task_stmt = (
+                select(SystemTaskDO.file_id)
+                .where(SystemTaskDO.task_type == module.task_type)
+                .where(SystemTaskDO.key == "global")
+            )
+            if module.version is not None:
+                task_stmt = task_stmt.where(SystemTaskDO.data == module.version)
+            conditions.append(UserFileDO.id.not_in(task_stmt))
+
+        for module in self.page_modules:
+            if not module.enabled:
+                continue
+            page_task_exists = (
+                select(SystemTaskDO.id)
+                .where(SystemTaskDO.file_id == NotePageContentDO.file_id)
+                .where(SystemTaskDO.task_type == module.task_type)
+                .where(SystemTaskDO.key == "page_" + NotePageContentDO.page_id)
+            )
+            if module.version is not None:
+                page_task_exists = page_task_exists.where(
+                    SystemTaskDO.data == module.version
+                )
+            page_missing_stmt = (
+                select(NotePageContentDO.file_id)
+                .where(NotePageContentDO.page_id != "")
+                .where(~page_task_exists.correlate(NotePageContentDO).exists())
+            )
+            conditions.append(UserFileDO.id.in_(page_missing_stmt))
+
+        async with self.session_manager.session() as session:
             stmt = (
                 select(UserFileDO.id, UserFileDO.user_id)
                 .where(
                     UserFileDO.file_name.like("%.note"),
                     UserFileDO.is_active == "Y",
                 )
-                .where(UserFileDO.id.not_in(task_exists_stmt))
+                .where(or_(*conditions))
             )
             result = await session.execute(stmt)
             missing = result.all()
