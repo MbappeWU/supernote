@@ -10,7 +10,9 @@ from aiohttp import web
 from supernote.models.socket import (
     SocketHandshakeParams,
     SocketIoClientMessage,
+    SocketIoCode,
     SocketIoEvent,
+    SocketIoMessageType,
     SocketMessageData,
 )
 from supernote.server.config import ServerConfig
@@ -18,6 +20,12 @@ from supernote.server.services.user import UserService
 from supernote.server.socket_auth import verify_handshake_signature
 
 logger = logging.getLogger(__name__)
+
+_MSG_TYPE_TO_EVENT: dict[str, SocketIoEvent] = {
+    SocketIoMessageType.FILE_SYN.value: SocketIoEvent.SERVER_MESSAGE,
+    SocketIoMessageType.TASK_SYN.value: SocketIoEvent.TODO,
+    SocketIoMessageType.DIGEST_SYN.value: SocketIoEvent.DIGEST,
+}
 
 
 def _extract_handshake_params(environ: dict) -> SocketHandshakeParams:
@@ -180,7 +188,11 @@ class SocketIOServerManager:
                 to=sid,
             )
 
-    async def send_message(self, user_id: str, message: SocketMessageData) -> None:
+    async def send_message(
+        self,
+        user_id: str,
+        message: SocketMessageData,
+    ) -> None:
         """Send a SocketMessageData event to all connected sessions for a given user.
 
         Args:
@@ -191,11 +203,25 @@ class SocketIOServerManager:
         for sid in sids:
             await self._verify_active_session(sid)
 
+        if message.code is None:
+            message.code = str(SocketIoCode.SUCCESS.value)
+
+        msg_type_str = (
+            message.msg_type.value
+            if isinstance(message.msg_type, SocketIoMessageType)
+            else str(message.msg_type or "")
+        )
+        resolved_event = _MSG_TYPE_TO_EVENT.get(
+            msg_type_str, SocketIoEvent.SERVER_MESSAGE
+        ).value
+
         user_room = f"user_{user_id}"
         payload_str = message.to_json()
-        logger.debug("Emitting ServerMessage to room=%s: %s", user_room, payload_str)
+        logger.debug(
+            "Emitting %s to room=%s: %s", resolved_event, user_room, payload_str
+        )
         await self._sio.emit(
-            SocketIoEvent.SERVER_MESSAGE.value,
+            resolved_event,
             payload_str,
             room=user_room,
         )

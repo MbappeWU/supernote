@@ -140,7 +140,7 @@ async def test_socketio_multi_user_message_isolation(
 
     # Send a message targeted ONLY to User A
     msg_data_a = SocketMessageData(
-        code="0",
+        code="200",
         msg="update notification",
         timestamp=1700000000000,
         msg_type=SocketIoMessageType.FILE_SYN,
@@ -160,7 +160,7 @@ async def test_socketio_multi_user_message_isolation(
     # User A receives the targeted message
     received_a = await anext(client_a.messages())
     assert isinstance(received_a, SocketMessageData)
-    assert received_a.code == "0"
+    assert received_a.code == "200"
     assert len(received_a.data) == 1
     assert received_a.data[0].original_name == "NoteA.note"
 
@@ -247,7 +247,6 @@ async def test_socketio_client_messages_async_iterator(
 
     manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
     msg_data = SocketMessageData(
-        code="0",
         msg="test message",
         timestamp=1700000000000,
         msg_type=SocketIoMessageType.FILE_SYN,
@@ -256,8 +255,32 @@ async def test_socketio_client_messages_async_iterator(
 
     async for msg in socket_client.messages():
         assert isinstance(msg, SocketMessageData)
+        assert msg.code == "200"
         assert msg.msg == "test message"
         break
+
+    # Also test TASK-SYN ('to-do' channel) and DIGEST-SYN ('digest' channel) routing
+    task_msg = SocketMessageData(
+        msg="task sync",
+        timestamp=1700000000001,
+        msg_type=SocketIoMessageType.TASK_SYN,
+    )
+    await manager.send_message(user_id, task_msg)
+    received_task = await anext(socket_client.messages())
+    assert received_task.code == "200"
+    assert received_task.msg_type == SocketIoMessageType.TASK_SYN
+    assert received_task.msg == "task sync"
+
+    digest_msg = SocketMessageData(
+        msg="digest sync",
+        timestamp=1700000000002,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+    )
+    await manager.send_message(user_id, digest_msg)
+    received_digest = await anext(socket_client.messages())
+    assert received_digest.code == "200"
+    assert received_digest.msg_type == SocketIoMessageType.DIGEST_SYN
+    assert received_digest.msg == "digest sync"
 
     await socket_client.disconnect()
 
@@ -297,7 +320,7 @@ async def test_socketio_revoked_session_disconnected_on_heartbeat_and_send(
     # Revoke token_send and verify outbound send_message disconnects instead of delivering
     await user_service.logout(token_send)
     msg_data = SocketMessageData(
-        code="0",
+        code="200",
         msg="secret update",
         timestamp=1700000000000,
         msg_type=SocketIoMessageType.FILE_SYN,
