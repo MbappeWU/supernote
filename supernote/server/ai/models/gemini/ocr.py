@@ -8,7 +8,7 @@ from google.genai import types
 
 from supernote.server.ai.models.ocr import OcrModel
 
-from .backend import GeminiBackend
+from .backend import GeminiBackend, create_gemini_backend
 
 if TYPE_CHECKING:
     from supernote.server.config import ServerConfig
@@ -53,10 +53,7 @@ def create_ocr_model(config: ServerConfig) -> OcrModel | None:
     """Create a `GeminiOcrModel` from `ServerConfig`, or `None` if unconfigured."""
     config._sync_legacy_gemini_config()
     model_cfg = config.ai.ocr
-    provider_cfg = config.ai.providers.get("gemini")
-    if model_cfg is None or provider_cfg is None:
+    backend = create_gemini_backend(config.ai.providers)
+    if model_cfg is None or backend is None:
         return None
-    api_key = provider_cfg.api_key
-    if not api_key or not api_key.strip():
-        return None
-    return GeminiOcrModel(GeminiBackend(api_key), model_cfg.model)
+    return GeminiOcrModel(backend, model_cfg.model)

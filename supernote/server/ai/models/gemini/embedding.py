@@ -9,7 +9,7 @@ from google.genai import types
 from supernote.server.ai.base import AIError
 from supernote.server.ai.models.embedding import EmbeddingModel, EmbeddingTaskType
 
-from .backend import GeminiBackend
+from .backend import GeminiBackend, create_gemini_backend
 
 if TYPE_CHECKING:
     from supernote.server.config import ServerConfig
@@ -50,10 +50,7 @@ def create_embedding_model(config: ServerConfig) -> EmbeddingModel | None:
     """Create a `GeminiEmbeddingModel` from `ServerConfig`, or `None` if unconfigured."""
     config._sync_legacy_gemini_config()
     model_cfg = config.ai.embedding
-    provider_cfg = config.ai.providers.get("gemini")
-    if model_cfg is None or provider_cfg is None:
+    backend = create_gemini_backend(config.ai.providers)
+    if model_cfg is None or backend is None:
         return None
-    api_key = provider_cfg.api_key
-    if not api_key or not api_key.strip():
-        return None
-    return GeminiEmbeddingModel(GeminiBackend(api_key), model_cfg.model)
+    return GeminiEmbeddingModel(backend, model_cfg.model)

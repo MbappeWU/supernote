@@ -11,7 +11,7 @@ from supernote.server.ai.base import AIError
 from supernote.server.ai.models.summary import SummaryModel
 from supernote.server.ai.prompts import SummaryResponse, get_summary_json_schema
 
-from .backend import GeminiBackend
+from .backend import GeminiBackend, create_gemini_backend
 
 if TYPE_CHECKING:
     from supernote.server.config import ServerConfig
@@ -60,10 +60,7 @@ def create_summary_model(config: ServerConfig) -> SummaryModel | None:
     """Create a `GeminiSummaryModel` from `ServerConfig`, or `None` if unconfigured."""
     config._sync_legacy_gemini_config()
     model_cfg = config.ai.summary
-    provider_cfg = config.ai.providers.get("gemini")
-    if model_cfg is None or provider_cfg is None:
+    backend = create_gemini_backend(config.ai.providers)
+    if model_cfg is None or backend is None:
         return None
-    api_key = provider_cfg.api_key
-    if not api_key or not api_key.strip():
-        return None
-    return GeminiSummaryModel(GeminiBackend(api_key), model_cfg.model)
+    return GeminiSummaryModel(backend, model_cfg.model)
