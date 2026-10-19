@@ -267,6 +267,7 @@ def test_mixed_case_system_roots_are_merged(
         assert files == {
             "only-old.pdf": (9001, "a"),
             "same.pdf": (9003, "b"),
+            "same (1).pdf": (9002, "b"),
             "clash.pdf": (9005, "d"),
             "clash (1).pdf": (9010, "g"),
             "clash (2).pdf": (9004, "c"),
@@ -285,5 +286,146 @@ def test_mixed_case_system_roots_are_merged(
     command.downgrade(alembic_config, "68964804740d")
     with engine.connect() as conn:
         assert set(active(0)) == {"DOCUMENT", "EXPORT", "INBOX", "NOTE", "SCREENSHOT"}
+
+    engine.dispose()
+
+
+def test_mixed_case_system_roots_autorename_when_src_has_numbered_sibling(
+    tmp_path: Path, alembic_config: Config
+) -> None:
+    """Renaming clash.pdf -> clash (1).pdf must not collide with an existing clash (1).pdf in Export."""
+    db_path = tmp_path / "mixed_case_src_numbered.db"
+    shutil.copy(Path("tests/fixtures/db_v1_summary_api.sqlite").absolute(), db_path)
+    url = f"sqlite:///{db_path}"
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "68964804740d")
+
+    engine = create_engine(url)
+
+    def add(
+        id: int, parent: int, name: str, folder: bool = False, md5: str = ""
+    ) -> None:
+        conn.execute(
+            text(
+                "INSERT INTO f_user_file (id, user_id, directory_id, file_name, "
+                "is_folder, size, md5, is_active, create_time, update_time) "
+                "VALUES (:id, 1, :parent, :name, :folder, 0, :md5, 'Y', 0, 0)"
+            ),
+            {
+                "id": id,
+                "parent": parent,
+                "name": name,
+                "folder": "Y" if folder else "N",
+                "md5": md5 or None,
+            },
+        )
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT file_name, id FROM f_user_file "
+                "WHERE user_id = 1 AND directory_id = 0"
+            )
+        ).fetchall()
+        roots = {name: id for name, id in rows}
+        export = roots["Export"]
+
+        add(9000, 0, "EXPORT", folder=True)
+        # Export has clash.pdf (created first) and clash (1).pdf (created second),
+        # while EXPORT only has clash.pdf.
+        add(9001, export, "clash.pdf", md5="a")
+        add(9002, export, "clash (1).pdf", md5="b")
+        add(9003, 9000, "clash.pdf", md5="c")
+
+    command.upgrade(alembic_config, "head")
+
+    with engine.connect() as conn:
+        active_rows = conn.execute(
+            text(
+                "SELECT file_name, id, md5 FROM f_user_file WHERE user_id = 1 "
+                "AND directory_id = 9000 AND is_active = 'Y' ORDER BY id"
+            )
+        ).fetchall()
+        names = [r.file_name for r in active_rows]
+        assert len(names) == len(set(names)), (
+            f"Duplicate active filenames in EXPORT: {names}"
+        )
+        assert {r.file_name: (r.id, r.md5) for r in active_rows} == {
+            "clash.pdf": (9003, "c"),
+            "clash (1).pdf": (9002, "b"),
+            "clash (2).pdf": (9001, "a"),
+        }
+
+    engine.dispose()
+
+
+def test_mixed_case_system_roots_deletes_retired_folders_and_reparents_recycled(
+    tmp_path: Path, alembic_config: Config
+) -> None:
+    """Merging roots deletes emptied folders, preserves all files, and reparents recycled items."""
+    db_path = tmp_path / "mixed_case_dependents.db"
+    shutil.copy(Path("tests/fixtures/db_v1_summary_api.sqlite").absolute(), db_path)
+    url = f"sqlite:///{db_path}"
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "68964804740d")
+
+    engine = create_engine(url)
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT file_name, id FROM f_user_file "
+                "WHERE user_id = 1 AND directory_id = 0"
+            )
+        ).fetchall()
+        roots = {name: id for name, id in rows}
+        export = roots["Export"]
+
+        conn.execute(
+            text(
+                "INSERT INTO f_user_file (id, user_id, directory_id, file_name, "
+                "is_folder, size, md5, storage_key, is_active, create_time, update_time) "
+                "VALUES "
+                "(9000, 1, 0, 'EXPORT', 'Y', 0, NULL, NULL, 'Y', 0, 0), "
+                "(9002, 1, :export, 'same.note', 'N', 100, 'b', 'blobs/b', 'Y', 0, 0), "
+                "(9003, 1, 9000, 'same.note', 'N', 100, 'b', 'blobs/b', 'Y', 0, 0), "
+                "(9015, 1, :export, 'recycled.pdf', 'N', 50, 'r', 'blobs/r', 'N', 0, 0)"
+            ),
+            {"export": export},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO f_recycle_file (id, user_id, file_id, file_name, size, is_folder, delete_time) "
+                "VALUES (5001, 1, 9015, 'recycled.pdf', 50, 'N', 0)"
+            )
+        )
+
+    command.upgrade(alembic_config, "head")
+
+    with engine.connect() as conn:
+        # 1. Emptied mixed-case folder (export) is hard-deleted, leaving no zombie inactive folder.
+        retired_export = conn.execute(
+            text("SELECT id FROM f_user_file WHERE id = :export"),
+            {"export": export},
+        ).scalar()
+        assert retired_export is None
+
+        # 2. Both files are kept active in EXPORT (9000) via autorename; no file is deleted.
+        active_files = conn.execute(
+            text(
+                "SELECT file_name, id FROM f_user_file WHERE user_id = 1 "
+                "AND directory_id = 9000 AND is_active = 'Y'"
+            )
+        ).fetchall()
+        assert {r.file_name: r.id for r in active_files} == {
+            "same.note": 9003,
+            "same (1).note": 9002,
+        }
+
+        # 3. Recycled item from Export is reparented to active EXPORT (9000) so restore works.
+        recycled_parent_id = conn.execute(
+            text("SELECT directory_id FROM f_user_file WHERE id = 9015")
+        ).scalar()
+        assert recycled_parent_id == 9000
 
     engine.dispose()

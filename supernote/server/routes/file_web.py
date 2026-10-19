@@ -42,6 +42,7 @@ from supernote.models.file_web import (
 from supernote.server.constants import (
     CATEGORY_CONTAINERS,
     ORDERED_WEB_ROOT,
+    SYSTEM_ROOT_DIRECTORIES,
 )
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.file import (
@@ -102,6 +103,9 @@ def _flatten_path(path: str) -> str:
     if len(path_parts) >= 2 and path_parts[0] in CATEGORY_CONTAINERS:
         # Convert NOTE/Note/Sub -> Note/Sub
         return "/".join(path_parts[1:])
+    if path_parts and path_parts[0] in SYSTEM_ROOT_DIRECTORIES:
+        path_parts[0] = path_parts[0].capitalize()
+        return "/".join(path_parts)
     return path
 
 
@@ -247,6 +251,9 @@ async def handle_path_query(request: web.Request) -> web.Response:
             id_parts = id_path.split("/")
             if len(id_parts) >= len(parts):  # Safety check
                 id_path = "/".join(id_parts[1:])
+        elif parts and parts[0] in SYSTEM_ROOT_DIRECTORIES:
+            parts[0] = parts[0].capitalize()
+            path = "/".join(parts)
 
         response = FilePathQueryVO(path=path, id_path=id_path)
         return web.json_response(response.to_dict())
