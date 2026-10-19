@@ -66,7 +66,7 @@ def task_to_vtodo(
     group_title: str | None = None,
 ) -> Todo:
     """Convert a Supernote schedule task object to an ical.todo.Todo object."""
-    task_id = getattr(task, "id", None) or getattr(task, "task_id", None) or "unknown"
+    task_id = task.task_id or "unknown"
     uid = f"supernote-task-{task_id}@supernote"
 
     # Status mapping
@@ -138,26 +138,15 @@ class ICalExportService:
         task_list_id: str | None = None,
     ) -> str:
         """Export user tasks to an RFC 5545 compliant iCalendar (.ics) string."""
-        # 1. Fetch group titles map (indexed by both DO.id and DO.task_list_id)
         groups = await self.schedule_service.list_groups(user_id)
-        groups_map: dict[str | int, str] = {}
-        for g in groups:
-            groups_map[g.id] = g.title
-            groups_map[g.task_list_id] = g.title
+        groups_map = {g.task_list_id: g.title for g in groups}
 
-        # 2. Fetch tasks for user
         tasks = await self.schedule_service.list_tasks(user_id, group_id=task_list_id)
 
-        # 3. Build iCalendar object
         calendar = Calendar()
         for task in tasks:
-            group_title = (
-                groups_map.get(task.group_id) or groups_map.get(task.task_list_id)
-                if task.task_list_id
-                else None
-            )
+            group_title = groups_map.get(task.task_list_id)
             todo = task_to_vtodo(task, group_title=group_title)
             calendar.todos.append(todo)
 
-        # 4. Serialize to iCalendar stream
         return IcsCalendarStream.calendar_to_ics(calendar)

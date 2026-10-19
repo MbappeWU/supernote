@@ -12,17 +12,14 @@ class ScheduleTaskGroupDO(Base):
 
     __tablename__ = "t_schedule_task_group"
 
-    task_list_id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, default=next_id
+    task_list_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(next_id())
     )
-    """Internal unique integer ID."""
+    """Unique task group ID."""
 
-    client_task_list_id: Mapped[str | None] = mapped_column(
-        String, index=True, nullable=True
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, index=True, nullable=False
     )
-    """Independent external client string ID (e.g. UUID)."""
-
-    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     """User ID."""
 
     title: Mapped[str] = mapped_column(String, nullable=False)
@@ -33,44 +30,23 @@ class ScheduleTaskGroupDO(Base):
     )
     """Creation time in epoch milliseconds."""
 
-    @property
-    def id(self) -> str:
-        """API task list ID: returns client_task_list_id if present, else str(task_list_id)."""
-        return self.client_task_list_id or str(self.task_list_id)
-
 
 class ScheduleTaskDO(Base):
     """Individual Tasks."""
 
     __tablename__ = "t_schedule_task"
 
-    task_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=next_id)
-    """Internal unique integer ID."""
-
-    client_task_id: Mapped[str | None] = mapped_column(
-        String, index=True, nullable=True
+    task_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(next_id())
     )
-    """Independent external client task string ID (e.g. UUID)."""
+    """Unique task ID."""
 
-    task_list_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
-    """Link back to task list (internal integer ID)."""
+    task_list_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    """Link back to task list."""
 
-    client_task_list_id: Mapped[str | None] = mapped_column(
-        String, index=True, nullable=True
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, index=True, nullable=False
     )
-    """Independent external client task list string ID."""
-
-    @property
-    def id(self) -> str:
-        """API task ID: returns client_task_id if present, else str(task_id)."""
-        return self.client_task_id or str(self.task_id)
-
-    @property
-    def group_id(self) -> str:
-        """API task list ID: returns client_task_list_id if present, else str(task_list_id)."""
-        return self.client_task_list_id or str(self.task_list_id)
-
-    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     """User ID."""
 
     title: Mapped[str] = mapped_column(String, nullable=False)

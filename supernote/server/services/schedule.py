@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Any, cast
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
 
 from supernote.server.db.models.schedule import ScheduleTaskDO, ScheduleTaskGroupDO
@@ -50,15 +50,15 @@ class ScheduleService:
     # Task Group Operations
 
     async def create_group(
-        self, user_id: int, title: str, client_task_list_id: str | None = None
+        self, user_id: int, title: str, task_list_id: str | None = None
     ) -> ScheduleTaskGroupDO:
         """Create a new task group."""
         if len(title) > MAX_TITLE_LENGTH:
             raise ValueError("Title is too long")
         async with self.session_manager.session() as session:
             kwargs: dict[str, Any] = {"user_id": user_id, "title": title}
-            if client_task_list_id is not None:
-                kwargs["client_task_list_id"] = client_task_list_id
+            if task_list_id is not None:
+                kwargs["task_list_id"] = task_list_id
             group = ScheduleTaskGroupDO(**kwargs)
             session.add(group)
             # Flush to generate ID
@@ -85,10 +85,7 @@ class ScheduleService:
         async with self.session_manager.session() as session:
             stmt = select(ScheduleTaskGroupDO).where(
                 ScheduleTaskGroupDO.user_id == user_id,
-                or_(
-                    ScheduleTaskGroupDO.client_task_list_id == group_id,
-                    ScheduleTaskGroupDO.task_list_id == group_id,
-                ),
+                ScheduleTaskGroupDO.task_list_id == group_id,
             )
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
@@ -130,14 +127,9 @@ class ScheduleService:
                 return False
 
             # First cascade delete all tasks in the group
-            task_conds = [ScheduleTaskDO.task_list_id == group.task_list_id]
-            if group.client_task_list_id:
-                task_conds.append(
-                    ScheduleTaskDO.client_task_list_id == group.client_task_list_id
-                )
-
             stmt_tasks = delete(ScheduleTaskDO).where(
-                ScheduleTaskDO.user_id == user_id, or_(*task_conds)
+                ScheduleTaskDO.user_id == user_id,
+                ScheduleTaskDO.task_list_id == group.task_list_id,
             )
             await session.execute(stmt_tasks)
 
@@ -158,14 +150,9 @@ class ScheduleService:
                 return False
 
             # Clear all tasks from the group without deleting the group
-            task_conds = [ScheduleTaskDO.task_list_id == group.task_list_id]
-            if group.client_task_list_id:
-                task_conds.append(
-                    ScheduleTaskDO.client_task_list_id == group.client_task_list_id
-                )
-
             stmt = delete(ScheduleTaskDO).where(
-                ScheduleTaskDO.user_id == user_id, or_(*task_conds)
+                ScheduleTaskDO.user_id == user_id,
+                ScheduleTaskDO.task_list_id == group.task_list_id,
             )
             result = await session.execute(stmt)
             await session.commit()
@@ -201,20 +188,9 @@ class ScheduleService:
         if len(detail) > MAX_DETAIL_LENGTH:
             raise ValueError("Detail is too long")
         async with self.session_manager.session() as session:
-            if group := await self.get_group(user_id, group_id):
-                int_group_id = group.task_list_id
-                client_group_id = group.client_task_list_id
-            elif group_id.isdigit():
-                int_group_id = int(group_id)
-                client_group_id = None
-            else:
-                int_group_id = 0
-                client_group_id = group_id
-
             kwargs: dict[str, Any] = {
                 "user_id": user_id,
-                "task_list_id": int_group_id,
-                "client_task_list_id": client_group_id,
+                "task_list_id": group_id,
                 "title": title,
                 "detail": detail,
                 "status": status,
@@ -233,10 +209,7 @@ class ScheduleService:
                 "all_sort_time": all_sort_time,
             }
             if task_id is not None:
-                if task_id.isdigit():
-                    kwargs["task_id"] = int(task_id)
-                else:
-                    kwargs["client_task_id"] = task_id
+                kwargs["task_id"] = task_id
 
             task = ScheduleTaskDO(**kwargs)
             session.add(task)
@@ -251,10 +224,7 @@ class ScheduleService:
         async with self.session_manager.session() as session:
             stmt = select(ScheduleTaskDO).where(
                 ScheduleTaskDO.user_id == user_id,
-                or_(
-                    ScheduleTaskDO.client_task_id == task_id,
-                    ScheduleTaskDO.task_id == task_id,
-                ),
+                ScheduleTaskDO.task_id == task_id,
             )
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
@@ -269,12 +239,7 @@ class ScheduleService:
         async with self.session_manager.session() as session:
             query = select(ScheduleTaskDO).where(ScheduleTaskDO.user_id == user_id)
             if group_id is not None:
-                query = query.where(
-                    or_(
-                        ScheduleTaskDO.client_task_list_id == group_id,
-                        ScheduleTaskDO.task_list_id == group_id,
-                    )
-                )
+                query = query.where(ScheduleTaskDO.task_list_id == group_id)
 
             if since is not None:
                 query = query.where(ScheduleTaskDO.update_time > since)
