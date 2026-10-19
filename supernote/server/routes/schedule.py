@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 
-def _extract_task_updates(dto: UpdateScheduleTaskDTO) -> dict[str, Any]:
+def _extract_task_updates(
+    dto: UpdateScheduleTaskDTO, *, clear_missing_task_list: bool = False
+) -> dict[str, Any]:
     """Extract populated update fields from UpdateScheduleTaskDTO into a service dict."""
     updates: dict[str, Any] = {}
     for f in fields(dto):
@@ -42,12 +44,12 @@ def _extract_task_updates(dto: UpdateScheduleTaskDTO) -> dict[str, Any]:
             continue
         val = getattr(dto, f.name)
         if val is not None:
-            if f.name == "task_list_id":
-                updates["task_list_id"] = val
-            elif f.name == "is_reminder_on":
+            if f.name == "is_reminder_on":
                 updates["is_reminder_on"] = val == BooleanEnum.YES
             else:
                 updates[f.name] = val
+        elif clear_missing_task_list and f.name == "task_list_id":
+            updates["task_list_id"] = None
     return updates
 
 
@@ -209,15 +211,13 @@ async def create_task(request: web.Request) -> web.Response:
         if not dto.title:
             raise SupernoteError("Title is required", status_code=400)
 
-        group_id = dto.task_list_id or "0"
-
         user = request["user"]
         schedule_service: ScheduleService = request.app["schedule_service"]
         user_id = await request.app["user_service"].get_user_id(user)
 
         task = await schedule_service.create_task(
             user_id=user_id,
-            group_id=group_id,
+            group_id=dto.task_list_id,
             title=dto.title,
             detail=dto.detail or "",
             status=dto.status or "needsAction",
@@ -293,7 +293,9 @@ async def batch_update_task_list(request: web.Request) -> web.Response:
         updates_list: list[dict[str, Any]] = []
         for item in dto.update_schedule_task_list:
             if item.task_id:
-                item_updates = _extract_task_updates(item)
+                item_updates = _extract_task_updates(
+                    item, clear_missing_task_list=item.is_deleted is not None
+                )
                 item_updates["task_id"] = item.task_id
                 updates_list.append(item_updates)
 
@@ -344,7 +346,9 @@ async def get_task(request: web.Request) -> web.Response:
             ScheduleTaskVO(
                 success=True,
                 task_id=task.task_id,
-                task_list_id=task.task_list_id,
+                task_list_id=None
+                if task.task_list_id in ("", "0")
+                else task.task_list_id,
                 title=task.title,
                 detail=task.detail,
                 status=task.status,
@@ -400,7 +404,7 @@ async def list_tasks(request: web.Request) -> web.Response:
         tasks_vos = [
             ScheduleTaskInfo(
                 task_id=t.task_id,
-                task_list_id=t.task_list_id,
+                task_list_id=None if t.task_list_id in ("", "0") else t.task_list_id,
                 title=t.title,
                 detail=t.detail,
                 status=t.status,
