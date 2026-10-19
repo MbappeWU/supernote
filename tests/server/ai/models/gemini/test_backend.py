@@ -7,7 +7,19 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from supernote.server.ai.base import AIError
-from supernote.server.ai.models.gemini.backend import GeminiBackend
+from supernote.server.ai.models.gemini.backend import (
+    GeminiBackend,
+    create_gemini_backend,
+)
+from supernote.server.config import ProviderConfig
+
+
+def test_create_gemini_backend() -> None:
+    assert create_gemini_backend({}) is None
+    assert create_gemini_backend({"gemini": ProviderConfig(api_key="  ")}) is None
+
+    backend = create_gemini_backend({"gemini": ProviderConfig(api_key="valid-key")})
+    assert isinstance(backend, GeminiBackend)
 
 
 async def test_gemini_backend_translates_client_errors_to_ai_error() -> None:

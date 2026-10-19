@@ -58,17 +58,28 @@ class ConcurrencyLimitedSummaryModel(SummaryModel):
 
 def create_summary_model(config: ServerConfig) -> SummaryModel | None:
     """Create the configured `SummaryModel` wrapped with concurrency limiting."""
-    if not config.gemini_api_key or not config.gemini_api_key.strip():
+    model_cfg = config.ai.summary
+    if model_cfg is None:
         return None
 
-    from supernote.server.ai.models.gemini.summary import (  # noqa: PLC0415
-        create_summary_model as create_gemini_summary_model,
-    )
+    model: SummaryModel | None
+    if model_cfg.provider == "gemini":
+        from supernote.server.ai.models.gemini.summary import (  # noqa: PLC0415
+            create_summary_model as create_gemini_summary_model,
+        )
 
-    model = create_gemini_summary_model(config)
+        model = create_gemini_summary_model(config)
+    elif model_cfg.provider == "fake":
+        from supernote.server.ai.models.fake.summary import (  # noqa: PLC0415
+            create_summary_model as create_fake_summary_model,
+        )
+
+        model = create_fake_summary_model(config)
+    else:
+        raise ValueError(f"Unsupported summary model provider: {model_cfg.provider!r}")
+
     if model is None:
         return None
-    # TODO(#301): Generalize `gemini_max_concurrency` across AI providers.
     return ConcurrencyLimitedSummaryModel(
-        model, max_concurrency=config.gemini_max_concurrency
+        model, max_concurrency=model_cfg.max_concurrency
     )

@@ -269,7 +269,11 @@ async def handle_extended_ai_status(request: web.Request) -> web.Response:
     model = (
         ocr_model.model_id
         if ocr_model is not None
-        else (config.gemini_ocr_model if config is not None else None)
+        else (
+            config.ai.ocr.model
+            if config is not None and config.ai.ocr is not None
+            else (config.gemini_ocr_model if config is not None else None)
+        )
     )
 
     return web.json_response(

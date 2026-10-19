@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 from google import genai
 from google.genai import errors, types
@@ -13,8 +14,12 @@ from google.genai import errors, types
 from supernote.server.ai.base import AIError
 from supernote.server.metrics import GEMINI_API_CALLS_TOTAL, GEMINI_API_DURATION_SECONDS
 
+if TYPE_CHECKING:
+    from supernote.server.config import ProviderConfig
+
 __all__ = [
     "GeminiBackend",
+    "create_gemini_backend",
 ]
 
 logger = logging.getLogger(__name__)
@@ -81,3 +86,17 @@ class GeminiBackend:
                 contents=contents,
                 config=config,
             )
+
+
+def create_gemini_backend(
+    providers: Mapping[str, ProviderConfig],
+) -> GeminiBackend | None:
+    """Create a `GeminiBackend` from configured providers, or `None` if unconfigured."""
+    provider_cfg = providers.get("gemini")
+    if (
+        provider_cfg is None
+        or not provider_cfg.api_key
+        or not provider_cfg.api_key.strip()
+    ):
+        return None
+    return GeminiBackend(provider_cfg.api_key)
