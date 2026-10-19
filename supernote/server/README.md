@@ -46,11 +46,6 @@ ai:
     max_concurrency: 5
 ```
 
-For quick setup with Google Gemini defaults, you can also set the environment variable:
-```bash
-export SUPERNOTE_GEMINI_API_KEY="your-api-key"
-```
-
 #### Outbound Webhooks
 To send non-blocking HTTP `POST` notifications on server events (e.g., to Home Assistant, n8n, or Zapier), configure `webhooks` in `config/config.yaml` (or enable via `SUPERNOTE_WEBHOOKS_ENABLED=true`):
 ```yaml
