@@ -77,7 +77,7 @@ def test_migration_upgrades_successfully(migrated_db: str) -> None:
         # Check if the 'alembic_version' table exists and has the head revision
         result = conn.execute(text("SELECT version_num FROM alembic_version"))
         version = result.scalar()
-        assert version == "68964804740d"
+        assert version == "b7397248a96b"
 
         # Check if a known table exists (e.g. users)
         result = conn.execute(text("SELECT count(*) FROM users"))
@@ -161,7 +161,7 @@ def test_orphaned_v0_20_0_migration_self_healing(tmp_path: Path) -> None:
     engine = create_engine(migration_db_url)
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "68964804740d"
+        assert version == "b7397248a96b"
 
         # Verify task columns and types
         tasks = conn.execute(
@@ -187,5 +187,103 @@ def test_orphaned_v0_20_0_migration_self_healing(tmp_path: Path) -> None:
         ).fetchall()
         assert len(groups) >= 1
         assert isinstance(groups[0][0], int)
+
+    engine.dispose()
+
+
+def test_mixed_case_system_roots_are_merged(
+    tmp_path: Path, alembic_config: Config
+) -> None:
+    """Export/Inbox/Screenshot become the firmware's EXPORT/INBOX/SCREENSHOT."""
+    db_path = tmp_path / "mixed_case_roots.db"
+    shutil.copy(Path("tests/fixtures/db_v1_summary_api.sqlite").absolute(), db_path)
+    url = f"sqlite:///{db_path}"
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "68964804740d")
+
+    engine = create_engine(url)
+
+    def add(
+        id: int, parent: int, name: str, folder: bool = False, md5: str = ""
+    ) -> None:
+        conn.execute(
+            text(
+                "INSERT INTO f_user_file (id, user_id, directory_id, file_name, "
+                "is_folder, size, md5, is_active, create_time, update_time) "
+                "VALUES (:id, 1, :parent, :name, :folder, 0, :md5, 'Y', 0, 0)"
+            ),
+            {
+                "id": id,
+                "parent": parent,
+                "name": name,
+                "folder": "Y" if folder else "N",
+                "md5": md5 or None,
+            },
+        )
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT file_name, id FROM f_user_file "
+                "WHERE user_id = 1 AND directory_id = 0"
+            )
+        ).fetchall()
+        roots = {name: id for name, id in rows}
+        export = roots["Export"]
+        add(9000, 0, "EXPORT", folder=True)
+        add(9001, export, "only-old.pdf", md5="a")
+        add(9002, export, "same.pdf", md5="b")
+        add(9003, 9000, "same.pdf", md5="b")
+        add(9004, export, "clash.pdf", md5="c")
+        add(9005, 9000, "clash.pdf", md5="d")
+        add(9006, export, "Sub", folder=True)
+        add(9007, 9006, "x.txt", md5="e")
+        add(9008, 9000, "Sub", folder=True)
+        add(9009, 9008, "y.txt", md5="f")
+        add(9010, 9000, "clash (1).pdf", md5="g")
+        add(9011, export, "Sub", md5="h")
+
+    command.upgrade(alembic_config, "head")
+
+    with engine.connect() as conn:
+
+        def active(parent: int) -> dict[str, tuple[int, str | None]]:
+            rows = conn.execute(
+                text(
+                    "SELECT file_name, id, md5 FROM f_user_file WHERE user_id = 1 "
+                    "AND directory_id = :parent AND is_active = 'Y'"
+                ),
+                {"parent": parent},
+            ).fetchall()
+            return {name: (id, md5) for name, id, md5 in rows}
+
+        root = active(0)
+        assert set(root) == {"DOCUMENT", "EXPORT", "INBOX", "NOTE", "SCREENSHOT"}
+        # A root folder with no uppercase twin is renamed in place.
+        assert root["INBOX"][0] == roots["Inbox"]
+        assert root["EXPORT"][0] == 9000
+
+        files = {k: v for k, v in active(9000).items() if k != "Sub"}
+        assert files == {
+            "only-old.pdf": (9001, "a"),
+            "same.pdf": (9003, "b"),
+            "clash.pdf": (9005, "d"),
+            "clash (1).pdf": (9010, "g"),
+            "clash (2).pdf": (9004, "c"),
+        }
+        # A file and a folder may share a name, so neither is renamed.
+        subs = conn.execute(
+            text(
+                "SELECT id, is_folder FROM f_user_file WHERE directory_id = 9000 "
+                "AND file_name = 'Sub' AND is_active = 'Y' ORDER BY id"
+            )
+        ).fetchall()
+        assert [tuple(r) for r in subs] == [(9008, "Y"), (9011, "N")]
+        assert set(active(9008)) == {"x.txt", "y.txt"}
+
+    # Merged folders cannot be split again, so a downgrade leaves them as they are.
+    command.downgrade(alembic_config, "68964804740d")
+    with engine.connect() as conn:
+        assert set(active(0)) == {"DOCUMENT", "EXPORT", "INBOX", "NOTE", "SCREENSHOT"}
 
     engine.dispose()

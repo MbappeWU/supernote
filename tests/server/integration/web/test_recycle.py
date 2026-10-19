@@ -2,7 +2,6 @@ import pytest
 
 from supernote.client.exceptions import ApiException
 from supernote.client.web import WebClient
-from supernote.server.constants import IMMUTABLE_SYSTEM_DIRECTORIES
 
 
 async def test_soft_delete_to_recycle(
@@ -112,11 +111,11 @@ async def test_recycle_clear(
     list_result = await web_client.list_query(directory_id=0)
     assert list_result.total == 9
 
-    # Delete ONLY the new folders (skip immutable system folders)
+    # Delete ONLY the new folders
     ids_to_delete = [
         int(f.id)
         for f in list_result.user_file_vo_list
-        if f.file_name not in IMMUTABLE_SYSTEM_DIRECTORIES
+        if f.file_name in {"Folder1", "Folder2", "Folder3"}
     ]
     assert len(ids_to_delete) == 3
     await web_client.file_delete(id_list=ids_to_delete)

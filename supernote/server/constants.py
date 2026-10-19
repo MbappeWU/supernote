@@ -8,10 +8,6 @@ SYSTEM_ROOT_DIRECTORIES = {
     "SCREENSHOT",
     "NOTE",
     "DOCUMENT",
-    # Created for accounts registered before the firmware's spelling was used.
-    "Export",
-    "Inbox",
-    "Screenshot",
 }
 
 # All system folder names regardless of location. Not suitable for deciding
