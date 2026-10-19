@@ -252,3 +252,39 @@ async def test_create_task_completed_time_and_last_modified(
     )
     assert task.completed_time == 1710000000000
     assert task.update_time == 1710000005000
+
+
+async def test_create_inbox_task(
+    schedule_service: ScheduleService,
+) -> None:
+    """Test creating an ungrouped Inbox task (group_id=None)."""
+    user_id = 444
+    inbox_task = await schedule_service.create_task(user_id, None, "Inbox Task 1")
+    assert inbox_task.task_list_id == ""
+
+
+async def test_move_task_between_groups_and_inbox(
+    schedule_service: ScheduleService,
+) -> None:
+    """Test moving a task into a custom group and back to Inbox."""
+    user_id = 444
+    inbox_task = await schedule_service.create_task(user_id, None, "Inbox Task 1")
+    group = await schedule_service.create_group(
+        user_id,
+        "Custom UUID Group",
+        task_list_id="group_uuid_abc123",
+    )
+
+    moved = await schedule_service.update_task(
+        user_id, inbox_task.task_id, task_list_id=group.task_list_id
+    )
+    assert moved is not None
+    assert moved.task_list_id == "group_uuid_abc123"
+
+    await schedule_service.batch_update_tasks(
+        user_id,
+        [{"task_id": inbox_task.task_id, "task_list_id": None}],
+    )
+    back_in_inbox = await schedule_service.get_task(user_id, inbox_task.task_id)
+    assert back_in_inbox is not None
+    assert back_in_inbox.task_list_id == ""

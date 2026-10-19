@@ -788,3 +788,64 @@ async def test_task_create_defaults_sort_time_to_zero(
     assert matching.sort_time == 0
 
     await schedule.delete_group(group_vo.task_list_id)
+
+
+async def test_inbox_tasks_return_null_task_list_id(
+    authenticated_client: Client,
+) -> None:
+    """Verify Inbox tasks created with group_id=None return taskListId=None."""
+    schedule = ScheduleClient(authenticated_client)
+
+    inbox_vo = await schedule.create_task(None, "Inbox Item A")
+    assert inbox_vo.success is True
+    assert inbox_vo.task_id is not None
+
+    all_vo = await schedule.get_tasks_all()
+    inbox_task = next(t for t in all_vo.schedule_task if t.task_id == inbox_vo.task_id)
+    assert inbox_task.task_list_id is None
+
+    detail_vo = await schedule.get_task(inbox_vo.task_id)
+    assert detail_vo.task_list_id is None
+
+    await schedule.delete_task(inbox_vo.task_id)
+
+
+async def test_batch_move_task_between_group_and_inbox(
+    authenticated_client: Client,
+) -> None:
+    """Verify tasks can be moved to a group and back to Inbox via full sync payload."""
+    schedule = ScheduleClient(authenticated_client)
+
+    inbox_vo = await schedule.create_task(None, "Inbox Item B")
+    assert inbox_vo.task_id is not None
+
+    group_vo = await schedule.create_group("Custom Group")
+    assert group_vo.task_list_id is not None
+
+    await schedule.update_task(
+        inbox_vo.task_id, title="Inbox Item B", task_list_id=group_vo.task_list_id
+    )
+    moved_detail = await schedule.get_task(inbox_vo.task_id)
+    assert moved_detail.task_list_id == group_vo.task_list_id
+
+    batch_resp = await authenticated_client.put(
+        "/api/file/schedule/task/list",
+        json={
+            "updateScheduleTaskList": [
+                {
+                    "taskId": inbox_vo.task_id,
+                    "title": "Inbox Item B Back in Inbox",
+                    "status": "needsAction",
+                    "isDeleted": "N",
+                    "lastModified": 1710000200000,
+                }
+            ]
+        },
+    )
+    assert batch_resp.status == 200
+    back_detail = await schedule.get_task(inbox_vo.task_id)
+    assert back_detail.task_list_id is None
+    assert back_detail.title == "Inbox Item B Back in Inbox"
+
+    await schedule.delete_task(inbox_vo.task_id)
+    await schedule.delete_group(group_vo.task_list_id)

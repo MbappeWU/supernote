@@ -115,7 +115,7 @@ class ScheduleClient:
 
     async def create_task(
         self,
-        group_id: str,
+        group_id: str | None,
         title: str,
         detail: str | None = None,
         status: str | None = None,
