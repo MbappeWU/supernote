@@ -267,6 +267,7 @@ def test_mixed_case_system_roots_are_merged(
         assert files == {
             "only-old.pdf": (9001, "a"),
             "same.pdf": (9003, "b"),
+            "same (1).pdf": (9002, "b"),
             "clash.pdf": (9005, "d"),
             "clash (1).pdf": (9010, "g"),
             "clash (2).pdf": (9004, "c"),
@@ -358,10 +359,10 @@ def test_mixed_case_system_roots_autorename_when_src_has_numbered_sibling(
     engine.dispose()
 
 
-def test_mixed_case_system_roots_cleans_retired_rows_and_reparents_dependents(
+def test_mixed_case_system_roots_deletes_retired_folders_and_reparents_recycled(
     tmp_path: Path, alembic_config: Config
 ) -> None:
-    """Merging roots must reparent recycled items, repoint summaries, and delete retired rows."""
+    """Merging roots deletes emptied folders, preserves all files, and reparents recycled items."""
     db_path = tmp_path / "mixed_case_dependents.db"
     shutil.copy(Path("tests/fixtures/db_v1_summary_api.sqlite").absolute(), db_path)
     url = f"sqlite:///{db_path}"
@@ -380,7 +381,6 @@ def test_mixed_case_system_roots_cleans_retired_rows_and_reparents_dependents(
         roots = {name: id for name, id in rows}
         export = roots["Export"]
 
-        # Create EXPORT root and two identical files (same md5 and storage_key)
         conn.execute(
             text(
                 "INSERT INTO f_user_file (id, user_id, directory_id, file_name, "
@@ -399,65 +399,33 @@ def test_mixed_case_system_roots_cleans_retired_rows_and_reparents_dependents(
                 "VALUES (5001, 1, 9015, 'recycled.pdf', 50, 'N', 0)"
             )
         )
-        conn.execute(
-            text(
-                "INSERT INTO f_summary (id, user_id, file_id, unique_identifier, is_summary_group, is_deleted, create_time, update_time) "
-                "VALUES (6001, 1, 9002, 'sum-uuid-9002', 0, 0, 0, 0)"
-            )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO f_note_page_content (id, file_id, page_index, page_id, text_content, create_time, update_time) "
-                "VALUES (7001, 9002, 0, 'p1', 'hello', 0, 0)"
-            )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO f_system_task (id, file_id, task_type, key, status, retry_count, create_time, update_time) "
-                "VALUES (8001, 9002, 'OCR', 'p1', 'COMPLETED', 0, 0, 0)"
-            )
-        )
 
     command.upgrade(alembic_config, "head")
 
     with engine.connect() as conn:
-        # 1. Retired folder (export) and deduplicated file (9002) must not remain as
-        # unreferenced rows in f_user_file that would block blob garbage collection.
-        surviving_b = (
-            conn.execute(
-                text("SELECT id FROM f_user_file WHERE storage_key = 'blobs/b'")
-            )
-            .scalars()
-            .all()
-        )
-        assert list(surviving_b) == [9003]
-
+        # 1. Emptied mixed-case folder (export) is hard-deleted, leaving no zombie inactive folder.
         retired_export = conn.execute(
             text("SELECT id FROM f_user_file WHERE id = :export"),
             {"export": export},
         ).scalar()
         assert retired_export is None
 
-        # 2. Recycled item from Export must be reparented to active EXPORT (9000) so restore works.
+        # 2. Both files are kept active in EXPORT (9000) via autorename; no file is deleted.
+        active_files = conn.execute(
+            text(
+                "SELECT file_name, id FROM f_user_file WHERE user_id = 1 "
+                "AND directory_id = 9000 AND is_active = 'Y'"
+            )
+        ).fetchall()
+        assert {r.file_name: r.id for r in active_files} == {
+            "same.note": 9003,
+            "same (1).note": 9002,
+        }
+
+        # 3. Recycled item from Export is reparented to active EXPORT (9000) so restore works.
         recycled_parent_id = conn.execute(
             text("SELECT directory_id FROM f_user_file WHERE id = 9015")
         ).scalar()
         assert recycled_parent_id == 9000
-
-        # 3. Summaries and note processing rows referencing deduplicated 9002 must not be orphaned.
-        summary_file_id = conn.execute(
-            text("SELECT file_id FROM f_summary WHERE id = 6001")
-        ).scalar()
-        assert summary_file_id == 9003
-
-        orphaned_pages = conn.execute(
-            text("SELECT count(*) FROM f_note_page_content WHERE file_id = 9002")
-        ).scalar()
-        assert orphaned_pages == 0
-
-        orphaned_tasks = conn.execute(
-            text("SELECT count(*) FROM f_system_task WHERE file_id = 9002")
-        ).scalar()
-        assert orphaned_tasks == 0
 
     engine.dispose()
