@@ -66,6 +66,44 @@ async def test_group_names_are_not_unique(schedule_service: ScheduleService) -> 
     assert groups[0].task_list_id == group2.task_list_id
 
 
+async def test_create_group_timestamps(
+    schedule_service: ScheduleService,
+) -> None:
+    """Test group create_time and update_time persistence on creation."""
+    user_id = 333
+    group = await schedule_service.create_group(
+        user_id,
+        "Initial Name",
+        task_list_id="group_uuid_1",
+        create_time_ms=1700000000000,
+        last_modified_ms=1700000001000,
+    )
+    assert group.task_list_id == "group_uuid_1"
+    assert group.create_time == 1700000000000
+    assert group.update_time == 1700000001000
+
+
+async def test_update_group_timestamp(
+    schedule_service: ScheduleService,
+) -> None:
+    """Test group update_time persistence on update."""
+    user_id = 333
+    await schedule_service.create_group(
+        user_id,
+        "Initial Name",
+        task_list_id="group_uuid_2",
+        create_time_ms=1700000000000,
+        last_modified_ms=1700000001000,
+    )
+
+    updated = await schedule_service.update_group(
+        user_id, "group_uuid_2", "Renamed Group", last_modified_ms=1700000009000
+    )
+    assert updated is not None
+    assert updated.title == "Renamed Group"
+    assert updated.update_time == 1700000009000
+
+
 async def test_task_crud(schedule_service: ScheduleService) -> None:
     """Test task level operations."""
     user_id = 888

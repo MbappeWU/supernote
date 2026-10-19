@@ -287,6 +287,60 @@ async def test_schedule_group_and_task_routes(
     await schedule.delete_group(group_id)
 
 
+async def test_group_create_sync_metadata(
+    authenticated_client: Client,
+) -> None:
+    """Verify group creation preserves client taskListId, createTime, and lastModified."""
+    schedule = ScheduleClient(authenticated_client)
+
+    client_group_id = "cf8123456789abcdef0123456789abcd"
+    group_vo = await schedule.create_group(
+        "Device Group",
+        task_list_id=client_group_id,
+        create_time_ms=1710000000000,
+        last_modified_ms=1710000005000,
+    )
+    assert group_vo.task_list_id == client_group_id
+
+    groups = [g async for g in schedule.list_groups()]
+    matched_group = next(g for g in groups if g.task_list_id == client_group_id)
+    assert matched_group.create_time == 1710000000000
+    assert matched_group.last_modified == 1710000005000
+
+    await schedule.delete_group(client_group_id)
+
+
+async def test_group_update_sync_metadata(
+    authenticated_client: Client,
+) -> None:
+    """Verify group update preserves client lastModified in list_groups and get_group."""
+    schedule = ScheduleClient(authenticated_client)
+
+    client_group_id = "cf8123456789abcdef0123456789abce"
+    await schedule.create_group(
+        "Device Group",
+        task_list_id=client_group_id,
+        create_time_ms=1710000000000,
+        last_modified_ms=1710000005000,
+    )
+
+    up_vo = await schedule.update_group(
+        client_group_id,
+        "Device Group Renamed",
+        last_modified_ms=1710000099000,
+    )
+    assert up_vo.success is True
+    groups_after = [g async for g in schedule.list_groups()]
+    renamed_group = next(g for g in groups_after if g.task_list_id == client_group_id)
+    assert renamed_group.title == "Device Group Renamed"
+    assert renamed_group.last_modified == 1710000099000
+
+    group_detail = await schedule.get_group(client_group_id)
+    assert group_detail.last_modified == 1710000099000
+
+    await schedule.delete_group(client_group_id)
+
+
 async def test_sort_endpoints_return_200(authenticated_client: Client) -> None:
     res_post = await authenticated_client.request(
         "post", "/api/file/schedule/sort", json={}

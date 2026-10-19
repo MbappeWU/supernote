@@ -50,13 +50,31 @@ class ScheduleService:
     # Task Group Operations
 
     async def create_group(
-        self, user_id: int, title: str, task_list_id: str | None = None
+        self,
+        user_id: int,
+        title: str,
+        task_list_id: str | None = None,
+        create_time_ms: int | None = None,
+        last_modified_ms: int | None = None,
     ) -> ScheduleTaskGroupDO:
         """Create a new task group."""
         if len(title) > MAX_TITLE_LENGTH:
             raise ValueError("Title is too long")
+        now_ms = int(time.time() * 1000)
+        created_ms = (
+            create_time_ms
+            if create_time_ms is not None
+            else (last_modified_ms if last_modified_ms is not None else now_ms)
+        )
+        updated_ms = last_modified_ms if last_modified_ms is not None else created_ms
+
         async with self.session_manager.session() as session:
-            kwargs: dict[str, Any] = {"user_id": user_id, "title": title}
+            kwargs: dict[str, Any] = {
+                "user_id": user_id,
+                "title": title,
+                "create_time": created_ms,
+                "update_time": updated_ms,
+            }
             if task_list_id is not None:
                 kwargs["task_list_id"] = task_list_id
             group = ScheduleTaskGroupDO(**kwargs)
@@ -91,22 +109,33 @@ class ScheduleService:
             return result.scalar_one_or_none()
 
     async def update_group(
-        self, user_id: int, group_id: str, title: str
+        self,
+        user_id: int,
+        group_id: str,
+        title: str,
+        last_modified_ms: int | None = None,
     ) -> ScheduleTaskGroupDO | None:
         """Update a task group title."""
         if len(title) > MAX_TITLE_LENGTH:
             raise ValueError("Title is too long")
+        now_ms = int(time.time() * 1000)
         async with self.session_manager.session() as session:
             if not (group := await self.get_group(user_id, group_id)):
                 return None
 
+            prev_time = group.update_time or group.create_time or 0
+            updated_ms = (
+                last_modified_ms
+                if last_modified_ms is not None
+                else max(now_ms, prev_time + 1)
+            )
             stmt = (
                 update(ScheduleTaskGroupDO)
                 .where(
                     ScheduleTaskGroupDO.user_id == user_id,
                     ScheduleTaskGroupDO.task_list_id == group.task_list_id,
                 )
-                .values(title=title)
+                .values(title=title, update_time=updated_ms)
                 .execution_options(synchronize_session="fetch")
             )
             await session.execute(stmt)

@@ -30,6 +30,11 @@ class ScheduleTaskGroupDO(Base):
     )
     """Creation time in epoch milliseconds."""
 
+    update_time: Mapped[int] = mapped_column(
+        BigInteger, default=lambda: int(time.time() * 1000)
+    )
+    """Update time in epoch milliseconds."""
+
 
 class ScheduleTaskDO(Base):
     """Individual Tasks."""

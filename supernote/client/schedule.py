@@ -31,9 +31,20 @@ class ScheduleClient:
         """Initialize a schedule client."""
         self._client = client
 
-    async def create_group(self, title: str) -> AddScheduleTaskGroupVO:
+    async def create_group(
+        self,
+        title: str,
+        task_list_id: str | None = None,
+        create_time_ms: int | None = None,
+        last_modified_ms: int | None = None,
+    ) -> AddScheduleTaskGroupVO:
         """Create a new schedule group."""
-        dto = AddScheduleTaskGroupDTO(title=title)
+        dto = AddScheduleTaskGroupDTO(
+            title=title,
+            task_list_id=task_list_id,
+            create_time=create_time_ms,
+            last_modified=last_modified_ms,
+        )
         return await self._client.post_json(
             "/api/file/schedule/group", AddScheduleTaskGroupVO, json=dto.to_dict()
         )
@@ -44,12 +55,21 @@ class ScheduleClient:
             f"/api/file/schedule/group/{group_id}", GetScheduleTaskGroupVO
         )
 
-    async def update_group(self, group_id: str, title: str) -> BaseResponse:
+    async def update_group(
+        self,
+        group_id: str,
+        title: str,
+        last_modified_ms: int | None = None,
+    ) -> BaseResponse:
         """Update a schedule group."""
         dto = UpdateScheduleTaskGroupDTO(
             task_list_id=group_id,
             title=title,
-            last_modified=int(time.time() * 1000),
+            last_modified=(
+                last_modified_ms
+                if last_modified_ms is not None
+                else int(time.time() * 1000)
+            ),
         )
         return await self._client.put_json(
             "/api/file/schedule/group", BaseResponse, json=dto.to_dict()
