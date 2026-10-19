@@ -78,7 +78,7 @@ def test_migration_upgrades_successfully(migrated_db: str) -> None:
         # Check if the 'alembic_version' table exists and has the head revision
         result = conn.execute(text("SELECT version_num FROM alembic_version"))
         version = result.scalar()
-        assert version == "e7f8a9b0c1d2"
+        assert version == "f1a2b3c4d5e6"
 
         # Check if a known table exists (e.g. users)
         result = conn.execute(text("SELECT count(*) FROM users"))
@@ -162,7 +162,7 @@ def test_orphaned_v0_20_0_migration_self_healing(tmp_path: Path) -> None:
     engine = create_engine(migration_db_url)
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "e7f8a9b0c1d2"
+        assert version == "f1a2b3c4d5e6"
 
         # Verify task columns and types
         tasks = conn.execute(
@@ -583,4 +583,59 @@ def test_add_update_time_to_schedule_task_group_migration(
         assert tuple(row) == (1700000012345, 1700000012345)
 
     command.downgrade(alembic_config, "d4e5f6a7b8c9")
+    engine.dispose()
+
+
+def test_make_schedule_task_list_id_nullable_migration(
+    tmp_path: Path, alembic_config: Config
+) -> None:
+    """Verify migration f1a2b3c4d5e6 converts '' and '0' task_list_id values to NULL."""
+    db_path = tmp_path / "task_list_id_nullable.db"
+    shutil.copy(Path("tests/fixtures/db_v1.sqlite").absolute(), db_path)
+    url = f"sqlite:///{db_path}"
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "e7f8a9b0c1d2")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_schedule_task "
+                "(task_id, task_list_id, user_id, title, status, is_reminder_on, create_time, update_time) "
+                "VALUES "
+                "('t1', '0', 1, 'Legacy Inbox', 'needsAction', 0, 1000, 1000), "
+                "('t2', '', 1, 'Empty Inbox', 'needsAction', 0, 1000, 1000), "
+                "('t3', 'grp-1', 1, 'Grouped', 'needsAction', 0, 1000, 1000)"
+            )
+        )
+
+    command.upgrade(alembic_config, "f1a2b3c4d5e6")
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT task_id, task_list_id FROM t_schedule_task "
+                "WHERE user_id = 1 ORDER BY task_id"
+            )
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [
+            ("t1", None),
+            ("t2", None),
+            ("t3", "grp-1"),
+        ]
+
+    command.downgrade(alembic_config, "e7f8a9b0c1d2")
+    with engine.connect() as conn:
+        rows_down = conn.execute(
+            text(
+                "SELECT task_id, task_list_id FROM t_schedule_task "
+                "WHERE user_id = 1 ORDER BY task_id"
+            )
+        ).fetchall()
+        assert [tuple(r) for r in rows_down] == [
+            ("t1", "0"),
+            ("t2", "0"),
+            ("t3", "grp-1"),
+        ]
+
     engine.dispose()

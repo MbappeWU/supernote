@@ -221,7 +221,7 @@ class ScheduleService:
         async with self.session_manager.session() as session:
             kwargs: dict[str, Any] = {
                 "user_id": user_id,
-                "task_list_id": group_id or "",
+                "task_list_id": group_id,
                 "title": title,
                 "detail": detail,
                 "status": status,
@@ -286,11 +286,7 @@ class ScheduleService:
         self, user_id: int, task_id: str, **kwargs: Any
     ) -> ScheduleTaskDO | None:
         """Update a task."""
-        updates = {
-            k: (v or "" if k == "task_list_id" else v)
-            for k, v in kwargs.items()
-            if k in TASK_ALLOWED_UPDATE_FIELDS
-        }
+        updates = {k: v for k, v in kwargs.items() if k in TASK_ALLOWED_UPDATE_FIELDS}
         updates["update_time"] = int(time.time() * 1000)
 
         async with self.session_manager.session() as session:
@@ -339,7 +335,7 @@ class ScheduleService:
                     raise ValueError(f"Task {task_id} not found")
 
                 updates = {
-                    k: (v or "" if k == "task_list_id" else v)
+                    k: v
                     for k, v in item.items()
                     if k in TASK_ALLOWED_UPDATE_FIELDS
                     and (v is not None or k == "task_list_id")

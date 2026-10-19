@@ -145,7 +145,9 @@ class ICalExportService:
 
         calendar = Calendar()
         for task in tasks:
-            group_title = groups_map.get(task.task_list_id)
+            group_title = (
+                groups_map.get(task.task_list_id) if task.task_list_id else None
+            )
             todo = task_to_vtodo(task, group_title=group_title)
             calendar.todos.append(todo)
 
