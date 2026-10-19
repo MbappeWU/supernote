@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 
+import aiohttp
 import jwt
 import pytest
 from aiohttp.test_utils import TestServer
@@ -335,3 +336,51 @@ async def test_socketio_revoked_session_disconnected_on_heartbeat_and_send(
     await client_ping.disconnect()
     await client_status.disconnect()
     await client_send.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_socketio_eio3_device_handshake_and_ping_compat(
+    socketio_server: TestServer,
+) -> None:
+    """Verify real Supernote device EIO=3 (Socket.IO v2) WebSocket handshake and client PING/PONG."""
+    user_service: UserService = socketio_server.app["user_service"]
+    manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
+    user_id = "test@example.com"
+
+    token = await user_service.create_session(user_id)
+    params = _make_handshake_params(token)
+
+    ws_url = (
+        f"http://{socketio_server.host}:{socketio_server.port}/socket.io/"
+        f"?EIO=3&transport=websocket"
+        f"&token={params.token}&type={params.type}"
+        f"&random={params.random}&sign={params.sign}"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(ws_url) as ws:
+            # 1. Server sends Engine.IO OPEN ('0{...}') followed immediately by
+            # Socket.IO default-namespace CONNECT ('40{...}') without waiting
+            # for a client '40' packet.
+            eio_open = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
+            assert eio_open.startswith("0{")
+
+            sio_connect = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
+            assert sio_connect.startswith("40")
+
+            # 2. Client-initiated Engine.IO v3 PING ('2') receives PONG ('3')
+            await ws.send_str("2")
+            eio_pong = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
+            assert eio_pong == "3"
+
+            # 3. Server-to-device notification is delivered over the default namespace
+            msg_data = SocketMessageData(
+                code="0",
+                msg="eio3 sync notification",
+                timestamp=1700000000000,
+                msg_type=SocketIoMessageType.FILE_SYN,
+            )
+            await manager.send_message(user_id, msg_data)
+            event_frame = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
+            assert event_frame.startswith('42["ServerMessage",')
+            assert "eio3 sync notification" in event_frame

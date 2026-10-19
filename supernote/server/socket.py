@@ -4,6 +4,7 @@ import logging
 from http import HTTPStatus
 from urllib.parse import parse_qs
 
+import engineio.packet
 import socketio
 from aiohttp import web
 
@@ -50,13 +51,47 @@ def _extract_handshake_params(environ: dict) -> SocketHandshakeParams:
     )
 
 
+class _CompatAsyncServer(socketio.AsyncServer):
+    """Socket.IO AsyncServer with Engine.IO v3 / Socket.IO v2 compatibility."""
+
+    async def _handle_connect(
+        self, eio_sid: str, namespace: str, data: object = None
+    ) -> None:
+        ns = namespace or "/"
+        if self.manager.sid_from_eio_sid(eio_sid, ns) is not None:
+            return
+        await super()._handle_connect(eio_sid, namespace, data)
+
+    async def _handle_eio_connect(self, eio_sid: str, environ: dict) -> None:
+        await super()._handle_eio_connect(eio_sid, environ)
+
+        eio_sock = self.eio.sockets.get(eio_sid)
+        if eio_sock is not None:
+            original_receive = eio_sock.receive
+
+            async def _receive_with_eio3_ping(
+                pkt: engineio.packet.Packet,
+            ) -> None:
+                if pkt.packet_type == engineio.packet.PING:
+                    eio_sock.schedule_ping()
+                    await eio_sock.send(
+                        engineio.packet.Packet(engineio.packet.PONG, pkt.data)
+                    )
+                    return
+                await original_receive(pkt)
+
+            setattr(eio_sock, "receive", _receive_with_eio3_ping)
+
+        await self._handle_connect(eio_sid, "/", None)
+
+
 class SocketIOServerManager:
     """Manages the Socket.IO server lifecycle, authentication, session rooms, and message delivery."""
 
     def __init__(self, config: ServerConfig, user_service: UserService) -> None:
         self.config = config
         self.user_service = user_service
-        self._sio = socketio.AsyncServer(
+        self._sio = _CompatAsyncServer(
             async_mode="aiohttp",
             cors_allowed_origins="*",
             allow_eio3=True,
