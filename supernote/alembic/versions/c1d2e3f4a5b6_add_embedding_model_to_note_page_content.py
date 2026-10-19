@@ -11,19 +11,32 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from supernote.server.config import ServerConfig
+
 # revision identifiers, used by Alembic.
 revision: str = "c1d2e3f4a5b6"
 down_revision: Union[str, None] = "b7397248a96b"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-LEGACY_GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
+
+def _get_configured_embedding_model() -> str:
+    context_config = op.get_context().config
+    server_config: ServerConfig | None = (
+        context_config.attributes.get("server_config")
+        if context_config is not None
+        else None
+    )
+    if server_config is None:
+        server_config = ServerConfig.load()
+    return server_config.gemini_embedding_model
 
 
 def upgrade() -> None:
     with op.batch_alter_table("f_note_page_content") as batch_op:
         batch_op.add_column(sa.Column("embedding_model", sa.String(), nullable=True))
 
+    embedding_model = _get_configured_embedding_model()
     bind = op.get_bind()
     bind.execute(
         sa.text(
@@ -31,7 +44,7 @@ def upgrade() -> None:
             "SET embedding_model = :model "
             "WHERE embedding IS NOT NULL AND embedding_model IS NULL"
         ),
-        {"model": LEGACY_GEMINI_EMBEDDING_MODEL},
+        {"model": embedding_model},
     )
     bind.execute(
         sa.text(
@@ -40,7 +53,7 @@ def upgrade() -> None:
             "WHERE task_type = 'EMBEDDING_GENERATION' "
             "AND status = 'COMPLETED' AND data IS NULL"
         ),
-        {"model": LEGACY_GEMINI_EMBEDDING_MODEL},
+        {"model": embedding_model},
     )
 
 

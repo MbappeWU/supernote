@@ -303,34 +303,31 @@ class ServerConfig(DataClassYAMLMixin):
 
     def _sync_legacy_gemini_config(self) -> None:
         """Synchronize legacy top-level `gemini_*` fields with `self.ai`."""
-        if self.gemini_api_key and self.gemini_api_key.strip():
-            gemini_provider = self.ai.providers.setdefault("gemini", ProviderConfig())
-            if not gemini_provider.api_key:
-                gemini_provider.api_key = self.gemini_api_key
-            if self.ai.ocr is None:
-                self.ai.ocr = ModelConfig(
-                    provider="gemini",
-                    model=self.gemini_ocr_model,
-                    max_concurrency=self.gemini_max_concurrency,
-                )
-            if self.ai.summary is None:
-                self.ai.summary = ModelConfig(
-                    provider="gemini",
-                    model=self.gemini_ocr_model,
-                    max_concurrency=self.gemini_max_concurrency,
-                )
-            if self.ai.embedding is None:
-                self.ai.embedding = ModelConfig(
-                    provider="gemini",
-                    model=self.gemini_embedding_model,
-                    max_concurrency=self.gemini_max_concurrency,
-                )
-        elif (
-            "gemini" in self.ai.providers
-            and self.ai.providers["gemini"].api_key
-            and not self.gemini_api_key
+        if not self.gemini_api_key or not self.gemini_api_key.strip():
+            return
+        gemini_provider = self.ai.providers.setdefault("gemini", ProviderConfig())
+        if not gemini_provider.api_key:
+            gemini_provider.api_key = self.gemini_api_key
+        if (
+            self.ai.ocr is None
+            and self.ai.summary is None
+            and self.ai.embedding is None
         ):
-            self.gemini_api_key = self.ai.providers["gemini"].api_key
+            self.ai.ocr = ModelConfig(
+                provider="gemini",
+                model=self.gemini_ocr_model,
+                max_concurrency=self.gemini_max_concurrency,
+            )
+            self.ai.summary = ModelConfig(
+                provider="gemini",
+                model=self.gemini_ocr_model,
+                max_concurrency=self.gemini_max_concurrency,
+            )
+            self.ai.embedding = ModelConfig(
+                provider="gemini",
+                model=self.gemini_embedding_model,
+                max_concurrency=self.gemini_max_concurrency,
+            )
 
     @property
     def configured_base_url(self) -> str | None:

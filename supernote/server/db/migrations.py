@@ -9,6 +9,8 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
+from supernote.server.config import ServerConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,7 +73,11 @@ def _heal_orphaned_v20_revision(db_url: str) -> None:
         engine.dispose()
 
 
-def run_migrations(db_url: str, target_revision: str = "head") -> None:
+def run_migrations(
+    db_url: str,
+    target_revision: str = "head",
+    config: ServerConfig | None = None,
+) -> None:
     """Run pending database migrations using Alembic.
 
     Args:
@@ -79,6 +85,7 @@ def run_migrations(db_url: str, target_revision: str = "head") -> None:
                This overrides the url in alembic.ini to ensure we target
                the correct environment (prod, test, etc).
         target_revision: Revision to migrate to (default: "head").
+        config: Optional server configuration used at startup.
     """
     # Locate alembic.ini inside the supernote package
     traversable = importlib.resources.files("supernote") / "alembic.ini"
@@ -93,6 +100,8 @@ def run_migrations(db_url: str, target_revision: str = "head") -> None:
     alembic_cfg.set_main_option("sqlalchemy.url", db_url)
     # Don't let alembic reset our carefully configured logging
     alembic_cfg.set_main_option("skip_logging_config", "true")
+    if config is not None:
+        alembic_cfg.attributes["server_config"] = config
 
     # Ensure the database directory exists because sqlite won't create it
     if db_url.startswith("sqlite"):

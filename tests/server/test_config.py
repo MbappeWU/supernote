@@ -309,7 +309,34 @@ def test_server_config_load_ai_from_file(tmp_path: Path) -> None:
         model="gemini-embedding-001",
         max_concurrency=8,
     )
-    assert config.gemini_api_key == "gemini-key"
+
+
+def test_server_config_load_partial_ai_keeps_omitted_capabilities_none(
+    tmp_path: Path,
+) -> None:
+    """Omitting ai.summary or ai.embedding in config.yaml leaves them disabled (None)."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+
+    data = {
+        "ai": {
+            "providers": {
+                "gemini": {"api_key": "gemini-key"},
+            },
+            "ocr": {
+                "provider": "gemini",
+                "model": "gemini-3.6-flash",
+            },
+        }
+    }
+    with open(config_file, "w") as f:
+        yaml.safe_dump(data, f)
+
+    config = ServerConfig.load(config_dir)
+    assert config.ai.ocr == ModelConfig(provider="gemini", model="gemini-3.6-flash")
+    assert config.ai.summary is None
+    assert config.ai.embedding is None
 
 
 def test_server_config_legacy_gemini_syncs_to_ai(tmp_path: Path) -> None:
