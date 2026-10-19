@@ -39,6 +39,20 @@ async def test_export_empty_calendar(
     assert len(calendar.todos) == 0
 
 
+async def test_export_ungrouped_inbox_task(
+    schedule_service: ScheduleService,
+    ical_export_service: ICalExportService,
+) -> None:
+    """Test exporting an ungrouped Inbox task without a matching group."""
+    user_id = 997
+    await schedule_service.create_task(user_id, "0", "Inbox Task")
+
+    ics_text = await ical_export_service.export_calendar(user_id)
+    calendar = IcsCalendarStream.calendar_from_ics(ics_text)
+    assert len(calendar.todos) == 1
+    assert calendar.todos[0].categories == []
+
+
 async def test_export_calendar_tasks_roundtrip(
     schedule_service: ScheduleService,
     ical_export_service: ICalExportService,

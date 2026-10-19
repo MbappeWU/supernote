@@ -103,7 +103,7 @@ def task_to_vtodo(
             )
 
     # Categories (Task Group Title)
-    categories = [group_title] if group_title else None
+    categories = [group_title] if group_title else []
 
     return Todo(
         uid=uid,
