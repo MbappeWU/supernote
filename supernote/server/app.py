@@ -476,7 +476,7 @@ def create_app(config: ServerConfig) -> web.Application:
         app.middlewares.append(jwt_auth_middleware)
 
         logger.info("Running database migrations...")
-        await asyncio.to_thread(run_migrations, config.db_url)
+        await asyncio.to_thread(run_migrations, config.db_url, config=config)
 
         if config.ephemeral:
             await bootstrap_ephemeral_user(app)

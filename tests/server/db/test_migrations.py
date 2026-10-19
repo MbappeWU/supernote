@@ -8,6 +8,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
+from supernote.server.config import AiConfig, ModelConfig, ServerConfig
 from supernote.server.db.migrations import run_migrations
 
 
@@ -434,11 +435,16 @@ def test_mixed_case_system_roots_deletes_retired_folders_and_reparents_recycled(
 def test_embedding_model_migration_backfill(
     tmp_path: Path, alembic_config: Config
 ) -> None:
-    """Verify migration c1d2e3f4a5b6 adds embedding_model and backfills existing embeddings."""
+    """Verify migration c1d2e3f4a5b6 adds embedding_model and backfills from startup ServerConfig."""
     db_path = tmp_path / "embedding_model_backfill.db"
     shutil.copy(Path("tests/fixtures/db_v1.sqlite").absolute(), db_path)
     url = f"sqlite:///{db_path}"
     alembic_config.set_main_option("sqlalchemy.url", url)
+    alembic_config.attributes["server_config"] = ServerConfig(
+        ai=AiConfig(
+            embedding=ModelConfig(provider="gemini", model="custom-embedding-001")
+        )
+    )
     command.upgrade(alembic_config, "b7397248a96b")
 
     engine = create_engine(url)
@@ -472,7 +478,7 @@ def test_embedding_model_migration_backfill(
             )
         ).fetchall()
         assert [tuple(r) for r in rows] == [
-            (0, "gemini-embedding-001"),
+            (0, "custom-embedding-001"),
             (1, None),
         ]
         task_rows = conn.execute(
@@ -482,7 +488,7 @@ def test_embedding_model_migration_backfill(
             )
         ).fetchall()
         assert [tuple(r) for r in task_rows] == [
-            ("EMBEDDING_GENERATION", "gemini-embedding-001"),
+            ("EMBEDDING_GENERATION", "custom-embedding-001"),
             ("OCR_EXTRACTION", None),
         ]
 
