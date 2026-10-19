@@ -47,24 +47,18 @@ class EmbeddingModule(ProcessorModule):
         if not page_id:
             return False
 
-        if not self.enabled:
+        if not await super().run_if_needed(
+            file_id, session_manager, page_index, page_id
+        ):
             return False
 
         async with session_manager.session() as session:
             # Check Prerequisites (OCR must have run so text_content is not None)
             content = await get_page_content_by_id(session, file_id, page_id)
-
             if not content or content.text_content is None:
                 return False
 
-            if content.text_content and (
-                content.embedding is None or content.embedding_model != self.version
-            ):
-                return True
-
-        return await super().run_if_needed(
-            file_id, session_manager, page_index, page_id
-        )
+        return True
 
     async def process(
         self,
