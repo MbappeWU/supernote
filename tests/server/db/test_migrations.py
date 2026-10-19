@@ -6,10 +6,15 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import MetaData, create_engine, text
 
 from supernote.server.config import ServerConfig
+from supernote.server.db.base import Base
 from supernote.server.db.migrations import run_migrations
+from tests.server.db.models.test_init import (
+    INTERNAL_TABLES_ALLOWLIST,
+    assert_metadata_user_id_conformance,
+)
 
 
 @pytest.fixture
@@ -87,6 +92,18 @@ def test_migration_upgrades_successfully(migrated_db: str) -> None:
         assert count >= 0
 
     engine.dispose()
+
+
+def test_migrated_db_schema_user_id_conformance(migrated_db: str) -> None:
+    """Verify that the v1 database upgraded through all migrations conforms to user_id scoping rules."""
+    engine = create_engine(migrated_db)
+    reflected = MetaData()
+    reflected.reflect(bind=engine)
+    engine.dispose()
+
+    reflected_app_tables = set(reflected.tables) - INTERNAL_TABLES_ALLOWLIST
+    assert reflected_app_tables == set(Base.metadata.tables)
+    assert_metadata_user_id_conformance(reflected)
 
 
 def test_summary_backfill_migration(migrated_db: str) -> None:
