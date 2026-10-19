@@ -440,11 +440,6 @@ def test_embedding_model_migration_backfill(
     shutil.copy(Path("tests/fixtures/db_v1.sqlite").absolute(), db_path)
     url = f"sqlite:///{db_path}"
     alembic_config.set_main_option("sqlalchemy.url", url)
-    alembic_config.attributes["server_config"] = ServerConfig(
-        ai=AiConfig(
-            embedding=ModelConfig(provider="gemini", model="custom-embedding-001")
-        )
-    )
     command.upgrade(alembic_config, "b7397248a96b")
 
     engine = create_engine(url)
@@ -468,7 +463,15 @@ def test_embedding_model_migration_backfill(
             )
         )
 
-    command.upgrade(alembic_config, "c1d2e3f4a5b6")
+    run_migrations(
+        url,
+        "c1d2e3f4a5b6",
+        config=ServerConfig(
+            ai=AiConfig(
+                embedding=ModelConfig(provider="fake", model="fake-embedding-v1")
+            )
+        ),
+    )
 
     with engine.connect() as conn:
         rows = conn.execute(
@@ -478,7 +481,7 @@ def test_embedding_model_migration_backfill(
             )
         ).fetchall()
         assert [tuple(r) for r in rows] == [
-            (0, "custom-embedding-001"),
+            (0, "fake-embedding-v1"),
             (1, None),
         ]
         task_rows = conn.execute(
@@ -488,7 +491,7 @@ def test_embedding_model_migration_backfill(
             )
         ).fetchall()
         assert [tuple(r) for r in task_rows] == [
-            ("EMBEDDING_GENERATION", "custom-embedding-001"),
+            ("EMBEDDING_GENERATION", "fake-embedding-v1"),
             ("OCR_EXTRACTION", None),
         ]
 
