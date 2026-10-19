@@ -452,6 +452,15 @@ def test_embedding_model_migration_backfill(
                 "(9002, 1001, 1, 'p1', 'h1', 'text without embedding', NULL, 0, 0)"
             )
         )
+        conn.execute(
+            text(
+                "INSERT INTO f_system_task "
+                "(id, file_id, task_type, key, status, data, retry_count, create_time, update_time) "
+                "VALUES "
+                "(9101, 1001, 'EMBEDDING_GENERATION', 'page_p0', 'COMPLETED', NULL, 0, 0, 0), "
+                "(9102, 1001, 'OCR_EXTRACTION', 'page_p0', 'COMPLETED', NULL, 0, 0, 0)"
+            )
+        )
 
     command.upgrade(alembic_config, "c1d2e3f4a5b6")
 
@@ -465,6 +474,16 @@ def test_embedding_model_migration_backfill(
         assert [tuple(r) for r in rows] == [
             (0, "gemini-embedding-001"),
             (1, None),
+        ]
+        task_rows = conn.execute(
+            text(
+                "SELECT task_type, data FROM f_system_task "
+                "WHERE file_id = 1001 ORDER BY id"
+            )
+        ).fetchall()
+        assert [tuple(r) for r in task_rows] == [
+            ("EMBEDDING_GENERATION", "gemini-embedding-001"),
+            ("OCR_EXTRACTION", None),
         ]
 
     command.downgrade(alembic_config, "b7397248a96b")

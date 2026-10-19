@@ -1,13 +1,9 @@
 import logging
 
-from sqlalchemy import select
-from sqlalchemy.sql import Select
-
 from supernote.server.ai.models.ocr import OcrModel
 from supernote.server.ai.prompts import PageMetadata, format_ocr_prompt
 from supernote.server.constants import CACHE_BUCKET
 from supernote.server.db.models.file import UserFileDO
-from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.file import FileService
 from supernote.server.services.processor_modules import ProcessorModule
@@ -36,23 +32,9 @@ class OcrModule(ProcessorModule):
     def task_type(self) -> str:
         return "OCR_EXTRACTION"
 
-    def missing_tasks_file_ids_stmt(self) -> Select[tuple[int]] | None:
-        if self.ocr_model is None:
-            return None
-        ocr_task_exists = (
-            select(SystemTaskDO.id)
-            .where(SystemTaskDO.file_id == NotePageContentDO.file_id)
-            .where(SystemTaskDO.task_type == self.task_type)
-            .where(SystemTaskDO.key == "page_" + NotePageContentDO.page_id)
-            .correlate(NotePageContentDO)
-            .exists()
-        )
-        return (
-            select(NotePageContentDO.file_id)
-            .where(NotePageContentDO.page_id != "")
-            .where(NotePageContentDO.text_content.is_(None))
-            .where(~ocr_task_exists)
-        )
+    @property
+    def enabled(self) -> bool:
+        return self.ocr_model is not None
 
     async def run_if_needed(
         self,
@@ -62,9 +44,6 @@ class OcrModule(ProcessorModule):
         page_id: str | None = None,
     ) -> bool:
         if page_index is None:
-            return False
-
-        if self.ocr_model is None:
             return False
 
         if not await super().run_if_needed(

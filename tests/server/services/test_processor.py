@@ -666,10 +666,10 @@ async def test_recover_missing_tasks_backfills_embedding_model_and_ai_modules(
     )
 
     async with session_manager.session() as session:
-        # File 9101: Fully processed with current model ("new-model") and summary task -> should NOT be enqueued
-        # File 9102: Has HASHING completed, but page has text_content=None -> needs OCR backfill
-        # File 9103: Has text_content, but embedding_model="old-model" -> needs embedding backfill
-        # File 9104: Has text_content and "new-model" embedding, but no SUMMARY_GENERATION task -> needs summary backfill
+        # File 9101: All tasks completed with current model ("new-model") -> should NOT be enqueued
+        # File 9102: Missing OCR_EXTRACTION task -> needs OCR backfill
+        # File 9103: Has EMBEDDING_GENERATION with data="old-model" -> needs embedding backfill
+        # File 9104: Missing SUMMARY_GENERATION task -> needs summary backfill
         for fid in (9101, 9102, 9103, 9104):
             session.add(
                 UserFileDO(
@@ -679,6 +679,14 @@ async def test_recover_missing_tasks_backfills_embedding_model_and_ai_modules(
                     storage_key=f"k{fid}",
                     md5="m",
                     is_active="Y",
+                )
+            )
+            session.add(
+                NotePageContentDO(
+                    file_id=fid,
+                    page_index=0,
+                    page_id="p0",
+                    content_hash="h",
                 )
             )
             session.add(
@@ -692,42 +700,46 @@ async def test_recover_missing_tasks_backfills_embedding_model_and_ai_modules(
 
         session.add_all(
             [
-                NotePageContentDO(
+                # 9101: Complete for OCR, EMBEDDING ("new-model"), and SUMMARY
+                SystemTaskDO(
                     file_id=9101,
-                    page_index=0,
-                    page_id="p0",
-                    content_hash="h",
-                    text_content="done",
-                    embedding="[0.1]",
-                    embedding_model="new-model",
+                    task_type="OCR_EXTRACTION",
+                    key="page_p0",
+                    status="COMPLETED",
                 ),
                 SystemTaskDO(
                     file_id=9101,
+                    task_type="EMBEDDING_GENERATION",
+                    key="page_p0",
+                    status="COMPLETED",
+                    data="new-model",
+                ),
+                SystemTaskDO(
+                    file_id=9101,
                     task_type="SUMMARY_GENERATION",
                     key="global",
                     status="COMPLETED",
                 ),
-                NotePageContentDO(
-                    file_id=9102,
-                    page_index=0,
-                    page_id="p0",
-                    content_hash="h",
-                    text_content=None,
-                ),
+                # 9102: Missing OCR_EXTRACTION (and EMBEDDING_GENERATION)
                 SystemTaskDO(
                     file_id=9102,
                     task_type="SUMMARY_GENERATION",
                     key="global",
                     status="COMPLETED",
                 ),
-                NotePageContentDO(
+                # 9103: EMBEDDING_GENERATION completed with old-model
+                SystemTaskDO(
                     file_id=9103,
-                    page_index=0,
-                    page_id="p0",
-                    content_hash="h",
-                    text_content="done",
-                    embedding="[0.1]",
-                    embedding_model="old-model",
+                    task_type="OCR_EXTRACTION",
+                    key="page_p0",
+                    status="COMPLETED",
+                ),
+                SystemTaskDO(
+                    file_id=9103,
+                    task_type="EMBEDDING_GENERATION",
+                    key="page_p0",
+                    status="COMPLETED",
+                    data="old-model",
                 ),
                 SystemTaskDO(
                     file_id=9103,
@@ -735,14 +747,19 @@ async def test_recover_missing_tasks_backfills_embedding_model_and_ai_modules(
                     key="global",
                     status="COMPLETED",
                 ),
-                NotePageContentDO(
+                # 9104: Missing SUMMARY_GENERATION
+                SystemTaskDO(
                     file_id=9104,
-                    page_index=0,
-                    page_id="p0",
-                    content_hash="h",
-                    text_content="done",
-                    embedding="[0.1]",
-                    embedding_model="new-model",
+                    task_type="OCR_EXTRACTION",
+                    key="page_p0",
+                    status="COMPLETED",
+                ),
+                SystemTaskDO(
+                    file_id=9104,
+                    task_type="EMBEDDING_GENERATION",
+                    key="page_p0",
+                    status="COMPLETED",
+                    data="new-model",
                 ),
             ]
         )

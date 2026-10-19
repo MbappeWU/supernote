@@ -33,6 +33,15 @@ def upgrade() -> None:
         ),
         {"model": LEGACY_GEMINI_EMBEDDING_MODEL},
     )
+    bind.execute(
+        sa.text(
+            "UPDATE f_system_task "
+            "SET data = :model "
+            "WHERE task_type = 'EMBEDDING_GENERATION' "
+            "AND status = 'COMPLETED' AND data IS NULL"
+        ),
+        {"model": LEGACY_GEMINI_EMBEDDING_MODEL},
+    )
 
 
 def downgrade() -> None:

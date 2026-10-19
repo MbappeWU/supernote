@@ -1,7 +1,6 @@
 import abc
 import logging
 import time
-from typing import TYPE_CHECKING
 
 from supernote.models.base import ProcessingStatus
 from supernote.server.db.session import DatabaseSessionManager
@@ -10,9 +9,6 @@ from supernote.server.metrics import (
     PROCESSOR_TASKS_TOTAL,
 )
 from supernote.server.utils.tasks import get_task, update_task_status
-
-if TYPE_CHECKING:
-    from sqlalchemy.sql import Select
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +35,14 @@ class ProcessorModule(abc.ABC):
         Matches the `task_type` column in `f_system_task`.
         """
 
-    def missing_tasks_file_ids_stmt(self) -> "Select[tuple[int]] | None":
-        """Return a query selecting `file_id`s that need backfill for this module."""
+    @property
+    def enabled(self) -> bool:
+        """Whether this module is currently enabled."""
+        return True
+
+    @property
+    def version(self) -> str | None:
+        """Optional version or model identifier for the module's output."""
         return None
 
     def get_task_key(
@@ -73,9 +75,15 @@ class ProcessorModule(abc.ABC):
             - It is used for feature gating (e.g., skip if API key is missing).
             - It is used for dependency management (e.g., OCR returns False if PNG is missing).
         """
+        if not self.enabled:
+            return False
         key = self.get_task_key(page_index, page_id)
         task = await get_task(session_manager, file_id, self.task_type, key)
-        if task and task.status == ProcessingStatus.COMPLETED:
+        if (
+            task
+            and task.status == ProcessingStatus.COMPLETED
+            and task.data == self.version
+        ):
             return False
         return True
 
@@ -141,6 +149,7 @@ class ProcessorModule(abc.ABC):
                 self.task_type,
                 key,
                 ProcessingStatus.COMPLETED,
+                data=self.version,
             )
             status_str = "success"
             return True

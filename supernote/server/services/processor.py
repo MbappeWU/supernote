@@ -300,14 +300,38 @@ class ProcessorService:
         """Find .note files that have missing or outdated tasks and enqueue them."""
         logger.info("Checking for files with missing tasks...")
         conditions = [UserFileDO.id.not_in(select(SystemTaskDO.file_id))]
-        for module in (
-            *self.global_pre_modules,
-            *self.page_modules,
-            *self.global_post_modules,
-        ):
-            module_stmt = module.missing_tasks_file_ids_stmt()
-            if module_stmt is not None:
-                conditions.append(UserFileDO.id.in_(module_stmt))
+
+        for module in (*self.global_pre_modules, *self.global_post_modules):
+            if not module.enabled:
+                continue
+            task_stmt = (
+                select(SystemTaskDO.file_id)
+                .where(SystemTaskDO.task_type == module.task_type)
+                .where(SystemTaskDO.key == "global")
+            )
+            if module.version is not None:
+                task_stmt = task_stmt.where(SystemTaskDO.data == module.version)
+            conditions.append(UserFileDO.id.not_in(task_stmt))
+
+        for module in self.page_modules:
+            if not module.enabled:
+                continue
+            page_task_exists = (
+                select(SystemTaskDO.id)
+                .where(SystemTaskDO.file_id == NotePageContentDO.file_id)
+                .where(SystemTaskDO.task_type == module.task_type)
+                .where(SystemTaskDO.key == "page_" + NotePageContentDO.page_id)
+            )
+            if module.version is not None:
+                page_task_exists = page_task_exists.where(
+                    SystemTaskDO.data == module.version
+                )
+            page_missing_stmt = (
+                select(NotePageContentDO.file_id)
+                .where(NotePageContentDO.page_id != "")
+                .where(~page_task_exists.correlate(NotePageContentDO).exists())
+            )
+            conditions.append(UserFileDO.id.in_(page_missing_stmt))
 
         async with self.session_manager.session() as session:
             stmt = (

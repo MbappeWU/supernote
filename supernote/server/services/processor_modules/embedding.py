@@ -1,11 +1,7 @@
 import json
 import logging
 
-from sqlalchemy import or_, select
-from sqlalchemy.sql import Select
-
 from supernote.server.ai.models.embedding import EmbeddingModel, EmbeddingTaskType
-from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.file import FileService
 from supernote.server.services.processor_modules import ProcessorModule
@@ -33,21 +29,13 @@ class EmbeddingModule(ProcessorModule):
     def task_type(self) -> str:
         return "EMBEDDING_GENERATION"
 
-    def missing_tasks_file_ids_stmt(self) -> Select[tuple[int]] | None:
-        if self.embedding_model is None:
-            return None
-        return (
-            select(NotePageContentDO.file_id)
-            .where(NotePageContentDO.text_content.isnot(None))
-            .where(NotePageContentDO.text_content != "")
-            .where(
-                or_(
-                    NotePageContentDO.embedding.is_(None),
-                    NotePageContentDO.embedding_model.is_(None),
-                    NotePageContentDO.embedding_model != self.embedding_model.model_id,
-                )
-            )
-        )
+    @property
+    def enabled(self) -> bool:
+        return self.embedding_model is not None
+
+    @property
+    def version(self) -> str | None:
+        return self.embedding_model.model_id if self.embedding_model else None
 
     async def run_if_needed(
         self,
@@ -59,20 +47,18 @@ class EmbeddingModule(ProcessorModule):
         if not page_id:
             return False
 
-        if self.embedding_model is None:
+        if not self.enabled:
             return False
 
         async with session_manager.session() as session:
-            # Check Prerequisites (Text Content must exist)
+            # Check Prerequisites (OCR must have run so text_content is not None)
             content = await get_page_content_by_id(session, file_id, page_id)
 
-            if not content or not content.text_content:
-                # Dependency not met yet (OCR not done or empty page)
+            if not content or content.text_content is None:
                 return False
 
-            if (
-                content.embedding is None
-                or content.embedding_model != self.embedding_model.model_id
+            if content.text_content and (
+                content.embedding is None or content.embedding_model != self.version
             ):
                 return True
 
@@ -100,8 +86,8 @@ class EmbeddingModule(ProcessorModule):
             content = await get_page_content_by_id(session, file_id, page_id)
 
             if not content or not content.text_content:
-                logger.warning(
-                    f"No text content found for embedding: file {file_id} page {page_id} (idx {page_index})"
+                logger.debug(
+                    f"No text content to embed for file {file_id} page {page_id} (idx {page_index})"
                 )
                 return
             text_content = content.text_content

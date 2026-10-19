@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 
 from sqlalchemy import select
-from sqlalchemy.sql import Select
 
 from supernote.models.summary import (
     METADATA_SEGMENTS,
@@ -16,7 +15,7 @@ from supernote.models.summary import (
 from supernote.server.ai.models.summary import SummaryModel
 from supernote.server.ai.prompts import format_summary_prompt
 from supernote.server.db.models.file import UserFileDO
-from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
+from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.file import FileService
@@ -57,18 +56,9 @@ class SummaryModule(ProcessorModule):
     def task_type(self) -> str:
         return "SUMMARY_GENERATION"
 
-    def missing_tasks_file_ids_stmt(self) -> Select[tuple[int]] | None:
-        if self.summary_model is None:
-            return None
-        summary_task_file_ids = select(SystemTaskDO.file_id).where(
-            SystemTaskDO.task_type == self.task_type
-        )
-        return (
-            select(NotePageContentDO.file_id)
-            .where(NotePageContentDO.text_content.isnot(None))
-            .where(NotePageContentDO.text_content != "")
-            .where(NotePageContentDO.file_id.not_in(summary_task_file_ids))
-        )
+    @property
+    def enabled(self) -> bool:
+        return self.summary_model is not None
 
     async def run_if_needed(
         self,
@@ -82,13 +72,7 @@ class SummaryModule(ProcessorModule):
         if page_index is not None:
             return False
 
-        if self.summary_model is None:
-            return False
-
-        if not await super().run_if_needed(file_id, session_manager, page_index):
-            return False
-
-        return True
+        return await super().run_if_needed(file_id, session_manager, page_index)
 
     async def process(
         self,
