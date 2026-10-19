@@ -19,13 +19,18 @@ __all__ = [
 class FakeSummaryModel(SummaryModel):
     """Fake summary model returning deterministic or configured `SummaryResponse`."""
 
-    def __init__(self, segments: list[SummarySegment] | None = None) -> None:
+    def __init__(
+        self,
+        segments: list[SummarySegment] | None = None,
+        model_id: str = "fake-summary-v1",
+    ) -> None:
         self._segments = segments
+        self._model_id = model_id
         self.calls: list[str] = []
 
     @property
     def model_id(self) -> str:
-        return "fake-summary-v1"
+        return self._model_id
 
     async def summarize(
         self,
@@ -46,6 +51,7 @@ class FakeSummaryModel(SummaryModel):
         )
 
 
-def create_summary_model(_config: ServerConfig) -> SummaryModel:
+def create_summary_model(config: ServerConfig) -> SummaryModel:
     """Create a `FakeSummaryModel`."""
-    return FakeSummaryModel()
+    model_id = config.ai.summary.model if config.ai.summary else "fake-summary-v1"
+    return FakeSummaryModel(model_id=model_id)

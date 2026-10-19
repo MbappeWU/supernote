@@ -44,6 +44,7 @@ class FakeEmbeddingModel(EmbeddingModel):
         ]
 
 
-def create_embedding_model(_config: ServerConfig) -> EmbeddingModel:
+def create_embedding_model(config: ServerConfig) -> EmbeddingModel:
     """Create a `FakeEmbeddingModel`."""
-    return FakeEmbeddingModel()
+    model_id = config.ai.embedding.model if config.ai.embedding else "fake-embedding-v1"
+    return FakeEmbeddingModel(model_id=model_id)

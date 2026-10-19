@@ -48,7 +48,12 @@ class GeminiEmbeddingModel(EmbeddingModel):
 
 def create_embedding_model(config: ServerConfig) -> EmbeddingModel | None:
     """Create a `GeminiEmbeddingModel` from `ServerConfig`, or `None` if unconfigured."""
-    api_key = config.gemini_api_key
+    config._sync_legacy_gemini_config()
+    model_cfg = config.ai.embedding
+    provider_cfg = config.ai.providers.get("gemini")
+    if model_cfg is None or provider_cfg is None:
+        return None
+    api_key = provider_cfg.api_key
     if not api_key or not api_key.strip():
         return None
-    return GeminiEmbeddingModel(GeminiBackend(api_key), config.gemini_embedding_model)
+    return GeminiEmbeddingModel(GeminiBackend(api_key), model_cfg.model)

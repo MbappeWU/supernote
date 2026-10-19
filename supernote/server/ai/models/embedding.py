@@ -85,17 +85,31 @@ class ConcurrencyLimitedEmbeddingModel(EmbeddingModel):
 
 def create_embedding_model(config: ServerConfig) -> EmbeddingModel | None:
     """Create the configured `EmbeddingModel` wrapped with concurrency limiting."""
-    if not config.gemini_api_key or not config.gemini_api_key.strip():
+    config._sync_legacy_gemini_config()
+    model_cfg = config.ai.embedding
+    if model_cfg is None:
         return None
 
-    from supernote.server.ai.models.gemini.embedding import (  # noqa: PLC0415
-        create_embedding_model as create_gemini_embedding_model,
-    )
+    model: EmbeddingModel | None
+    if model_cfg.provider == "gemini":
+        from supernote.server.ai.models.gemini.embedding import (  # noqa: PLC0415
+            create_embedding_model as create_gemini_embedding_model,
+        )
 
-    model = create_gemini_embedding_model(config)
+        model = create_gemini_embedding_model(config)
+    elif model_cfg.provider == "fake":
+        from supernote.server.ai.models.fake.embedding import (  # noqa: PLC0415
+            create_embedding_model as create_fake_embedding_model,
+        )
+
+        model = create_fake_embedding_model(config)
+    else:
+        raise ValueError(
+            f"Unsupported embedding model provider: {model_cfg.provider!r}"
+        )
+
     if model is None:
         return None
-    # TODO(#301): Generalize `gemini_max_concurrency` across AI providers.
     return ConcurrencyLimitedEmbeddingModel(
-        model, max_concurrency=config.gemini_max_concurrency
+        model, max_concurrency=model_cfg.max_concurrency
     )

@@ -58,7 +58,12 @@ class GeminiSummaryModel(SummaryModel):
 
 def create_summary_model(config: ServerConfig) -> SummaryModel | None:
     """Create a `GeminiSummaryModel` from `ServerConfig`, or `None` if unconfigured."""
-    api_key = config.gemini_api_key
+    config._sync_legacy_gemini_config()
+    model_cfg = config.ai.summary
+    provider_cfg = config.ai.providers.get("gemini")
+    if model_cfg is None or provider_cfg is None:
+        return None
+    api_key = provider_cfg.api_key
     if not api_key or not api_key.strip():
         return None
-    return GeminiSummaryModel(GeminiBackend(api_key), config.gemini_ocr_model)
+    return GeminiSummaryModel(GeminiBackend(api_key), model_cfg.model)

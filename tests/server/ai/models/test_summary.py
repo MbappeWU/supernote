@@ -5,12 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from supernote.server.ai.models.fake.summary import FakeSummaryModel
 from supernote.server.ai.models.summary import (
     ConcurrencyLimitedSummaryModel,
     create_summary_model,
 )
-from supernote.server.config import AuthConfig, ServerConfig
+from supernote.server.config import (
+    AiConfig,
+    AuthConfig,
+    ModelConfig,
+    ProviderConfig,
+    ServerConfig,
+)
 
 
 def test_create_summary_model(tmp_path: Path) -> None:
@@ -25,6 +33,47 @@ def test_create_summary_model(tmp_path: Path) -> None:
         model = create_summary_model(config)
         assert isinstance(model, ConcurrencyLimitedSummaryModel)
         assert model.model_id == config.gemini_ocr_model
+
+        ai_config = ServerConfig(
+            ai=AiConfig(
+                providers={"gemini": ProviderConfig(api_key="ai-key")},
+                summary=ModelConfig(
+                    provider="gemini",
+                    model="gemini-custom-summary",
+                    max_concurrency=4,
+                ),
+            )
+        )
+        ai_model = create_summary_model(ai_config)
+        assert isinstance(ai_model, ConcurrencyLimitedSummaryModel)
+        assert ai_model.model_id == "gemini-custom-summary"
+        assert ai_model._semaphore._value == 4
+
+    fake_config = ServerConfig(
+        ai=AiConfig(
+            summary=ModelConfig(
+                provider="fake", model="fake-summary-custom", max_concurrency=2
+            ),
+        )
+    )
+    fake_model = create_summary_model(fake_config)
+    assert isinstance(fake_model, ConcurrencyLimitedSummaryModel)
+    assert fake_model.model_id == "fake-summary-custom"
+
+    missing_provider_config = ServerConfig(
+        ai=AiConfig(
+            summary=ModelConfig(provider="gemini", model="gemini-3.6-flash"),
+        )
+    )
+    assert create_summary_model(missing_provider_config) is None
+
+    unsupported_config = ServerConfig(
+        ai=AiConfig(
+            summary=ModelConfig(provider="unknown", model="some-model"),
+        )
+    )
+    with pytest.raises(ValueError, match="Unsupported summary model provider"):
+        create_summary_model(unsupported_config)
 
 
 async def test_concurrency_limited_summary_model() -> None:

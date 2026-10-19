@@ -18,12 +18,13 @@ __all__ = [
 class FakeOcrModel(OcrModel):
     """Fake OCR model returning deterministic page transcripts."""
 
-    def __init__(self) -> None:
+    def __init__(self, model_id: str = "fake-ocr-v1") -> None:
+        self._model_id = model_id
         self.calls: list[tuple[bytes, str]] = []
 
     @property
     def model_id(self) -> str:
-        return "fake-ocr-v1"
+        return self._model_id
 
     async def extract_text(
         self,
@@ -34,6 +35,7 @@ class FakeOcrModel(OcrModel):
         return f"Transcribed ({len(png_data)} bytes)"
 
 
-def create_ocr_model(_config: ServerConfig) -> OcrModel:
+def create_ocr_model(config: ServerConfig) -> OcrModel:
     """Create a `FakeOcrModel`."""
-    return FakeOcrModel()
+    model_id = config.ai.ocr.model if config.ai.ocr else "fake-ocr-v1"
+    return FakeOcrModel(model_id=model_id)
