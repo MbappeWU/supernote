@@ -65,7 +65,9 @@ async def create_group(request: web.Request) -> web.Response:
 
         group = await schedule_service.create_group(user_id, dto.title)
         return web.json_response(
-            AddScheduleTaskGroupVO(success=True, task_list_id=group.id).to_dict()
+            AddScheduleTaskGroupVO(
+                success=True, task_list_id=group.task_list_id
+            ).to_dict()
         )
     except SupernoteError as err:
         return err.to_response()
@@ -136,7 +138,7 @@ async def get_group(request: web.Request) -> web.Response:
         return web.json_response(
             GetScheduleTaskGroupVO(
                 success=True,
-                task_list_id=group.id,
+                task_list_id=group.task_list_id,
                 user_id=group.user_id,
                 title=group.title,
                 create_time=group.create_time,
@@ -179,7 +181,7 @@ async def list_groups(request: web.Request) -> web.Response:
 
         items = [
             ScheduleTaskGroupItem(
-                task_list_id=g.id,
+                task_list_id=g.task_list_id,
                 user_id=g.user_id,
                 title=g.title,
                 last_modified=g.create_time,
@@ -236,7 +238,7 @@ async def create_task(request: web.Request) -> web.Response:
             task_id=dto.task_id,
         )
         return web.json_response(
-            AddScheduleTaskVO(success=True, task_id=task.id).to_dict()
+            AddScheduleTaskVO(success=True, task_id=task.task_id).to_dict()
         )
     except SupernoteError as err:
         return err.to_response()
@@ -267,7 +269,7 @@ async def update_task(request: web.Request) -> web.Response:
             raise SupernoteError("Not found", status_code=404)
 
         return web.json_response(
-            UpdateScheduleTaskVO(success=True, task_id=updated_task.id).to_dict()
+            UpdateScheduleTaskVO(success=True, task_id=updated_task.task_id).to_dict()
         )
     except SupernoteError as err:
         return err.to_response()
@@ -338,8 +340,8 @@ async def get_task(request: web.Request) -> web.Response:
         return web.json_response(
             ScheduleTaskVO(
                 success=True,
-                task_id=task.id,
-                task_list_id=task.group_id,
+                task_id=task.task_id,
+                task_list_id=task.task_list_id,
                 title=task.title,
                 detail=task.detail,
                 status=task.status,
@@ -392,8 +394,8 @@ async def list_tasks(request: web.Request) -> web.Response:
 
         tasks_vos = [
             ScheduleTaskInfo(
-                task_id=t.id,
-                task_list_id=t.group_id,
+                task_id=t.task_id,
+                task_list_id=t.task_list_id,
                 title=t.title,
                 detail=t.detail,
                 status=t.status,

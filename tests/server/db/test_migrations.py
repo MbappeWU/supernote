@@ -77,7 +77,7 @@ def test_migration_upgrades_successfully(migrated_db: str) -> None:
         # Check if the 'alembic_version' table exists and has the head revision
         result = conn.execute(text("SELECT version_num FROM alembic_version"))
         version = result.scalar()
-        assert version == "c1d2e3f4a5b6"
+        assert version == "d4e5f6a7b8c9"
 
         # Check if a known table exists (e.g. users)
         result = conn.execute(text("SELECT count(*) FROM users"))
@@ -161,18 +161,18 @@ def test_orphaned_v0_20_0_migration_self_healing(tmp_path: Path) -> None:
     engine = create_engine(migration_db_url)
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "c1d2e3f4a5b6"
+        assert version == "d4e5f6a7b8c9"
 
         # Verify task columns and types
         tasks = conn.execute(
             text(
-                "SELECT task_id, task_list_id, title, status, client_task_id FROM t_schedule_task ORDER BY task_id"
+                "SELECT task_id, task_list_id, title, status FROM t_schedule_task ORDER BY task_id"
             )
         ).fetchall()
         assert len(tasks) == 3
         for row in tasks:
-            assert isinstance(row[0], int)
-            assert isinstance(row[1], int)
+            assert isinstance(row[0], str)
+            assert isinstance(row[1], str)
 
         titles = [row[2] for row in tasks]
         assert "Buy Milk Before Upgrade" in titles
@@ -181,13 +181,69 @@ def test_orphaned_v0_20_0_migration_self_healing(tmp_path: Path) -> None:
 
         # Verify group columns and types
         groups = conn.execute(
-            text(
-                "SELECT task_list_id, title, client_task_list_id FROM t_schedule_task_group"
-            )
+            text("SELECT task_list_id, title FROM t_schedule_task_group")
         ).fetchall()
         assert len(groups) >= 1
-        assert isinstance(groups[0][0], int)
+        assert isinstance(groups[0][0], str)
 
+    engine.dispose()
+
+
+def test_unify_schedule_ids_as_string_migration(
+    tmp_path: Path, alembic_config: Config
+) -> None:
+    """Verify migration d4e5f6a7b8c9 backfills client string IDs into task_id and task_list_id and drops client_* columns."""
+    db_path = tmp_path / "schedule_string_ids.db"
+    shutil.copy(Path("tests/fixtures/db_v1.sqlite").absolute(), db_path)
+    url = f"sqlite:///{db_path}"
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "c1d2e3f4a5b6")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO t_schedule_task_group (task_list_id, client_task_list_id, user_id, title, create_time) "
+                "VALUES (100, 'uuid-group-1', 1, 'Client Group', 1000), "
+                "       (200, NULL, 1, 'Server Group', 2000)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO t_schedule_task "
+                "(task_id, client_task_id, task_list_id, client_task_list_id, user_id, title, status, is_reminder_on, create_time, update_time) "
+                "VALUES "
+                "(1001, 'uuid-task-1', 100, NULL, 1, 'Task linked by int id to client group', 'needsAction', 0, 1000, 1000), "
+                "(1002, NULL, 0, 'uuid-group-1', 1, 'Task linked by client group id', 'needsAction', 0, 1000, 1000), "
+                "(1003, NULL, 200, NULL, 1, 'Task linked to server group', 'needsAction', 0, 1000, 1000)"
+            )
+        )
+
+    command.upgrade(alembic_config, "d4e5f6a7b8c9")
+
+    with engine.connect() as conn:
+        groups = conn.execute(
+            text(
+                "SELECT task_list_id, title FROM t_schedule_task_group ORDER BY create_time"
+            )
+        ).fetchall()
+        assert [tuple(r) for r in groups] == [
+            ("uuid-group-1", "Client Group"),
+            ("200", "Server Group"),
+        ]
+
+        tasks = conn.execute(
+            text(
+                "SELECT task_id, task_list_id, title FROM t_schedule_task ORDER BY title"
+            )
+        ).fetchall()
+        assert [tuple(r) for r in tasks] == [
+            ("1002", "uuid-group-1", "Task linked by client group id"),
+            ("uuid-task-1", "uuid-group-1", "Task linked by int id to client group"),
+            ("1003", "200", "Task linked to server group"),
+        ]
+
+    command.downgrade(alembic_config, "c1d2e3f4a5b6")
     engine.dispose()
 
 
