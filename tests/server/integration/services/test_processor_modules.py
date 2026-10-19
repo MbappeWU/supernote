@@ -5,10 +5,8 @@ import pytest
 
 from supernote.server.events import LocalEventBus
 from supernote.server.services.processor import ProcessorService
-from supernote.server.services.processor_modules.gemini_embedding import (
-    GeminiEmbeddingModule,
-)
-from supernote.server.services.processor_modules.gemini_ocr import GeminiOcrModule
+from supernote.server.services.processor_modules.embedding import EmbeddingModule
+from supernote.server.services.processor_modules.ocr import OcrModule
 from supernote.server.services.processor_modules.page_hashing import PageHashingModule
 from supernote.server.services.processor_modules.png_conversion import (
     PngConversionModule,
@@ -37,10 +35,10 @@ async def test_explicit_orchestration_flow(
     png = MagicMock(spec=PngConversionModule)
     png.run = AsyncMock(return_value=True)
 
-    ocr = MagicMock(spec=GeminiOcrModule)
+    ocr = MagicMock(spec=OcrModule)
     ocr.run = AsyncMock(return_value=True)
 
-    embedding = MagicMock(spec=GeminiEmbeddingModule)
+    embedding = MagicMock(spec=EmbeddingModule)
     embedding.run = AsyncMock(return_value=True)
 
     summary = MagicMock(spec=SummaryModule)
@@ -93,10 +91,10 @@ async def test_dependant_skipping(
     png = MagicMock(spec=PngConversionModule)
     png.run = AsyncMock(return_value=False)
 
-    ocr = MagicMock(spec=GeminiOcrModule)
+    ocr = MagicMock(spec=OcrModule)
     ocr.run = AsyncMock(return_value=True)
 
-    embedding = MagicMock(spec=GeminiEmbeddingModule)
+    embedding = MagicMock(spec=EmbeddingModule)
     embedding.run = AsyncMock(return_value=True)
 
     summary = MagicMock(spec=SummaryModule)

@@ -1,9 +1,9 @@
 import json
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from supernote.server.config import ServerConfig
+from supernote.server.ai.models.embedding import EmbeddingTaskType
+from supernote.server.ai.models.fake.embedding import FakeEmbeddingModel
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.session import DatabaseSessionManager
@@ -11,36 +11,34 @@ from supernote.server.services.search import SearchService
 
 
 @pytest.fixture
-def mock_gemini_service() -> MagicMock:
-    service = MagicMock()
-    service.is_configured = True
-    service.embed_content = AsyncMock()
-    return service
+def fake_embedding_model() -> FakeEmbeddingModel:
+    return FakeEmbeddingModel()
 
 
 @pytest.fixture
 def search_service(
     session_manager: DatabaseSessionManager,
-    mock_gemini_service: MagicMock,
-    server_config: ServerConfig,
+    fake_embedding_model: FakeEmbeddingModel,
 ) -> SearchService:
-    server_config.gemini_embedding_model = "text-embedding-004"
     return SearchService(
         session_manager=session_manager,
-        gemini_service=mock_gemini_service,
-        config=server_config,
+        embedding_model=fake_embedding_model,
     )
 
 
 async def test_search_chunks_success(
     search_service: SearchService,
     session_manager: DatabaseSessionManager,
-    mock_gemini_service: MagicMock,
+    fake_embedding_model: FakeEmbeddingModel,
 ) -> None:
     # Setup Data
     user_id = 1
     file_id_1 = 101
     file_id_2 = 102
+    cats_vec = await fake_embedding_model.embed(
+        "cats", task_type=EmbeddingTaskType.RETRIEVAL_DOCUMENT
+    )
+    orthogonal_vec = [cats_vec[1], -cats_vec[0], 0.0]
 
     async with session_manager.session() as session:
         # Files
@@ -65,7 +63,7 @@ async def test_search_chunks_success(
                 page_index=0,
                 page_id="p0",
                 text_content="This is the first chunk about cats.",
-                embedding=json.dumps([1.0, 0.0, 0.0]),
+                embedding=json.dumps(cats_vec),
             )
         )
         session.add(
@@ -74,17 +72,10 @@ async def test_search_chunks_success(
                 page_index=0,
                 page_id="p0",
                 text_content="This is the second chunk about dogs.",
-                embedding=json.dumps([0.0, 1.0, 0.0]),
+                embedding=json.dumps(orthogonal_vec),
             )
         )
         await session.commit()
-
-    # Mock Gemini Embedding for query "cats"
-    mock_response = MagicMock()
-    mock_embedding = MagicMock()
-    mock_embedding.values = [1.0, 0.0, 0.0]
-    mock_response.embeddings = [mock_embedding]
-    mock_gemini_service.embed_content.return_value = mock_response
 
     # Run Search
     results = await search_service.search_chunks(user_id=user_id, query="cats", top_n=5)
@@ -95,13 +86,13 @@ async def test_search_chunks_success(
     assert results[0].score > 0.99
     assert "cats" in results[0].text_preview
     assert results[1].file_id == file_id_2
-    assert results[1].score < 0.01
+    assert abs(results[1].score) < 0.01
 
 
 async def test_search_chunks_inactive_file(
     search_service: SearchService,
     session_manager: DatabaseSessionManager,
-    mock_gemini_service: MagicMock,
+    fake_embedding_model: FakeEmbeddingModel,
 ) -> None:
     # Setup Data
     user_id = 1
@@ -148,13 +139,6 @@ async def test_search_chunks_inactive_file(
         )
         await session.commit()
 
-    # Mock Gemini Embedding
-    mock_response = MagicMock()
-    mock_embedding = MagicMock()
-    mock_embedding.values = [1.0, 0.0, 0.0]
-    mock_response.embeddings = [mock_embedding]
-    mock_gemini_service.embed_content.return_value = mock_response
-
     results = await search_service.search_chunks(user_id=user_id, query="cats", top_n=5)
 
     assert len(results) == 1
@@ -165,7 +149,7 @@ async def test_search_chunks_inactive_file(
 async def test_search_chunks_with_name_filter(
     search_service: SearchService,
     session_manager: DatabaseSessionManager,
-    mock_gemini_service: MagicMock,
+    fake_embedding_model: FakeEmbeddingModel,
 ) -> None:
     # Setup Data
     user_id = 1
@@ -193,7 +177,7 @@ async def test_search_chunks_with_name_filter(
                 page_index=0,
                 page_id="p0",
                 text_content="Cats are great.",
-                embedding=json.dumps([1.0, 0.0]),
+                embedding=json.dumps([1.0, 0.0, 0.0]),
             )
         )
         session.add(
@@ -202,17 +186,10 @@ async def test_search_chunks_with_name_filter(
                 page_index=0,
                 page_id="p0",
                 text_content="Dogs are great.",
-                embedding=json.dumps([1.0, 0.0]),
+                embedding=json.dumps([1.0, 0.0, 0.0]),
             )
         )
         await session.commit()
-
-    # Mock Gemini Embedding
-    mock_response = MagicMock()
-    mock_embedding = MagicMock()
-    mock_embedding.values = [1.0, 0.0]
-    mock_response.embeddings = [mock_embedding]
-    mock_gemini_service.embed_content.return_value = mock_response
 
     # Run Search with name filter "Monthly"
     results = await search_service.search_chunks(
@@ -292,7 +269,7 @@ async def test_get_transcript(
 async def test_search_chunks_with_date_filter_inferred(
     search_service: SearchService,
     session_manager: DatabaseSessionManager,
-    mock_gemini_service: MagicMock,
+    fake_embedding_model: FakeEmbeddingModel,
 ) -> None:
     # Setup Data
     user_id = 1
@@ -312,7 +289,7 @@ async def test_search_chunks_with_date_filter_inferred(
                 page_index=0,
                 page_id="P20231027120000abc",
                 text_content="Page 1 content.",
-                embedding=json.dumps([1.0, 0.0]),
+                embedding=json.dumps([1.0, 0.0, 0.0]),
             )
         )
         # Page from 2023-10-28
@@ -322,17 +299,10 @@ async def test_search_chunks_with_date_filter_inferred(
                 page_index=1,
                 page_id="P20231028120000def",
                 text_content="Page 2 content.",
-                embedding=json.dumps([1.0, 0.0]),
+                embedding=json.dumps([1.0, 0.0, 0.0]),
             )
         )
         await session.commit()
-
-    # Mock Gemini
-    mock_response = MagicMock()
-    mock_embedding = MagicMock()
-    mock_embedding.values = [1.0, 0.0]
-    mock_response.embeddings = [mock_embedding]
-    mock_gemini_service.embed_content.return_value = mock_response
 
     # Filter for Oct 27
     results = await search_service.search_chunks(

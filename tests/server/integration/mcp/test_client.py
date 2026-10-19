@@ -4,7 +4,6 @@ import re
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -13,6 +12,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
 from sqlalchemy import select
 
+from supernote.server.ai.models.fake.embedding import FakeEmbeddingModel
 from supernote.server.config import ServerConfig
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO
@@ -73,23 +73,15 @@ async def notebook_file_id(
 
 
 @pytest.fixture
-def mock_gemini_service() -> Generator[None]:
-    """Fixture to mock Gemini service."""
-    # 1. Mock Gemini Service to avoid network calls
-    mock_embedding_response = AsyncMock()
-    mock_embedding_response.embeddings = [AsyncMock(values=[0.1] * 768)]
-
-    with (
-        patch(
-            "supernote.server.services.gemini.GeminiService.is_configured",
-            return_value=True,
-        ),
-        patch(
-            "supernote.server.services.gemini.GeminiService.embed_content",
-            return_value=mock_embedding_response,
-        ),
-    ):
+def mock_gemini_service(client: Any) -> Generator[None]:
+    """Fixture to configure a FakeEmbeddingModel on the app's search service."""
+    search_service = client.app["search_service"]
+    original = search_service.embedding_model
+    search_service.embedding_model = FakeEmbeddingModel(dimensions=768)
+    try:
         yield
+    finally:
+        search_service.embedding_model = original
 
 
 @asynccontextmanager

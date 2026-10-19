@@ -23,6 +23,10 @@ from supernote.models.extended import (
     WebTranscriptRequestDTO,
     WebTranscriptResponseVO,
 )
+from supernote.server.ai.models.embedding import EmbeddingModel
+from supernote.server.ai.models.ocr import OcrModel
+from supernote.server.ai.models.summary import SummaryModel
+from supernote.server.config import ServerConfig
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import SystemTaskDO
 from supernote.server.exceptions import SupernoteError
@@ -255,16 +259,25 @@ async def handle_extended_transcript(request: web.Request) -> web.Response:
 async def handle_extended_ai_status(request: web.Request) -> web.Response:
     # Endpoint: GET /api/extended/ai/status
     # Purpose: Returns server AI processing configuration and API key health status.
-    config = request.app.get("config")
-    gemini_key = getattr(config, "gemini_api_key", None) if config else None
-    has_api_key = bool(gemini_key and gemini_key.strip())
+    config: ServerConfig | None = request.app.get("config")
+    ocr_model: OcrModel | None = request.app.get("ocr_model")
+    summary_model: SummaryModel | None = request.app.get("summary_model")
+    embedding_model: EmbeddingModel | None = request.app.get("embedding_model")
+    is_configured = any((ocr_model, summary_model, embedding_model))
+    ocr_enabled = ocr_model is not None
+    vector_search_enabled = embedding_model is not None
+    model = (
+        ocr_model.model_id
+        if ocr_model is not None
+        else (config.gemini_ocr_model if config is not None else None)
+    )
 
     return web.json_response(
         {
             "success": True,
-            "hasApiKey": has_api_key,
-            "ocrEnabled": has_api_key,
-            "vectorSearchEnabled": has_api_key,
-            "model": getattr(config, "gemini_ocr_model", None) if config else None,
+            "hasApiKey": is_configured,
+            "ocrEnabled": ocr_enabled,
+            "vectorSearchEnabled": vector_search_enabled,
+            "model": model,
         }
     )

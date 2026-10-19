@@ -21,6 +21,9 @@ from supernote.server.mcp.auth import create_auth_app
 from supernote.server.mcp.server import create_mcp_server, run_server, set_services
 from supernote.server.utils.auth_utils import get_token_from_request
 
+from .ai.models.embedding import create_embedding_model
+from .ai.models.ocr import create_ocr_model
+from .ai.models.summary import create_summary_model
 from .config import AuthConfig, ServerConfig
 from .constants import MAX_UPLOAD_SIZE
 from .db.models.user import UserDO
@@ -42,10 +45,9 @@ from .routes.decorators import public_route
 from .services.blob import LocalBlobStorage
 from .services.coordination import CoordinationService, SqliteCoordinationService
 from .services.file import FileService
-from .services.gemini import GeminiService
 from .services.processor import ProcessorService
-from .services.processor_modules.gemini_embedding import GeminiEmbeddingModule
-from .services.processor_modules.gemini_ocr import GeminiOcrModule
+from .services.processor_modules.embedding import EmbeddingModule
+from .services.processor_modules.ocr import OcrModule
 from .services.processor_modules.page_hashing import PageHashingModule
 from .services.processor_modules.png_conversion import PngConversionModule
 from .services.processor_modules.summary import SummaryModule
@@ -367,10 +369,12 @@ def create_app(config: ServerConfig) -> web.Application:
     app["file_service"] = file_service
     app["url_signer"] = UrlSigner(config.auth.secret_key, coordination_service)
     app["schedule_service"] = ScheduleService(session_manager)
-    gemini_service = GeminiService(
-        config.gemini_api_key, max_concurrency=config.gemini_max_concurrency
-    )
-    app["gemini_service"] = gemini_service
+    ocr_model = create_ocr_model(config)
+    summary_model = create_summary_model(config)
+    embedding_model = create_embedding_model(config)
+    app["ocr_model"] = ocr_model
+    app["summary_model"] = summary_model
+    app["embedding_model"] = embedding_model
 
     if config.prompts_dir:
         PROMPT_LOADER.configure(Path(config.prompts_dir))
@@ -378,7 +382,7 @@ def create_app(config: ServerConfig) -> web.Application:
     summary_service = SummaryService(user_service, session_manager)
     app["summary_service"] = summary_service
 
-    search_service = SearchService(session_manager, gemini_service, config)
+    search_service = SearchService(session_manager, embedding_model)
     app["search_service"] = search_service
 
     app["sync_locks"] = {}  # user -> (equipment_no, expiry_time)
@@ -393,23 +397,20 @@ def create_app(config: ServerConfig) -> web.Application:
     app["webhook_service"] = webhook_service
 
     # Register modules
-    png_enabled = gemini_service.is_configured or (
+    png_enabled = (ocr_model is not None) or (
         config.web_enabled and config.web_notebook_preview
     )
     processor_service.register_modules(
         hashing=PageHashingModule(file_service=file_service),
         png=PngConversionModule(file_service=file_service) if png_enabled else None,
-        ocr=GeminiOcrModule(
-            file_service=file_service, config=config, gemini_service=gemini_service
-        ),
-        embedding=GeminiEmbeddingModule(
-            file_service=file_service, config=config, gemini_service=gemini_service
+        ocr=OcrModule(file_service=file_service, ocr_model=ocr_model),
+        embedding=EmbeddingModule(
+            file_service=file_service, embedding_model=embedding_model
         ),
         summary=SummaryModule(
             file_service=file_service,
-            config=config,
-            gemini_service=gemini_service,
             summary_service=summary_service,
+            summary_model=summary_model,
         ),
     )
 
