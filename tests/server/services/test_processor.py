@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy import select
 
+from supernote.server.ai.models.fake.ocr import FakeOcrModel
+from supernote.server.ai.models.ocr import ConcurrencyLimitedOcrModel
 from supernote.server.constants import CACHE_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
@@ -18,7 +20,6 @@ from supernote.server.events import (
     NoteUpdatedEvent,
 )
 from supernote.server.services.coordination import SqliteCoordinationService
-from supernote.server.services.gemini import GeminiService
 from supernote.server.services.processor import ProcessorService
 from supernote.server.services.processor_modules import ProcessorModule
 from supernote.server.services.processor_modules.page_hashing import PageHashingModule
@@ -453,34 +454,28 @@ async def test_page_parallelism(
 async def test_gemini_concurrency_limit() -> None:
     max_concurrency = 2
 
-    # Use patch to avoid actually calling the API
-    with patch("google.genai.Client") as mock_client_cls:
-        service = GeminiService(api_key="fake-key", max_concurrency=max_concurrency)
-        mock_client = mock_client_cls.return_value
-        service._client = mock_client
+    active_calls = 0
+    max_active_seen = 0
 
-        active_calls = 0
-        max_active_seen = 0
-
-        async def slow_call(*args: object, **kwargs: object) -> MagicMock:
+    class SlowOcrModel(FakeOcrModel):
+        async def extract_text(self, png_data: bytes, prompt: str) -> str:
             nonlocal active_calls, max_active_seen
             active_calls += 1
             max_active_seen = max(max_active_seen, active_calls)
             try:
                 await asyncio.sleep(0.1)
-                return MagicMock()
+                return await super().extract_text(png_data, prompt)
             finally:
                 active_calls -= 1
 
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=slow_call)
+    model = ConcurrencyLimitedOcrModel(SlowOcrModel(), max_concurrency=max_concurrency)
+    tasks = [model.extract_text(b"png", "prompt") for _ in range(4)]
+    await asyncio.gather(*tasks)
 
-        tasks = [service.generate_content("model", "content") for _ in range(4)]
-        await asyncio.gather(*tasks)
-
-        assert max_active_seen == 2, (
-            f"Expected max 2 concurrent calls, saw {max_active_seen}"
-        )
-        assert active_calls == 0
+    assert max_active_seen == 2, (
+        f"Expected max 2 concurrent calls, saw {max_active_seen}"
+    )
+    assert active_calls == 0
 
 
 async def test_processor_pause_resume(

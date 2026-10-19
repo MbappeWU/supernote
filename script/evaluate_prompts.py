@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import dataclasses
 import io
 import json
 import os
@@ -13,20 +14,22 @@ from pathlib import Path
 # Add project root to sys.path so we can import supernote
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from google.genai import types
-from mashumaro.jsonschema import build_json_schema
-
 from supernote.notebook import Notebook, PngConverter, load_notebook
+from supernote.server.ai.models.ocr import OcrModel, create_ocr_model
+from supernote.server.ai.models.summary import SummaryModel, create_summary_model
+from supernote.server.ai.prompts import (
+    PageMetadata,
+    format_ocr_prompt,
+    format_summary_prompt,
+)
 from supernote.server.config import ServerConfig
-from supernote.server.services.gemini import GeminiService
-from supernote.server.services.processor_modules.summary import SummaryResponse
 from supernote.server.utils.note_content import format_page_metadata
 from supernote.server.utils.prompt_loader import PromptId, PromptLoader
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate Gemini OCR and Summary prompts on a Supernote notebook."
+        description="Evaluate OCR and Summary prompts on a Supernote notebook."
     )
     parser.add_argument(
         "--notebook", type=str, required=True, help="Path to the .note file."
@@ -77,12 +80,12 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run_ocr_for_page(
-    gemini_service: GeminiService,
-    model: str,
+    ocr_model: OcrModel,
+    prompt_loader: PromptLoader,
+    custom_type: str,
     page_idx: int,
     notebook: Notebook,
     notebook_path: Path,
-    ocr_prompt_template: str,
     out_dir: Path,
 ) -> tuple[str, str]:
     """Runs OCR on a single page, saves the extracted PNG and individual txt transcript."""
@@ -110,22 +113,20 @@ async def run_ocr_for_page(
         include_section_divider=True,
     )
 
-    full_ocr_prompt = f"{metadata_block}\n\n{ocr_prompt_template}"
-
     print(f"Running OCR on Page {page_idx + 1} (ID: {page_id})...")
 
-    parts = [
-        types.Part.from_text(text=full_ocr_prompt),
-        types.Part.from_bytes(data=png_data, mime_type="image/png"),
-    ]
-
-    response = await gemini_service.generate_content(
-        model=model,
-        contents=[types.Content(parts=parts)],
-        config={"media_resolution": types.MediaResolution.MEDIA_RESOLUTION_HIGH},
+    page_metadata = PageMetadata(
+        file_name=notebook_path.name,
+        page_index=page_idx,
+        page_id=page_id,
+        notebook_create_time=None,
     )
-
-    text_content = response.text if response.text else ""
+    prompt = format_ocr_prompt(
+        page_metadata,
+        custom_type=custom_type,
+        prompt_loader=prompt_loader,
+    )
+    text_content = await ocr_model.extract_text(png_data, prompt)
     formatted_page_transcript = f"{metadata_block}\n{text_content}"
 
     # Save individual page transcript
@@ -137,8 +138,7 @@ async def run_ocr_for_page(
 
 
 async def run_ocr_pipeline(
-    gemini_service: GeminiService,
-    model: str,
+    ocr_model: OcrModel,
     notebook: Notebook,
     notebook_path: Path,
     prompt_loader: PromptLoader,
@@ -147,28 +147,21 @@ async def run_ocr_pipeline(
     page_indices: list[int],
 ) -> tuple[str, list[str], str]:
     """Extracts specified pages, runs OCR, and saves the aggregated transcript."""
-    # Get OCR prompts
-    try:
-        ocr_prompt_template = prompt_loader.get_prompt(
-            PromptId.OCR_TRANSCRIPTION, custom_type=custom_type
-        )
-    except Exception as e:
-        print(f"Warning: failed to load OCR prompt for '{custom_type}': {e}")
-        ocr_prompt_template = prompt_loader.get_prompt(
-            PromptId.OCR_TRANSCRIPTION, custom_type=None
-        )
+    ocr_prompt_template = prompt_loader.get_prompt(
+        PromptId.OCR_TRANSCRIPTION, custom_type=custom_type
+    )
 
     ocr_transcripts = []
     page_files = []
 
     for page_idx in page_indices:
         page_transcript, rel_img_path = await run_ocr_for_page(
-            gemini_service=gemini_service,
-            model=model,
+            ocr_model=ocr_model,
+            prompt_loader=prompt_loader,
+            custom_type=custom_type,
             page_idx=page_idx,
             notebook=notebook,
             notebook_path=notebook_path,
-            ocr_prompt_template=ocr_prompt_template,
             out_dir=out_dir,
         )
         ocr_transcripts.append(page_transcript)
@@ -182,52 +175,35 @@ async def run_ocr_pipeline(
 
 
 async def run_summary_pipeline(
-    gemini_service: GeminiService,
-    model: str,
+    summary_model: SummaryModel,
     full_transcript: str,
     prompt_loader: PromptLoader,
     custom_type: str,
     out_dir: Path,
 ) -> tuple[str, str]:
     """Runs summarization on the transcript, saves raw JSON and formatted Markdown."""
-    try:
-        summary_prompt_template = prompt_loader.get_prompt(
-            PromptId.SUMMARY_GENERATION, custom_type=custom_type
-        )
-    except Exception as e:
-        print(f"Warning: failed to load Summary prompt for '{custom_type}': {e}")
-        summary_prompt_template = prompt_loader.get_prompt(
-            PromptId.SUMMARY_GENERATION, custom_type=None
-        )
-
-    full_summary_prompt = f"{summary_prompt_template}\n\nTRANSCRIPT:\n{full_transcript}"
-
-    print("Running Summary Generation...")
-    schema = build_json_schema(SummaryResponse).to_dict()
-
-    summary_response = await gemini_service.generate_content(
-        model=model,
-        contents=full_summary_prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_json_schema": schema,
-        },
+    summary_prompt_template = prompt_loader.get_prompt(
+        PromptId.SUMMARY_GENERATION, custom_type=custom_type
     )
 
-    summary_text = summary_response.text if summary_response.text else "{}"
-    (out_dir / "summary_raw.json").write_text(summary_text, encoding="utf-8")
+    print("Running Summary Generation...")
 
-    # Format summary markdown
     ai_summary_md = "No summary generated."
     try:
-        data = json.loads(summary_text)
-        segments_data = data.get("segments", [])
+        prompt = format_summary_prompt(
+            full_transcript,
+            custom_type=custom_type,
+            prompt_loader=prompt_loader,
+        )
+        summary_response = await summary_model.summarize(prompt)
+        summary_text = json.dumps(summary_response.to_dict(), indent=2)
+        (out_dir / "summary_raw.json").write_text(summary_text, encoding="utf-8")
 
         summary_parts = []
-        for seg in segments_data:
-            date_range = seg.get("date_range", "Unknown Date")
-            text = seg.get("summary", "")
-            page_refs = seg.get("page_refs", [])
+        for seg in summary_response.segments:
+            date_range = seg.date_range or "Unknown Date"
+            text = seg.summary or ""
+            page_refs = seg.page_refs or []
 
             header = f"## {date_range}"
             if page_refs:
@@ -239,8 +215,8 @@ async def run_summary_pipeline(
         if summary_parts:
             ai_summary_md = "\n\n".join(summary_parts)
     except Exception as e:
-        print(f"Error parsing summary JSON: {e}")
-        ai_summary_md = f"Failed to parse JSON. Raw response:\n\n{summary_text}"
+        print(f"Error generating summary: {e}")
+        ai_summary_md = f"Failed to generate summary: {e}"
 
     (out_dir / "summary.md").write_text(ai_summary_md, encoding="utf-8")
     print("Completed Summary generation. Summary markdown saved.")
@@ -290,14 +266,11 @@ async def main_async() -> None:
         )
         sys.exit(1)
 
-    ocr_model = args.ocr_model or config.gemini_ocr_model
-    summary_model = args.summary_model or ocr_model
+    ocr_model_name = args.ocr_model or config.gemini_ocr_model
+    summary_model_name = args.summary_model or ocr_model_name
 
-    print(f"OCR Model: {ocr_model}")
-    print(f"Summary Model: {summary_model}")
-
-    # Initialize Gemini service
-    gemini_service = GeminiService(api_key=api_key)
+    print(f"OCR Model: {ocr_model_name}")
+    print(f"Summary Model: {summary_model_name}")
 
     # Set up prompt loader
     if args.prompt_dir:
@@ -307,6 +280,18 @@ async def main_async() -> None:
     else:
         print("Loading default prompts from package resources.")
         prompt_loader = PromptLoader()
+
+    ocr_config = dataclasses.replace(
+        config, gemini_api_key=api_key, gemini_ocr_model=ocr_model_name
+    )
+    summary_config = dataclasses.replace(
+        config, gemini_api_key=api_key, gemini_ocr_model=summary_model_name
+    )
+    ocr_model = create_ocr_model(ocr_config)
+    summary_model = create_summary_model(summary_config)
+    if ocr_model is None or summary_model is None:
+        print("Error: Failed to initialize OCR or Summary model.", file=sys.stderr)
+        sys.exit(1)
 
     # Load notebook
     notebook_path = Path(args.notebook)
@@ -364,8 +349,7 @@ async def main_async() -> None:
 
     # Run OCR pipeline
     full_transcript, page_files, ocr_prompt = await run_ocr_pipeline(
-        gemini_service=gemini_service,
-        model=ocr_model,
+        ocr_model=ocr_model,
         notebook=notebook,
         notebook_path=notebook_path,
         prompt_loader=prompt_loader,
@@ -376,8 +360,7 @@ async def main_async() -> None:
 
     # Run Summary pipeline
     _, summary_prompt = await run_summary_pipeline(
-        gemini_service=gemini_service,
-        model=summary_model,
+        summary_model=summary_model,
         full_transcript=full_transcript,
         prompt_loader=prompt_loader,
         custom_type=custom_type,
@@ -389,8 +372,8 @@ async def main_async() -> None:
         out_dir=out_dir,
         notebook_path=notebook_path,
         custom_type=custom_type,
-        ocr_model=ocr_model,
-        summary_model=summary_model,
+        ocr_model=ocr_model_name,
+        summary_model=summary_model_name,
         ocr_prompt=ocr_prompt,
         summary_prompt=summary_prompt,
         page_files=page_files,

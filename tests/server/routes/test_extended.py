@@ -1,6 +1,6 @@
 from collections.abc import Generator
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from aiohttp.test_utils import TestClient
@@ -11,6 +11,9 @@ from supernote.client.extended import ExtendedClient
 from supernote.client.summary import SummaryClient
 from supernote.models.base import ProcessingStatus
 from supernote.models.summary import AddSummaryDTO
+from supernote.server.ai.models.fake.embedding import FakeEmbeddingModel
+from supernote.server.ai.models.fake.ocr import FakeOcrModel
+from supernote.server.ai.models.fake.summary import FakeSummaryModel
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
@@ -26,19 +29,19 @@ def extended_client(authenticated_client: Client) -> ExtendedClient:
 
 @pytest.fixture
 def mock_gemini_service() -> Generator[None]:
-    """Fixture to mock Gemini service."""
-    # Mock Gemini Service to avoid network calls
-    mock_embedding_response = AsyncMock()
-    mock_embedding_response.embeddings = [AsyncMock(values=[1.0, 0.0, 0.0])]
-
+    """Fixture to provide fake AI models for extended route tests."""
     with (
         patch(
-            "supernote.server.services.gemini.GeminiService.is_configured",
-            return_value=True,
+            "supernote.server.app.create_ocr_model",
+            return_value=FakeOcrModel(),
         ),
         patch(
-            "supernote.server.services.gemini.GeminiService.embed_content",
-            return_value=mock_embedding_response,
+            "supernote.server.app.create_summary_model",
+            return_value=FakeSummaryModel(),
+        ),
+        patch(
+            "supernote.server.app.create_embedding_model",
+            return_value=FakeEmbeddingModel(),
         ),
     ):
         yield
@@ -46,8 +49,7 @@ def mock_gemini_service() -> Generator[None]:
 
 @pytest.fixture(autouse=True)
 def patch_gemini_service(mock_gemini_service: Generator[None]) -> None:
-    """Patch the Gemini service in the search service."""
-    # This is handled by the mock_gemini_service fixture
+    """Configure fake AI models for the search service."""
 
 
 async def test_extended_search(
@@ -421,3 +423,15 @@ async def test_extended_transcript_invalid_dto_and_errors(
         pytest.raises(ApiException),
     ):
         await extended_client.get_transcript(file_id=101)
+
+
+async def test_extended_ai_status(extended_client: ExtendedClient) -> None:
+    resp = await extended_client._client.get("/api/extended/ai/status")
+    data = await resp.json()
+    assert data == {
+        "success": True,
+        "hasApiKey": True,
+        "ocrEnabled": True,
+        "vectorSearchEnabled": True,
+        "model": "fake-ocr-v1",
+    }
