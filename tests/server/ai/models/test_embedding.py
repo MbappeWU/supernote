@@ -22,19 +22,24 @@ from supernote.server.config import (
 )
 
 
-def test_create_embedding_model(tmp_path: Path) -> None:
+def test_create_embedding_model_unconfigured(tmp_path: Path) -> None:
     config = ServerConfig(
         auth=AuthConfig(secret_key="secret"),
         storage_dir=str(tmp_path),
     )
     assert create_embedding_model(config) is None
 
+
+def test_create_embedding_model_legacy_gemini() -> None:
     with patch("google.genai.Client"):
         legacy_config = ServerConfig(gemini_api_key="test-key")
         model = create_embedding_model(legacy_config)
         assert isinstance(model, ConcurrencyLimitedEmbeddingModel)
         assert model.model_id == legacy_config.gemini_embedding_model
 
+
+def test_create_embedding_model_gemini_provider() -> None:
+    with patch("google.genai.Client"):
         ai_config = ServerConfig(
             ai=AiConfig(
                 providers={"gemini": ProviderConfig(api_key="ai-key")},
@@ -49,6 +54,8 @@ def test_create_embedding_model(tmp_path: Path) -> None:
         assert isinstance(ai_model, ConcurrencyLimitedEmbeddingModel)
         assert ai_model.model_id == "gemini-custom-embed"
 
+
+def test_create_embedding_model_fake_provider() -> None:
     fake_config = ServerConfig(
         ai=AiConfig(
             embedding=ModelConfig(
@@ -60,6 +67,8 @@ def test_create_embedding_model(tmp_path: Path) -> None:
     assert isinstance(fake_model, ConcurrencyLimitedEmbeddingModel)
     assert fake_model.model_id == "fake-embed-custom"
 
+
+def test_create_embedding_model_missing_provider_credentials() -> None:
     missing_provider_config = ServerConfig(
         ai=AiConfig(
             embedding=ModelConfig(provider="gemini", model="gemini-embedding-001"),
@@ -67,6 +76,8 @@ def test_create_embedding_model(tmp_path: Path) -> None:
     )
     assert create_embedding_model(missing_provider_config) is None
 
+
+def test_create_embedding_model_unsupported_provider() -> None:
     unsupported_config = ServerConfig(
         ai=AiConfig(
             embedding=ModelConfig(provider="unknown", model="some-model"),
