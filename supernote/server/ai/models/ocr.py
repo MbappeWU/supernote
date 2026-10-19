@@ -58,7 +58,6 @@ class ConcurrencyLimitedOcrModel(OcrModel):
 
 def create_ocr_model(config: ServerConfig) -> OcrModel | None:
     """Create the configured `OcrModel` wrapped with concurrency limiting."""
-    config._sync_legacy_gemini_config()
     model_cfg = config.ai.ocr
     if model_cfg is None:
         return None

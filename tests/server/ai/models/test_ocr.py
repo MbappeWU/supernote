@@ -27,10 +27,10 @@ def test_create_ocr_model(tmp_path: Path) -> None:
     assert create_ocr_model(config) is None
 
     with patch("google.genai.Client"):
-        config.gemini_api_key = "test-key"
-        model = create_ocr_model(config)
+        legacy_config = ServerConfig(gemini_api_key="test-key")
+        model = create_ocr_model(legacy_config)
         assert isinstance(model, ConcurrencyLimitedOcrModel)
-        assert model.model_id == config.gemini_ocr_model
+        assert model.model_id == legacy_config.gemini_ocr_model
 
         ai_config = ServerConfig(
             ai=AiConfig(

@@ -85,7 +85,6 @@ class ConcurrencyLimitedEmbeddingModel(EmbeddingModel):
 
 def create_embedding_model(config: ServerConfig) -> EmbeddingModel | None:
     """Create the configured `EmbeddingModel` wrapped with concurrency limiting."""
-    config._sync_legacy_gemini_config()
     model_cfg = config.ai.embedding
     if model_cfg is None:
         return None

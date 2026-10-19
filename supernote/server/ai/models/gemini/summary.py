@@ -58,7 +58,6 @@ class GeminiSummaryModel(SummaryModel):
 
 def create_summary_model(config: ServerConfig) -> SummaryModel | None:
     """Create a `GeminiSummaryModel` from `ServerConfig`, or `None` if unconfigured."""
-    config._sync_legacy_gemini_config()
     model_cfg = config.ai.summary
     backend = create_gemini_backend(config.ai.providers)
     if model_cfg is None or backend is None:

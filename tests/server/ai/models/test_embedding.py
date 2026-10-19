@@ -30,10 +30,10 @@ def test_create_embedding_model(tmp_path: Path) -> None:
     assert create_embedding_model(config) is None
 
     with patch("google.genai.Client"):
-        config.gemini_api_key = "test-key"
-        model = create_embedding_model(config)
+        legacy_config = ServerConfig(gemini_api_key="test-key")
+        model = create_embedding_model(legacy_config)
         assert isinstance(model, ConcurrencyLimitedEmbeddingModel)
-        assert model.model_id == config.gemini_embedding_model
+        assert model.model_id == legacy_config.gemini_embedding_model
 
         ai_config = ServerConfig(
             ai=AiConfig(

@@ -58,7 +58,6 @@ class ConcurrencyLimitedSummaryModel(SummaryModel):
 
 def create_summary_model(config: ServerConfig) -> SummaryModel | None:
     """Create the configured `SummaryModel` wrapped with concurrency limiting."""
-    config._sync_legacy_gemini_config()
     model_cfg = config.ai.summary
     if model_cfg is None:
         return None
