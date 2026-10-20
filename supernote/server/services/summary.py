@@ -25,6 +25,8 @@ from supernote.server.services.user import UserService
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SUMMARY_PAGE_SIZE = 20
+
 
 def _to_tag_item(do: SummaryTagDO) -> SummaryTagItem:
     """Convert SummaryTagDO to SummaryTagItem."""
@@ -269,7 +271,7 @@ class SummaryService:
         parent_uuid: str | None = None,
         ids: list[int] | None = None,
         page: int | None = 1,
-        size: int | None = 20,
+        size: int | None = DEFAULT_SUMMARY_PAGE_SIZE,
     ) -> list[SummaryItem]:
         """List summaries based on filters."""
         user_id = await self.user_service.get_user_id(user_email)
@@ -365,7 +367,7 @@ class SummaryService:
                 )
                 .order_by(SummaryDO.id.asc()),
                 dto.page,
-                20 if dto.size is None else dto.size,
+                DEFAULT_SUMMARY_PAGE_SIZE if dto.size is None else dto.size,
             )
             result = await session.execute(stmt)
             groups = list(result.scalars().all())

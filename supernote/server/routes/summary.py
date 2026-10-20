@@ -32,7 +32,10 @@ from supernote.models.summary import (
     UploadSummaryApplyVO,
 )
 from supernote.server.exceptions import SupernoteError
-from supernote.server.services.summary import SummaryService
+from supernote.server.services.summary import (
+    DEFAULT_SUMMARY_PAGE_SIZE,
+    SummaryService,
+)
 from supernote.server.utils.paths import generate_inner_name
 from supernote.server.utils.url_signer import UrlSigner, get_request_base_url
 
@@ -229,7 +232,11 @@ async def handle_query_summary(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
-        size = req_data.size if (req_data.size is not None or req_data.ids) else 20
+        size = (
+            req_data.size
+            if (req_data.size is not None or req_data.ids)
+            else DEFAULT_SUMMARY_PAGE_SIZE
+        )
         summaries = await summary_service.list_summaries(
             user_email,
             parent_uuid=req_data.parent_unique_identifier,
@@ -328,7 +335,7 @@ async def handle_query_summary_group(request: web.Request) -> web.Response:
     summary_service: SummaryService = request.app["summary_service"]
 
     try:
-        size = 20 if req_data.size is None else req_data.size
+        size = DEFAULT_SUMMARY_PAGE_SIZE if req_data.size is None else req_data.size
         groups = await summary_service.list_groups(user_email, req_data)
         pagination = await _resolve_pagination_metadata(
             len(groups),
