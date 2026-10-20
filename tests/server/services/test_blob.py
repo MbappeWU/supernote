@@ -11,6 +11,11 @@ from supernote.server.services.blob import (
     TEMP_FILE_TTL_SECONDS,
     LocalBlobStorage,
 )
+from supernote.server.utils.paths import (
+    get_conversion_pdf_path,
+    get_conversion_png_path,
+    get_page_png_path,
+)
 
 
 async def test_put_get_blob(tmp_path: Path) -> None:
@@ -191,7 +196,9 @@ async def test_get_range_large(tmp_path: Path) -> None:
         ("test-bucket", ".."),
         ("test-bucket", "."),
         ("test-bucket", ""),
+        ("test-bucket", "ab"),
         ("test-bucket", "foo/.."),
+        ("test-bucket", "../foo"),
     ],
 )
 async def test_invalid_blob_path_rejected(
@@ -285,3 +292,49 @@ async def test_put_triggers_opportunistic_cleanup(tmp_path: Path) -> None:
 
     await storage.put("user-data", "new.note", b"data")
     assert not stale_tmp.exists()
+
+
+async def test_page_png_paths_for_different_files_do_not_collide(
+    tmp_path: Path,
+) -> None:
+    """Verify two different files with the same page_id do not collide in LocalBlobStorage."""
+    storage = LocalBlobStorage(tmp_path)
+    bucket = "cache"
+    shared_page_id = "P20260101120000"
+
+    key_file_1 = get_page_png_path(file_id=101, page_id=shared_page_id)
+    key_file_2 = get_page_png_path(file_id=202, page_id=shared_page_id)
+
+    await storage.put(bucket, key_file_1, b"png-for-file-101")
+    await storage.put(bucket, key_file_2, b"png-for-file-202")
+
+    assert storage.get_blob_path(bucket, key_file_1) != storage.get_blob_path(
+        bucket, key_file_2
+    )
+    assert storage.get_blob_path(bucket, key_file_1).read_bytes() == b"png-for-file-101"
+    assert storage.get_blob_path(bucket, key_file_2).read_bytes() == b"png-for-file-202"
+
+
+async def test_conversion_paths_for_different_users_do_not_collide(
+    tmp_path: Path,
+) -> None:
+    """Verify conversion PNG and PDF keys for different users/files do not collide in LocalBlobStorage."""
+    storage = LocalBlobStorage(tmp_path)
+    bucket = "users"
+    shared_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+
+    png_user_1 = get_conversion_png_path(
+        user_id=1, file_id=101, page_index=0, file_md5=shared_md5
+    )
+    png_user_2 = get_conversion_png_path(
+        user_id=2, file_id=202, page_index=0, file_md5=shared_md5
+    )
+    assert storage.get_blob_path(bucket, png_user_1) != storage.get_blob_path(
+        bucket, png_user_2
+    )
+
+    pdf_user_1 = get_conversion_pdf_path(user_id=1, file_id=101, file_md5=shared_md5)
+    pdf_user_2 = get_conversion_pdf_path(user_id=2, file_id=202, file_md5=shared_md5)
+    assert storage.get_blob_path(bucket, pdf_user_1) != storage.get_blob_path(
+        bucket, pdf_user_2
+    )
