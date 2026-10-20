@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.auth import Equipment, LoginVO, UserVO
+from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import (
     LoginRecordVO,
     UpdateEmailDTO,
@@ -523,6 +524,21 @@ class UserService:
             user_ids.add(user_id_filter)
         for uid in user_ids:
             await self.revoke_equipment_sessions(uid, equipment_no)
+
+    async def query_equipment_by_no(self, equipment_no: str) -> UserEquipmentVO:
+        """Query bound device details by equipment serial number."""
+        async with self._session_manager.session() as session:
+            result = await session.execute(
+                select(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
+            )
+            device = result.scalar_one_or_none()
+            if not device:
+                return UserEquipmentVO(status="N")
+            return UserEquipmentVO(
+                equipment_number=device.equipment_no,
+                user_id=device.user_id,
+                status="Y",
+            )
 
     async def update_password(self, account: str, dto: UpdatePasswordDTO) -> None:
         """Update user password and revoke active sessions."""

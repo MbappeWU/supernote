@@ -22,7 +22,12 @@ from supernote.models.auth import (
     UserPreAuthResponse,
 )
 from supernote.models.base import BaseResponse
-from supernote.models.equipment import BindEquipmentDTO, UnbindEquipmentDTO
+from supernote.models.equipment import (
+    BindEquipmentDTO,
+    UnbindEquipmentDTO,
+    UserEquipmentDTO,
+    UserEquipmentVO,
+)
 
 from .client import Client
 from .exceptions import ApiException, SmsVerificationRequired
@@ -192,4 +197,11 @@ class LoginClient:
         payload = UnbindEquipmentDTO(equipment_no=equipment_no).to_dict()
         return await self._client.post_json(
             "/api/terminal/equipment/unlink", BaseResponse, json=payload
+        )
+
+    async def query_equipment_by_no(self, equipment_no: str) -> UserEquipmentVO:
+        """Query equipment binding status by device serial number."""
+        payload = UserEquipmentDTO(equipment_no=equipment_no).to_dict()
+        return await self._client.post_json(
+            "/api/equipment/query/by/equipmentno", UserEquipmentVO, json=payload
         )

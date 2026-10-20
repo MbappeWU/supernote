@@ -15,6 +15,7 @@ from supernote.models.equipment import (
     BindEquipmentDTO,
     BindStatusVO,
     UnbindEquipmentDTO,
+    UserEquipmentDTO,
 )
 from supernote.models.user import (
     LoginRecordDTO,
@@ -223,6 +224,28 @@ async def handle_bind_equipment(request: web.Request) -> web.Response:
     user_service: UserService = request.app["user_service"]
     await user_service.bind_equipment(bind_req.account, bind_req.equipment_no)
     return web.json_response(BaseResponse().to_dict())
+
+
+@routes.post("/api/equipment/query/by/equipmentno")
+@routes.post("/api/official/equipment/query/by/equipmentno")
+@public_route
+async def handle_query_equipment_by_no(request: web.Request) -> web.Response:
+    # Endpoint: POST /api/equipment/query/by/equipmentno
+    # Purpose: Query equipment binding status by device serial number.
+    req_data = await request.json()
+    try:
+        dto = UserEquipmentDTO.from_dict(req_data)
+        if not dto.equipment_no:
+            raise ValueError("Missing equipmentNo")
+    except (MissingField, ValueError):
+        return web.json_response(
+            create_error_response("Invalid request format").to_dict(),
+            status=400,
+        )
+
+    user_service: UserService = request.app["user_service"]
+    result = await user_service.query_equipment_by_no(dto.equipment_no)
+    return web.json_response(result.to_dict())
 
 
 @routes.post("/api/user/query")

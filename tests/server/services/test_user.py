@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from supernote.models.auth import Equipment
+from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import UpdateEmailDTO, UpdatePasswordDTO, UserRegisterDTO
 from supernote.server.config import AuthConfig, ServerConfig
 from supernote.server.db.models.user import UserDO
@@ -520,4 +521,38 @@ async def test_user_profiles(user_service: UserService) -> None:
     profiles = await user_service.list_user_profiles()
     assert any(
         p.email == "profile@example.com" and p.user_name == "Prof" for p in profiles
+    )
+
+
+async def test_query_equipment_by_no(user_service: UserService) -> None:
+    """Verify query_equipment_by_no returns binding status and user_id from DeviceDO."""
+    pw_md5 = hashlib.md5(b"password123").hexdigest()
+    user1 = await user_service.register(
+        UserRegisterDTO(email="eq1@example.com", password=pw_md5)
+    )
+    user2 = await user_service.register(
+        UserRegisterDTO(email="eq2@example.com", password=pw_md5)
+    )
+
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
+        status="N"
+    )
+
+    await user_service.bind_equipment("eq1@example.com", "SN-999")
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
+        equipment_number="SN-999",
+        user_id=user1.id,
+        status="Y",
+    )
+
+    await user_service.bind_equipment("eq2@example.com", "SN-999")
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
+        equipment_number="SN-999",
+        user_id=user2.id,
+        status="Y",
+    )
+
+    await user_service.unlink_equipment("SN-999", account="eq2@example.com")
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
+        status="N"
     )
