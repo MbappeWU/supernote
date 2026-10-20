@@ -112,8 +112,8 @@ async def test_admin_update_password(admin_client: AdminClient) -> None:
     await admin_client.update_password(md5_pwd)
 
 
-async def test_admin_unregister(admin_client: AdminClient) -> None:
-    await admin_client.unregister()
+async def test_admin_clear_account(admin_client: AdminClient) -> None:
+    await admin_client.clear_account(confirm=True)
 
 
 async def test_admin_force_password_reset(

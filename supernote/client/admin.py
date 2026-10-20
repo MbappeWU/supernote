@@ -30,10 +30,24 @@ class AdminClient:
         )
         logger.info(f"Registered user {email}")
 
-    async def unregister(self) -> None:
-        """Delete currently logged in user."""
-        await self.client.post_json("/api/user/unregister", BaseResponse)
-        logger.info("Unregistered user")
+    async def clear_account(self, *, confirm: bool = False) -> None:
+        """Permanently delete the currently logged in user account and all cloud content.
+
+        WARNING: This permanently and irreversibly deletes the user account and all
+        associated files, blobs, recycle bin contents, summaries, schedule tasks,
+        device bindings, and active sessions on the server.
+
+        Args:
+            confirm: Must be explicitly set to True to confirm permanent account and
+                content deletion.
+        """
+        if confirm is not True:
+            raise ValueError(
+                "clear_account permanently deletes the user account and all cloud "
+                "content. Pass confirm=True to proceed."
+            )
+        await self.client.post_json("/api/user/account/clear", BaseResponse)
+        logger.info("Cleared user account")
 
     async def update_password(self, new_password: str) -> None:
         """Update password for currently logged in user."""

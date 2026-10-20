@@ -230,8 +230,14 @@ class UserService:
         await self._create_system_directories(new_user.id)
         return new_user
 
-    async def unregister(self, account: str) -> None:
-        """Delete a user."""
+    async def clear_account(self, account: str) -> int | None:
+        """Permanently delete a user account, its device bindings, login history, and sessions.
+
+        WARNING: This permanently deletes the user record and revokes all active
+        sessions. Callers are responsible for invoking domain service cleanup for
+        the returned `user_id` to purge all user files, blobs, summaries, and
+        schedule tasks.
+        """
         if not self._config.enable_registration:
             raise ValueError("Registration is disabled")
         async with self._session_manager.session() as session:
@@ -240,9 +246,12 @@ class UserService:
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
             if not user:
-                return
+                return None
             user_id = user.id
 
+        await self.revoke_user_sessions(user_id)
+
+        async with self._session_manager.session() as session:
             await session.execute(delete(DeviceDO).where(DeviceDO.user_id == user_id))
             await session.execute(
                 delete(LoginRecordDO).where(LoginRecordDO.user_id == user_id)
@@ -251,6 +260,7 @@ class UserService:
             await session.commit()
 
         await self.revoke_user_sessions(user_id)
+        return user_id
 
     async def generate_random_code(self, account: str) -> tuple[str, str]:
         """Generate a random code for login challenge."""

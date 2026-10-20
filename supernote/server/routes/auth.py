@@ -332,11 +332,16 @@ async def handle_register(request: web.Request) -> web.Response:
         return SupernoteError.uncaught(err).to_response()
 
 
-@routes.post("/api/user/unregister")
 @routes.post("/api/user/account/clear")
-async def handle_unregister(request: web.Request) -> web.Response:
-    """Unregister a user."""
-    # Requires auth
+async def handle_account_clear(request: web.Request) -> web.Response:
+    """Permanently delete the authenticated user account and all cloud content.
+
+    WARNING: This endpoint permanently and irreversibly deletes the user account
+    and all associated cloud data, including all VFS files and directories,
+    physical storage blobs, recycle bin items, derived note artifacts (OCR,
+    embeddings, cached PNGs), summaries, summary tags, schedule tasks and groups,
+    device bindings, login records, and active sessions.
+    """
     account = request.get("user")
     if not account:
         return web.json_response(
@@ -345,9 +350,10 @@ async def handle_unregister(request: web.Request) -> web.Response:
 
     user_service: UserService = request.app["user_service"]
     try:
-        await user_service.unregister(str(account))
+        await user_service.clear_account(str(account))
     except ValueError as e:
         return web.json_response(create_error_response(str(e)).to_dict(), status=400)
+
     return web.json_response(BaseResponse().to_dict())
 
 

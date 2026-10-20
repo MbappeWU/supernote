@@ -218,6 +218,10 @@ accountClear:
     tags:
       - User
     summary: Delete Account
+    description: >-
+      WARNING: Permanently and irreversibly deletes the authenticated user
+      account and all associated cloud content (files, blobs, recycle bin,
+      summaries, tags, schedule tasks, device bindings, and active sessions).
     operationId: accountClear
     security:
       - accessToken: []

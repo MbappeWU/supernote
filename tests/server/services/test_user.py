@@ -194,14 +194,18 @@ async def test_update_password(user_service: UserService) -> None:
     assert login_vo is not None
 
 
-async def test_unregister(user_service: UserService) -> None:
-    """Unregister a user."""
+async def test_clear_account(user_service: UserService) -> None:
+    """Clear a user account."""
     pw_md5 = hashlib.md5(b"pw").hexdigest()
-    await user_service.register(UserRegisterDTO(email="del@test.com", password=pw_md5))
+    user = await user_service.register(
+        UserRegisterDTO(email="del@test.com", password=pw_md5)
+    )
     assert await user_service.check_user_exists("del@test.com")
 
-    await user_service.unregister("del@test.com")
+    cleared_id = await user_service.clear_account("del@test.com")
+    assert cleared_id == user.id
     assert not await user_service.check_user_exists("del@test.com")
+    assert await user_service.clear_account("del@test.com") is None
 
 
 async def test_token_expiration_by_equipment(user_service: UserService) -> None:
