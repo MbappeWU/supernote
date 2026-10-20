@@ -176,9 +176,6 @@ async def handle_login(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # Extract IP if possible
-    ip = request.remote or "unknown"
-
     # RATE LIMIT CHECKS
     rate_limiter = request.app["rate_limiter"]
     try:
@@ -197,7 +194,7 @@ async def handle_login(request: web.Request) -> web.Response:
         timestamp=login_req.timestamp or "",
         equipment_no=login_req.equipment_no,
         equipment=login_req.equipment,
-        ip=ip,
+        ip=request.remote or "unknown",
     )
     if not result:
         return web.json_response(
