@@ -50,9 +50,11 @@ logger = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
 
+UNKNOWN_IP = "unknown"
+
 
 async def _check_ip_rate_limit(request: web.Request) -> None:
-    ip = request.remote or "unknown"
+    ip = request.remote or UNKNOWN_IP
     rate_limiter = request.app["rate_limiter"]
     await rate_limiter.check(
         f"{LOGIN_KEY_IP}:{ip}",
@@ -194,7 +196,7 @@ async def handle_login(request: web.Request) -> web.Response:
         timestamp=login_req.timestamp or "",
         equipment_no=login_req.equipment_no,
         equipment=login_req.equipment,
-        ip=request.remote or "unknown",
+        ip=request.remote or UNKNOWN_IP,
     )
     if not result:
         return web.json_response(
@@ -427,7 +429,7 @@ async def handle_retrieve_password(request: web.Request) -> web.Response:
     # RATE LIMIT CHECK
     # Strict Limit: 5 attempts / hour
     # We use a longer window for password reset to prevent enumeration
-    ip = request.remote or "unknown"
+    ip = request.remote or UNKNOWN_IP
     rate_limiter = request.app["rate_limiter"]
     try:
         await rate_limiter.check(
