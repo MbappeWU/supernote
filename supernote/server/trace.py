@@ -22,8 +22,17 @@ REDACTED_VALUE = "***"
 REDACTED_HEADER_KEYS = frozenset(
     {"x-access-token", "authorization", "cookie", "set-cookie"}
 )
+URL_HEADER_KEYS = frozenset({"location", "referer"})
 REDACTED_URL_QUERY_KEYS = frozenset(
-    {"signature", "token", "access_token", "refresh_token", "client_secret", "code"}
+    {
+        "signature",
+        "sign",
+        "token",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "code",
+    }
 )
 REDACTED_BODY_KEYS = frozenset(
     {
@@ -39,15 +48,18 @@ REDACTED_BODY_KEYS = frozenset(
         "authorization",
         "randomcode",
         "random_code",
+        "validcode",
+        "valid_code",
+        "sign",
         "code",
         "code_verifier",
     }
 )
 _REDACTED_KEYS_PATTERN = "|".join(re.escape(k) for k in sorted(REDACTED_BODY_KEYS))
 _JSON_STRING_SECRET_RE = re.compile(
-    rf'(?i)("({_REDACTED_KEYS_PATTERN})"\s*:\s*)"[^"]*"'
+    rf'(?i)("({_REDACTED_KEYS_PATTERN})"\s*:\s*)"(?:\\.|[^"\\])*(?:"|$)'
 )
-_FORM_SECRET_RE = re.compile(rf"(?i)((?:^|&)(?:{_REDACTED_KEYS_PATTERN})=)[^&\s]*")
+_FORM_SECRET_RE = re.compile(rf"(?i)((?:^|&)(?:{_REDACTED_KEYS_PATTERN})=)[^&]*")
 
 
 async def _write_trace_log(config: ServerConfig, log_entry: dict[str, Any]) -> None:
@@ -92,22 +104,13 @@ def is_binary_content_type(content_type: str) -> bool:
     return any(t in content_type for t in binary_types)
 
 
-def sanitize_headers(headers: dict[str, Any]) -> dict[str, Any]:
-    """Redact authentication and cookie headers case-insensitively."""
-    return {
-        k: (REDACTED_VALUE if k.lower() in REDACTED_HEADER_KEYS else v)
-        for k, v in headers.items()
-    }
-
-
-def redact_url(url: Any) -> str:
+def redact_url(url: URL | str) -> str:
     """Redact sensitive query parameters from a URL."""
     url_str = str(url)
-    if not any(f"{key}=" in url_str for key in REDACTED_URL_QUERY_KEYS):
-        return url_str
-
     try:
-        u = URL(url_str)
+        u = url if isinstance(url, URL) else URL(url_str)
+        if not u.query:
+            return url_str
         query = u.query.copy()
         redacted = False
         for key in list(query.keys()):
@@ -117,6 +120,20 @@ def redact_url(url: Any) -> str:
         return str(u.with_query(query)) if redacted else url_str
     except Exception:
         return url_str
+
+
+def sanitize_headers(headers: dict[str, Any]) -> dict[str, Any]:
+    """Redact authentication, cookie, and URL-bearing headers case-insensitively."""
+    sanitized: dict[str, Any] = {}
+    for k, v in headers.items():
+        key_lower = k.lower()
+        if key_lower in REDACTED_HEADER_KEYS:
+            sanitized[k] = REDACTED_VALUE
+        elif key_lower in URL_HEADER_KEYS and isinstance(v, str):
+            sanitized[k] = redact_url(v)
+        else:
+            sanitized[k] = v
+    return sanitized
 
 
 def sanitize_body(body: Any) -> Any:
@@ -142,29 +159,37 @@ def sanitize_body(body: Any) -> Any:
     return body
 
 
+async def _capture_request_body(
+    request: web.Request, fallback: str | None = None
+) -> str | None:
+    """Capture and truncate request body safely after handler execution."""
+    if "/api/oss/upload" in request.path:
+        return "<multipart upload skipped>"
+    if request.body_exists and not request.content_type.startswith("multipart/"):
+        try:
+            body_bytes = await request.read()
+            req_body_str = body_bytes.decode("utf-8", errors="replace")
+            if len(req_body_str) > TRUNCATE_BODY_LOG:
+                req_body_str = req_body_str[:TRUNCATE_BODY_LOG] + "... (truncated)"
+            return req_body_str
+        except Exception:
+            return fallback or "<error reading body>"
+    return fallback
+
+
 @web.middleware
 async def trace_middleware(
     request: web.Request,
     handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
 ) -> web.StreamResponse:
-    """Middleware that writes redacted HTTP request and response traces to disk."""
+    """Middleware that writes HTTP request and response traces to disk."""
+    config: ServerConfig = request.app["config"]
+    unsafe = config.trace_log_unsafe
+
     try:
         response = await handler(request)
-        # Capture Request Body (SAFELY AFTER HANDLER)
-        req_body_str = None
-        if "/api/oss/upload" in request.path:
-            req_body_str = "<multipart upload skipped>"
-        elif request.body_exists and not request.content_type.startswith("multipart/"):
-            try:
-                # aiohttp allows reading multiple times once buffered
-                body_bytes = await request.read()
-                req_body_str = body_bytes.decode("utf-8", errors="replace")
-                if len(req_body_str) > TRUNCATE_BODY_LOG:
-                    req_body_str = req_body_str[:2048] + "... (truncated)"
-            except Exception:
-                req_body_str = "<error reading body>"
+        req_body_str = await _capture_request_body(request)
 
-        # Capture Response Body
         res_body_str = None
         if isinstance(response, web.Response) and response.body:
             if is_binary_content_type(response.content_type):
@@ -174,49 +199,58 @@ async def trace_middleware(
                     if isinstance(response.body, bytes):
                         res_body_str = response.body.decode("utf-8", errors="replace")
                         if len(res_body_str) > TRUNCATE_BODY_LOG:
-                            res_body_str = res_body_str[:2048] + "... (truncated)"
+                            res_body_str = (
+                                res_body_str[:TRUNCATE_BODY_LOG] + "... (truncated)"
+                            )
                 except Exception:
                     res_body_str = "<error reading response>"
 
-        # Write Log
+        parsed_req_body = try_parse_json(req_body_str)
+        parsed_res_body = try_parse_json(res_body_str)
         log_entry = {
             "timestamp": time.time(),
             "request": {
                 "method": request.method,
-                "url": str(redact_url(request.url)),
-                "headers": sanitize_headers(dict(request.headers)),
-                "body": sanitize_body(try_parse_json(req_body_str)),
+                "url": str(request.url) if unsafe else redact_url(request.url),
+                "headers": (
+                    dict(request.headers)
+                    if unsafe
+                    else sanitize_headers(dict(request.headers))
+                ),
+                "body": parsed_req_body if unsafe else sanitize_body(parsed_req_body),
             },
             "response": {
                 "status": response.status,
-                "headers": sanitize_headers(dict(response.headers)),
-                "body": sanitize_body(try_parse_json(res_body_str)),
+                "headers": (
+                    dict(response.headers)
+                    if unsafe
+                    else sanitize_headers(dict(response.headers))
+                ),
+                "body": parsed_res_body if unsafe else sanitize_body(parsed_res_body),
             },
         }
-        await _write_trace_log(request.app["config"], log_entry)
+        await _write_trace_log(config, log_entry)
         return response
 
     except Exception as e:
         logger.exception(f"Error handling request: {e}")
-        # Try to capture body even on error
-        req_body_str = "<unknown>"
-        try:
-            if request.body_exists:
-                body_bytes = await request.read()
-                req_body_str = body_bytes.decode("utf-8", errors="replace")
-        except Exception:
-            pass
+        req_body_str = await _capture_request_body(request, fallback="<unknown>")
+        parsed_req_body = try_parse_json(req_body_str)
 
         log_entry = {
             "timestamp": time.time(),
             "request": {
                 "method": request.method,
-                "url": str(redact_url(request.url)),
-                "headers": sanitize_headers(dict(request.headers)),
-                "body": sanitize_body(try_parse_json(req_body_str)),
+                "url": str(request.url) if unsafe else redact_url(request.url),
+                "headers": (
+                    dict(request.headers)
+                    if unsafe
+                    else sanitize_headers(dict(request.headers))
+                ),
+                "body": parsed_req_body if unsafe else sanitize_body(parsed_req_body),
             },
             "error": str(e),
             "status": 500,
         }
-        await _write_trace_log(request.app["config"], log_entry)
+        await _write_trace_log(config, log_entry)
         raise

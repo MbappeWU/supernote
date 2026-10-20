@@ -87,12 +87,16 @@ def test_sanitize_headers_and_redact_url() -> None:
         "X-Access-Token": "secret_jwt",
         "Authorization": "Bearer secret",
         "Cookie": "sid=123",
+        "Location": "https://client.example.com/cb?code=oauth_secret&state=123",
+        "Referer": "https://app.example.com/?Token=ref_tok",
         "Content-Type": "application/json",
     }
     assert sanitize_headers(headers) == {
         "X-Access-Token": "***",
         "Authorization": "***",
         "Cookie": "***",
+        "Location": "https://client.example.com/cb?code=***&state=123",
+        "Referer": "https://app.example.com/?Token=***",
         "Content-Type": "application/json",
     }
     assert (
@@ -100,6 +104,12 @@ def test_sanitize_headers_and_redact_url() -> None:
             "https://example.com/api/oss/download?path=1&signature=abc&token=xyz"
         )
         == "https://example.com/api/oss/download?path=1&signature=***&token=***"
+    )
+    assert (
+        redact_url(
+            "https://example.com/socket.io/?EIO=4&Signature=Upper&%74oken=enc&sign=sio_sig"
+        )
+        == "https://example.com/socket.io/?EIO=4&Signature=***&token=***&sign=***"
     )
     assert (
         redact_url("https://example.com/api/health") == "https://example.com/api/health"
@@ -112,6 +122,8 @@ def test_sanitize_body_nested_and_truncated() -> None:
         "password": "secret",
         "oldPassword": "old",
         "newPassword": "new",
+        "validCode": "123456",
+        "sign": "sms_sig",
         "token": None,
         "nested": [
             {
@@ -127,6 +139,8 @@ def test_sanitize_body_nested_and_truncated() -> None:
         "password": "***",
         "oldPassword": "***",
         "newPassword": "***",
+        "validCode": "***",
+        "sign": "***",
         "token": None,
         "nested": [
             {
@@ -137,11 +151,13 @@ def test_sanitize_body_nested_and_truncated() -> None:
         ],
     }
 
-    truncated_json = (
-        '{"account": "user@example.com", "password": "raw_password", "extra": "trunc...'
-    )
+    truncated_json = '{"account": "user@example.com", "password": "raw\\"password", "token": "cut_off_secret'
     assert sanitize_body(truncated_json) == (
-        '{"account": "user@example.com", "password": "***", "extra": "trunc...'
+        '{"account": "user@example.com", "password": "***", "token": "***"'
+    )
+    assert (
+        sanitize_body("account=user&password=secret with spaces&other=1")
+        == "account=user&password=***&other=1"
     )
 
 
@@ -240,3 +256,40 @@ async def test_trace_logging_redacts_form_encoded_secrets(
         form_entry["request"]["body"]
         == "email=test%40example.com&password=***&client_secret=***"
     )
+
+
+async def test_trace_logging_unsafe_mode_preserves_raw_tokens(
+    client: TestClient,
+    mock_trace_log: str,
+) -> None:
+    """Verify trace_log_unsafe=True logs raw unredacted headers, URLs, and bodies for debugging."""
+    client.app["config"].trace_log_unsafe = True
+    await client.post(
+        "/api/official/user/account/login/new?token=debug_query_token",
+        headers={"x-access-token": "debug_header_token"},
+        json={
+            "account": "test@example.com",
+            "password": "debug_raw_password_hash",
+            "equipmentNo": "TEST_EQ",
+            "timestamp": "1234567890",
+            "loginMethod": "1",
+        },
+    )
+
+    log_path = Path(mock_trace_log)
+    raw_log = ""
+    for _ in range(20):
+        if log_path.exists():
+            raw_log = log_path.read_text()
+            if "debug_raw_password_hash" in raw_log:
+                break
+        await asyncio.sleep(0.05)
+
+    entries = _parse_trace_entries(raw_log)
+    unsafe_entry = next(
+        e for e in entries if "debug_query_token" in e["request"]["url"]
+    )
+    assert (
+        unsafe_entry["request"]["headers"].get("x-access-token") == "debug_header_token"
+    )
+    assert unsafe_entry["request"]["body"]["password"] == "debug_raw_password_hash"

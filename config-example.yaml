@@ -12,6 +12,7 @@ storage_dir: storage
 
 # Optional: Path to trace log file for debugging (default: storage/system/trace.log)
 # trace_log_file: storage/system/trace.log
+# trace_log_unsafe: false # Set to true to log unredacted tokens/credentials in trace.log for debugging
 
 # Proxy header handling mode (optional, defaults to 'relaxed')
 # - 'relaxed': Trust the immediate upstream proxy (suitable for Docker/local setups)
