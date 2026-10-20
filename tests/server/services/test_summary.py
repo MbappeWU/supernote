@@ -163,7 +163,7 @@ async def test_group_crud_and_fallback_lookup_by_id(
         )
 
 
-@pytest.mark.parametrize("total_items", [0, 1, 6, 25])
+@pytest.mark.parametrize("total_items", [0, 1, 6, 20, 25])
 async def test_pagination_and_unpaginated_queries(
     summary_service: SummaryService,
     total_items: int,
@@ -210,7 +210,6 @@ async def test_pagination_and_unpaginated_queries(
         )
     assert await summary_service.count_groups(USER_EMAIL) == total_items
 
-    # Unpaginated queries (size=None and size=0) return the full item set
     for unpaginated_size in (None, 0):
         all_summaries = await summary_service.list_summaries(
             USER_EMAIL, page=0, size=unpaginated_size
@@ -226,14 +225,13 @@ async def test_pagination_and_unpaginated_queries(
             USER_EMAIL,
             QuerySummaryDTO(ids=created_ids, page=0, size=unpaginated_size),
         )
-        assert [s.id for s in by_ids] == (created_ids if created_ids else [])
+        assert [s.id for s in by_ids] == created_ids
 
         all_groups = await summary_service.list_groups(
             USER_EMAIL, QuerySummaryGroupDTO(page=0, size=unpaginated_size)
         )
         assert [g.id for g in all_groups] == created_group_ids
 
-    # Paginated queries across variable page sizes reconstruct the exact item set
     for page_size in (1, 3, 10, 20, 30):
         total_pages = max(1, math.ceil(total_items / page_size))
         collected_summaries: list[int] = []
@@ -269,5 +267,19 @@ async def test_pagination_and_unpaginated_queries(
 
         assert collected_summaries == created_ids
         assert collected_infos == created_ids
-        assert collected_by_id == (created_ids if created_ids else [])
+        assert collected_by_id == created_ids
         assert collected_groups == created_group_ids
+
+        assert (
+            await summary_service.list_summaries(
+                USER_EMAIL, page=total_pages + 1, size=page_size
+            )
+            == []
+        )
+        assert (
+            await summary_service.list_groups(
+                USER_EMAIL,
+                QuerySummaryGroupDTO(page=total_pages + 1, size=page_size),
+            )
+            == []
+        )
