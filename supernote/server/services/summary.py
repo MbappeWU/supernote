@@ -2,6 +2,7 @@ import hashlib
 import logging
 import time
 import uuid
+from typing import Any
 
 from sqlalchemy import ColumnElement, Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -239,11 +240,11 @@ class SummaryService:
         return filters
 
     @staticmethod
-    def _apply_pagination(
-        stmt: Select[tuple[SummaryDO]],
+    def _apply_pagination[T: Select[Any]](
+        stmt: T,
         page: int | None,
         size: int | None,
-    ) -> Select[tuple[SummaryDO]]:
+    ) -> T:
         """Apply SQL offset and limit when a positive page size is specified."""
         if size is not None and size > 0:
             effective_page = max(1, page or 1)
