@@ -57,7 +57,6 @@ async def test_summary_tags_crud(summary_client: SummaryClient) -> None:
 
 
 async def test_summary_crud(summary_client: SummaryClient) -> None:
-    # 1. Add a summary
     add_dto = AddSummaryDTO(
         content="This is a test summary",
         data_source="TEST",
@@ -69,7 +68,6 @@ async def test_summary_crud(summary_client: SummaryClient) -> None:
     summary_id = add_response.id
     assert summary_id is not None
 
-    # 2. Query the summary
     query_response = await summary_client.query_summaries(ids=[summary_id])
     assert query_response.success
     assert len(query_response.summary_do_list) == 1
@@ -82,32 +80,39 @@ async def test_summary_crud(summary_client: SummaryClient) -> None:
     assert summary.last_modified_time is not None
     assert summary.md5_hash is not None
 
-    # 3. Update the summary
     update_dto = UpdateSummaryDTO(
         id=summary_id,
         content="Updated test summary",
         tags="updated",
+        source_type=1,
+        comment_str="Added a comment",
+        comment_handwrite_name="comment_strokes.bin",
+        handwrite_inner_name="inner_strokes.bin",
+        handwrite_md5="strokes_md5_hash",
+        author="Bob",
     )
     update_response = await summary_client.update_summary(update_dto)
     assert update_response.success
 
-    # 4. Verify update
     query_response = await summary_client.query_summaries(ids=[summary_id])
     summary = query_response.summary_do_list[0]
     assert summary.content == "Updated test summary"
     assert summary.tags == "updated"
+    assert summary.source_type == 1
+    assert summary.comment_str == "Added a comment"
+    assert summary.comment_handwrite_name == "comment_strokes.bin"
+    assert summary.handwrite_inner_name == "inner_strokes.bin"
+    assert summary.handwrite_md5 == "strokes_md5_hash"
+    assert summary.author == "Bob"
 
-    # 5. Delete the summary
     delete_response = await summary_client.delete_summary(summary_id)
     assert delete_response.success
 
-    # 6. Verify deletion
     query_response = await summary_client.query_summaries(ids=[summary_id])
     assert len(query_response.summary_do_list) == 0
 
 
 async def test_group_crud(summary_client: SummaryClient) -> None:
-    # 1. Add a group
     group_uuid = "test-group-uuid"
     add_dto = AddSummaryGroupDTO(
         unique_identifier=group_uuid,
@@ -120,34 +125,55 @@ async def test_group_crud(summary_client: SummaryClient) -> None:
     group_id = add_response.id
     assert group_id is not None
 
-    # 2. Query groups
     query_response = await summary_client.query_groups()
     assert query_response.success
     assert [
         (g.id, g.unique_identifier, g.name) for g in query_response.summary_do_list
     ] == [(group_id, group_uuid, "Test Group")]
 
-    # 3. Update group
     update_dto = UpdateSummaryGroupDTO(
         id=group_id,
         unique_identifier=group_uuid,
         name="Updated Group",
+        description="Updated description",
+        metadata='{"group": 1}',
+        comment_str="Group comment",
+        comment_handwrite_name="group_comment_hw.bin",
+        handwrite_inner_name="group_inner_hw.bin",
         md5_hash="newhash",
     )
     update_response = await summary_client.update_group(update_dto)
     assert update_response.success
 
-    # 4. Verify update
     query_response = await summary_client.query_groups()
     assert [
-        (g.id, g.unique_identifier, g.name) for g in query_response.summary_do_list
-    ] == [(group_id, group_uuid, "Updated Group")]
+        (
+            g.id,
+            g.unique_identifier,
+            g.name,
+            g.description,
+            g.metadata,
+            g.comment_str,
+            g.comment_handwrite_name,
+            g.handwrite_inner_name,
+        )
+        for g in query_response.summary_do_list
+    ] == [
+        (
+            group_id,
+            group_uuid,
+            "Updated Group",
+            "Updated description",
+            '{"group": 1}',
+            "Group comment",
+            "group_comment_hw.bin",
+            "group_inner_hw.bin",
+        )
+    ]
 
-    # 5. Delete group
     delete_response = await summary_client.delete_group(group_id)
     assert delete_response.success
 
-    # 6. Verify deletion
     query_response = await summary_client.query_groups()
     assert not any(g.id == group_id for g in query_response.summary_do_list)
 

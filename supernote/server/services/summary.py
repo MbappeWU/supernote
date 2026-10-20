@@ -198,14 +198,26 @@ class SummaryService:
                 summary_do.source_path = dto.source_path
             if dto.data_source is not None:
                 summary_do.data_source = dto.data_source
+            if dto.source_type is not None:
+                summary_do.source_type = dto.source_type
             if dto.tags is not None:
                 summary_do.tags = dto.tags
             if dto.metadata is not None:
                 summary_do.extra_metadata = dto.metadata
+            if dto.comment_str is not None:
+                summary_do.comment_str = dto.comment_str
+            if dto.comment_handwrite_name is not None:
+                summary_do.comment_handwrite_name = dto.comment_handwrite_name
+            if dto.handwrite_inner_name is not None:
+                summary_do.handwrite_inner_name = dto.handwrite_inner_name
+            if dto.handwrite_md5 is not None:
+                summary_do.handwrite_md5 = dto.handwrite_md5
             if dto.last_modified_time is not None:
                 summary_do.last_modified_time = dto.last_modified_time
             if dto.md5_hash is not None:
                 summary_do.md5_hash = dto.md5_hash
+            if dto.author is not None:
+                summary_do.author = dto.author
 
             await session.commit()
             return True
@@ -326,6 +338,14 @@ class SummaryService:
                 group_do.name = dto.name
             if dto.description is not None:
                 group_do.description = dto.description
+            if dto.metadata is not None:
+                group_do.extra_metadata = dto.metadata
+            if dto.comment_str is not None:
+                group_do.comment_str = dto.comment_str
+            if dto.comment_handwrite_name is not None:
+                group_do.comment_handwrite_name = dto.comment_handwrite_name
+            if dto.handwrite_inner_name is not None:
+                group_do.handwrite_inner_name = dto.handwrite_inner_name
             if dto.last_modified_time is not None:
                 group_do.last_modified_time = dto.last_modified_time
 

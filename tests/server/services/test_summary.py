@@ -1,6 +1,8 @@
 """Unit tests for SummaryService."""
 
+import hashlib
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -89,21 +91,44 @@ async def test_summary_crud_and_lookup_helpers(
             content="Updated content",
             source_path="/Note/Moved.note",
             data_source="USER",
+            source_type=2,
             tags="t2",
             metadata='{"k": "v2"}',
+            comment_str="Updated comment",
+            comment_handwrite_name="comment_hw.bin",
+            handwrite_inner_name="inner_hw.bin",
+            handwrite_md5="hw-md5-2",
             last_modified_time=1700000005000,
             md5_hash="custom-md5",
+            author="Alice",
         ),
     )
     fetched = await summary_service.get_summary(USER_EMAIL, created.id)
-    assert fetched.parent_unique_identifier == "grp-uuid-2"
-    assert fetched.content == "Updated content"
-    assert fetched.source_path == "/Note/Moved.note"
-    assert fetched.data_source == "USER"
-    assert fetched.tags == "t2"
-    assert fetched.metadata == '{"k": "v2"}'
-    assert fetched.last_modified_time == 1700000005000
-    assert fetched.md5_hash == "custom-md5"
+    assert fetched == replace(
+        created,
+        parent_unique_identifier="grp-uuid-2",
+        content="Updated content",
+        source_path="/Note/Moved.note",
+        data_source="USER",
+        source_type=2,
+        tags="t2",
+        metadata='{"k": "v2"}',
+        comment_str="Updated comment",
+        comment_handwrite_name="comment_hw.bin",
+        handwrite_inner_name="inner_hw.bin",
+        handwrite_md5="hw-md5-2",
+        last_modified_time=1700000005000,
+        md5_hash="custom-md5",
+        author="Alice",
+        update_time=fetched.update_time,
+    )
+
+    assert await summary_service.update_summary(
+        USER_EMAIL,
+        UpdateSummaryDTO(id=created.id, content="Rehashed content"),
+    )
+    rehashed = await summary_service.get_summary(USER_EMAIL, created.id)
+    assert rehashed.md5_hash == hashlib.md5(b"Rehashed content").hexdigest()
 
     assert await summary_service.delete_summary(USER_EMAIL, created.id)
 
@@ -141,16 +166,28 @@ async def test_group_crud_and_fallback_lookup_by_id(
             unique_identifier=None,
             name="Group 1 Updated",
             description="Desc 2",
+            metadata='{"group_meta": true}',
+            comment_str="Group comment",
+            comment_handwrite_name="group_hw.bin",
+            handwrite_inner_name="group_inner_hw.bin",
             md5_hash="h2",
             last_modified_time=1700000010000,
         ),
     )
     groups = await summary_service.list_groups(USER_EMAIL, QuerySummaryGroupDTO())
     assert len(groups) == 1
-    assert groups[0].name == "Group 1 Updated"
-    assert groups[0].description == "Desc 2"
-    assert groups[0].md5_hash == "h2"
-    assert groups[0].last_modified_time == 1700000010000
+    assert groups[0] == replace(
+        group,
+        name="Group 1 Updated",
+        description="Desc 2",
+        metadata='{"group_meta": true}',
+        comment_str="Group comment",
+        comment_handwrite_name="group_hw.bin",
+        handwrite_inner_name="group_inner_hw.bin",
+        md5_hash="h2",
+        last_modified_time=1700000010000,
+        update_time=groups[0].update_time,
+    )
 
     with pytest.raises(SummaryNotFound):
         await summary_service.update_group(
