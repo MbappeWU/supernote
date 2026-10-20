@@ -86,8 +86,8 @@ class SummaryClient:
     async def query_summaries(
         self,
         parent_uuid: str | None = None,
-        page: int = 1,
-        size: int = 20,
+        page: int | None = None,
+        size: int | None = None,
         ids: list[int] | None = None,
     ) -> QuerySummaryVO:
         """Query summaries."""
@@ -95,7 +95,7 @@ class SummaryClient:
             parent_unique_identifier=parent_uuid,
             page=page,
             size=size,
-            ids=ids or [],
+            ids=ids,
         )
         return await self._client.post_json(
             "/api/file/query/summary", QuerySummaryVO, json=dto.to_dict()
@@ -120,7 +120,9 @@ class SummaryClient:
             "/api/file/delete/summary/group", BaseResponse, json=dto.to_dict()
         )
 
-    async def query_groups(self, page: int = 1, size: int = 20) -> QuerySummaryGroupVO:
+    async def query_groups(
+        self, page: int | None = None, size: int | None = None
+    ) -> QuerySummaryGroupVO:
         """Query summary groups."""
         dto = QuerySummaryGroupDTO(page=page, size=size)
         return await self._client.post_json(
