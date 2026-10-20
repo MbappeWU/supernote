@@ -403,21 +403,18 @@ async def test_summary_unpaginated_manifest_and_batch_id_queries(
         )
         assert [item.id for item in hash_resp.summary_info_vo_list] == created_ids
 
-    if created_ids:
-        batch_resp = await summary_client.query_summary_id(
-            QuerySummaryDTO(ids=created_ids)
-        )
-        assert [item.id for item in batch_resp.summary_do_list] == created_ids
+    batch_resp = await summary_client.query_summary_id(QuerySummaryDTO(ids=created_ids))
+    assert [item.id for item in batch_resp.summary_do_list] == created_ids
 
-        ids_query_resp = await summary_client.query_summaries(ids=created_ids)
-        assert ids_query_resp == QuerySummaryVO(
-            summary_do_list=ids_query_resp.summary_do_list,
-            total_records=total_items,
-            total_pages=1,
-            current_page=1,
-            page_size=total_items,
-        )
-        assert [item.id for item in ids_query_resp.summary_do_list] == created_ids
+    ids_query_resp = await summary_client.query_summaries(ids=created_ids)
+    assert ids_query_resp == QuerySummaryVO(
+        summary_do_list=ids_query_resp.summary_do_list,
+        total_records=total_items,
+        total_pages=1,
+        current_page=1,
+        page_size=total_items,
+    )
+    assert [item.id for item in ids_query_resp.summary_do_list] == created_ids
 
 
 @pytest.mark.parametrize("total_items", [0, 1, 5, 20, 25])

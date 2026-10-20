@@ -234,7 +234,7 @@ class SummaryService:
         ]
         if parent_uuid is not None:
             filters.append(SummaryDO.parent_unique_identifier == parent_uuid)
-        if ids:
+        if ids is not None:
             filters.append(SummaryDO.id.in_(ids))
         return filters
 

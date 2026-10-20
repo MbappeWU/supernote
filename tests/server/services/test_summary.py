@@ -204,10 +204,9 @@ async def test_pagination_and_unpaginated_queries(
         USER_EMAIL, parent_uuid="parent-a"
     ) == len(parent_a_ids)
     subset_ids = created_ids[:3]
-    if subset_ids:
-        assert await summary_service.count_summaries(USER_EMAIL, ids=subset_ids) == len(
-            subset_ids
-        )
+    assert await summary_service.count_summaries(USER_EMAIL, ids=subset_ids) == len(
+        subset_ids
+    )
     assert await summary_service.count_groups(USER_EMAIL) == total_items
 
     for unpaginated_size in (None, 0):

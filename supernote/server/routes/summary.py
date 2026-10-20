@@ -234,7 +234,7 @@ async def handle_query_summary(request: web.Request) -> web.Response:
     try:
         size = (
             req_data.size
-            if (req_data.size is not None or req_data.ids)
+            if (req_data.size is not None or req_data.ids is not None)
             else DEFAULT_SUMMARY_PAGE_SIZE
         )
         summaries = await summary_service.list_summaries(
