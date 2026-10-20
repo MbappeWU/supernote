@@ -72,9 +72,16 @@ async def test_device_binding_lifecycle(
     assert data["isBind"] == "Y"
     assert data["isBindEquipment"] == "N"
 
-    # 5. Unlink Device A
+    # 5. Unlink Device A (requires authentication)
+    unauth_unlink = await client.post(
+        "/api/terminal/equipment/unlink",
+        json={"equipmentNo": equipment_a},
+    )
+    assert unauth_unlink.status == 401
+
     resp = await client.post(
         "/api/terminal/equipment/unlink",
+        headers={"x-access-token": data["token"]},
         json={"equipmentNo": equipment_a},
     )
     assert resp.status == 200
