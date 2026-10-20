@@ -244,7 +244,7 @@ class SummaryService:
     ) -> Select[tuple[SummaryDO]]:
         """Apply SQL offset and limit when a positive page size is specified."""
         if size is not None and size > 0:
-            effective_page = page if (page and page > 0) else 1
+            effective_page = max(1, page or 1)
             return stmt.offset((effective_page - 1) * size).limit(size)
         return stmt
 

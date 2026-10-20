@@ -1,6 +1,7 @@
 import logging
 import urllib.parse
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from aiohttp import web
 
@@ -39,22 +40,53 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 
+@dataclass(frozen=True, kw_only=True)
+class _PaginationMetadata:
+    """Resolved pagination envelope fields for summary query responses."""
+
+    total_records: int
+    total_pages: int
+    current_page: int
+    page_size: int
+
+
 async def _resolve_pagination_metadata(
     items_count: int,
     page: int | None,
     size: int | None,
     count_fn: Callable[[], Awaitable[int]],
-) -> tuple[int, int, int, int]:
-    """Compute (total_records, total_pages, current_page, page_size) for summary queries."""
-    current_page = page if (page and page > 0) else 1
+) -> _PaginationMetadata:
+    """Resolve pagination envelope fields across paginated and unpaginated summary queries.
+
+    Supernote clients query summary endpoints in two distinct modes:
+    1. Paginated queries (where ``size > 0``), which require total record and page
+       counts so the client can iterate through pages. When the first page already
+       contains fewer items than ``size``, ``total_records`` is known to equal
+       ``items_count`` and we skip the extra database ``COUNT(*)`` roundtrip.
+    2. Unpaginated manifest or batch ID queries (where devices send ``page=0, size=0``
+       or omit ``size`` on ``/api/file/query/summary/hash`` and ID-filtered queries),
+       where all matching records are returned in a single page and no separate count
+       query is needed.
+    """
+    current_page = max(1, page or 1)
     if size is None or size <= 0:
-        return items_count, 1, current_page, items_count
+        return _PaginationMetadata(
+            total_records=items_count,
+            total_pages=1,
+            current_page=current_page,
+            page_size=items_count,
+        )
     if current_page == 1 and items_count < size:
         total_records = items_count
     else:
         total_records = await count_fn()
     total_pages = max(1, (total_records + size - 1) // size)
-    return total_records, total_pages, current_page, size
+    return _PaginationMetadata(
+        total_records=total_records,
+        total_pages=total_pages,
+        current_page=current_page,
+        page_size=size,
+    )
 
 
 @routes.post("/api/file/add/summary/tag")
@@ -205,12 +237,7 @@ async def handle_query_summary(request: web.Request) -> web.Response:
             page=req_data.page,
             size=size,
         )
-        (
-            total_records,
-            total_pages,
-            current_page,
-            page_size,
-        ) = await _resolve_pagination_metadata(
+        pagination = await _resolve_pagination_metadata(
             len(summaries),
             req_data.page,
             size,
@@ -223,10 +250,10 @@ async def handle_query_summary(request: web.Request) -> web.Response:
         return web.json_response(
             QuerySummaryVO(
                 summary_do_list=summaries,
-                total_records=total_records,
-                total_pages=total_pages,
-                current_page=current_page,
-                page_size=page_size,
+                total_records=pagination.total_records,
+                total_pages=pagination.total_pages,
+                current_page=pagination.current_page,
+                page_size=pagination.page_size,
             ).to_dict()
         )
     except SupernoteError as err:
@@ -303,12 +330,7 @@ async def handle_query_summary_group(request: web.Request) -> web.Response:
     try:
         size = 20 if req_data.size is None else req_data.size
         groups = await summary_service.list_groups(user_email, req_data)
-        (
-            total_records,
-            total_pages,
-            current_page,
-            page_size,
-        ) = await _resolve_pagination_metadata(
+        pagination = await _resolve_pagination_metadata(
             len(groups),
             req_data.page,
             size,
@@ -317,10 +339,10 @@ async def handle_query_summary_group(request: web.Request) -> web.Response:
         return web.json_response(
             QuerySummaryGroupVO(
                 summary_do_list=groups,
-                total_records=total_records,
-                total_pages=total_pages,
-                current_page=current_page,
-                page_size=page_size,
+                total_records=pagination.total_records,
+                total_pages=pagination.total_pages,
+                current_page=pagination.current_page,
+                page_size=pagination.page_size,
             ).to_dict()
         )
     except SupernoteError as err:
@@ -413,12 +435,7 @@ async def handle_query_summary_hash(request: web.Request) -> web.Response:
 
     try:
         infos = await summary_service.list_summary_infos(user_email, req_data)
-        (
-            total_records,
-            total_pages,
-            current_page,
-            page_size,
-        ) = await _resolve_pagination_metadata(
+        pagination = await _resolve_pagination_metadata(
             len(infos),
             req_data.page,
             req_data.size,
@@ -431,10 +448,10 @@ async def handle_query_summary_hash(request: web.Request) -> web.Response:
         return web.json_response(
             QuerySummaryMD5HashVO(
                 summary_info_vo_list=infos,
-                total_records=total_records,
-                total_pages=total_pages,
-                current_page=current_page,
-                page_size=page_size,
+                total_records=pagination.total_records,
+                total_pages=pagination.total_pages,
+                current_page=pagination.current_page,
+                page_size=pagination.page_size,
             ).to_dict()
         )
     except SupernoteError as err:
