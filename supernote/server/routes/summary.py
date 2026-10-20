@@ -336,7 +336,9 @@ async def handle_query_summary_group(request: web.Request) -> web.Response:
 
     try:
         size = DEFAULT_SUMMARY_PAGE_SIZE if req_data.size is None else req_data.size
-        groups = await summary_service.list_groups(user_email, req_data)
+        groups = await summary_service.list_groups(
+            user_email, QuerySummaryGroupDTO(page=req_data.page, size=size)
+        )
         pagination = await _resolve_pagination_metadata(
             len(groups),
             req_data.page,

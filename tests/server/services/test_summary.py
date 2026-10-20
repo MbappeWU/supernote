@@ -1,5 +1,7 @@
 """Unit tests for SummaryService."""
 
+import math
+
 import pytest
 
 from supernote.models.summary import (
@@ -161,59 +163,111 @@ async def test_group_crud_and_fallback_lookup_by_id(
         )
 
 
+@pytest.mark.parametrize("total_items", [0, 1, 6, 25])
 async def test_pagination_and_unpaginated_queries(
     summary_service: SummaryService,
+    total_items: int,
 ) -> None:
-    """Verify list_summaries, list_summary_infos, list_summaries_by_id, list_groups, and counts."""
+    """Verify paginating with variable page sizes reconstructs the exact item set across SummaryService methods."""
     created_ids: list[int] = []
-    for idx in range(25):
+    parent_a_ids: list[int] = []
+    for idx in range(total_items):
+        parent_uuid = "parent-a" if idx % 2 == 0 else "parent-b"
         item = await summary_service.add_summary(
             USER_EMAIL,
             AddSummaryDTO(
-                unique_identifier=f"svc-sum-{idx}",
-                parent_unique_identifier="parent-a" if idx < 15 else "parent-b",
+                unique_identifier=f"svc-sum-{total_items}-{idx}",
+                parent_unique_identifier=parent_uuid,
                 content=f"Content {idx}",
             ),
         )
         assert item.id is not None
         created_ids.append(item.id)
+        if parent_uuid == "parent-a":
+            parent_a_ids.append(item.id)
 
-    for idx in range(3):
-        await summary_service.add_group(
+    created_group_ids: list[int] = []
+    for idx in range(total_items):
+        group = await summary_service.add_group(
             USER_EMAIL,
             AddSummaryGroupDTO(
-                unique_identifier=f"svc-grp-{idx}",
+                unique_identifier=f"svc-grp-{total_items}-{idx}",
                 name=f"Grp {idx}",
                 md5_hash=f"gh-{idx}",
             ),
         )
+        assert group.id is not None
+        created_group_ids.append(group.id)
 
-    assert await summary_service.count_summaries(USER_EMAIL) == 25
-    assert (
-        await summary_service.count_summaries(USER_EMAIL, parent_uuid="parent-a") == 15
-    )
-    assert await summary_service.count_summaries(USER_EMAIL, ids=created_ids[:5]) == 5
-    assert await summary_service.count_groups(USER_EMAIL) == 3
+    assert await summary_service.count_summaries(USER_EMAIL) == total_items
+    assert await summary_service.count_summaries(
+        USER_EMAIL, parent_uuid="parent-a"
+    ) == len(parent_a_ids)
+    subset_ids = created_ids[:3]
+    if subset_ids:
+        assert await summary_service.count_summaries(USER_EMAIL, ids=subset_ids) == len(
+            subset_ids
+        )
+    assert await summary_service.count_groups(USER_EMAIL) == total_items
 
-    all_summaries = await summary_service.list_summaries(USER_EMAIL, size=None)
-    assert [s.id for s in all_summaries] == created_ids
+    # Unpaginated queries (size=None and size=0) return the full item set
+    for unpaginated_size in (None, 0):
+        all_summaries = await summary_service.list_summaries(
+            USER_EMAIL, page=0, size=unpaginated_size
+        )
+        assert [s.id for s in all_summaries] == created_ids
 
-    zero_size_summaries = await summary_service.list_summaries(
-        USER_EMAIL, page=0, size=0
-    )
-    assert [s.id for s in zero_size_summaries] == created_ids
+        all_infos = await summary_service.list_summary_infos(
+            USER_EMAIL, QuerySummaryDTO(page=0, size=unpaginated_size)
+        )
+        assert [i.id for i in all_infos] == created_ids
 
-    all_infos = await summary_service.list_summary_infos(
-        USER_EMAIL, QuerySummaryDTO(page=0, size=0)
-    )
-    assert [i.id for i in all_infos] == created_ids
+        by_ids = await summary_service.list_summaries_by_id(
+            USER_EMAIL,
+            QuerySummaryDTO(ids=created_ids, page=0, size=unpaginated_size),
+        )
+        assert [s.id for s in by_ids] == (created_ids if created_ids else [])
 
-    by_ids = await summary_service.list_summaries_by_id(
-        USER_EMAIL, QuerySummaryDTO(ids=created_ids)
-    )
-    assert [s.id for s in by_ids] == created_ids
+        all_groups = await summary_service.list_groups(
+            USER_EMAIL, QuerySummaryGroupDTO(page=0, size=unpaginated_size)
+        )
+        assert [g.id for g in all_groups] == created_group_ids
 
-    all_groups = await summary_service.list_groups(
-        USER_EMAIL, QuerySummaryGroupDTO(page=0, size=0)
-    )
-    assert len(all_groups) == 3
+    # Paginated queries across variable page sizes reconstruct the exact item set
+    for page_size in (1, 3, 10, 20, 30):
+        total_pages = max(1, math.ceil(total_items / page_size))
+        collected_summaries: list[int] = []
+        collected_infos: list[int] = []
+        collected_by_id: list[int] = []
+        collected_groups: list[int] = []
+
+        for page in range(1, total_pages + 1):
+            page_summaries = await summary_service.list_summaries(
+                USER_EMAIL, page=page, size=page_size
+            )
+            assert len(page_summaries) <= page_size
+            collected_summaries.extend(s.id for s in page_summaries if s.id is not None)
+
+            page_infos = await summary_service.list_summary_infos(
+                USER_EMAIL, QuerySummaryDTO(page=page, size=page_size)
+            )
+            assert len(page_infos) <= page_size
+            collected_infos.extend(i.id for i in page_infos if i.id is not None)
+
+            page_by_id = await summary_service.list_summaries_by_id(
+                USER_EMAIL,
+                QuerySummaryDTO(ids=created_ids, page=page, size=page_size),
+            )
+            assert len(page_by_id) <= page_size
+            collected_by_id.extend(s.id for s in page_by_id if s.id is not None)
+
+            page_groups = await summary_service.list_groups(
+                USER_EMAIL, QuerySummaryGroupDTO(page=page, size=page_size)
+            )
+            assert len(page_groups) <= page_size
+            collected_groups.extend(g.id for g in page_groups if g.id is not None)
+
+        assert collected_summaries == created_ids
+        assert collected_infos == created_ids
+        assert collected_by_id == (created_ids if created_ids else [])
+        assert collected_groups == created_group_ids

@@ -367,7 +367,7 @@ class SummaryService:
                 )
                 .order_by(SummaryDO.id.asc()),
                 dto.page,
-                DEFAULT_SUMMARY_PAGE_SIZE if dto.size is None else dto.size,
+                dto.size,
             )
             result = await session.execute(stmt)
             groups = list(result.scalars().all())
