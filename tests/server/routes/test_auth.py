@@ -425,6 +425,43 @@ async def test_password_retrieve_rate_limit(
         assert resp.status == 429
 
 
+async def test_public_auth_endpoints_share_ip_rate_limit(
+    client: TestClient,
+) -> None:
+    pwd_hash = hashlib.md5(b"password").hexdigest()
+    with patch(
+        "supernote.server.utils.rate_limit.time.time", return_value=1600000000.0
+    ):
+        for i in range(LIMIT_LOGIN_IP_MAX):
+            resp = await client.post(
+                "/api/official/user/query/random/code",
+                json={"account": f"user{i}@example.com"},
+            )
+            assert resp.status == 200
+
+        # Subsequent calls to public auth endpoints from the same IP are rate-limited (429)
+        for url, payload in (
+            (
+                "/api/official/user/query/random/code",
+                {"account": "extra@example.com"},
+            ),
+            (
+                "/api/official/user/check/exists/server",
+                {"email": "extra@example.com"},
+            ),
+            (
+                "/api/user/register",
+                {
+                    "email": "extra@example.com",
+                    "password": pwd_hash,
+                    "userName": "Extra",
+                },
+            ),
+        ):
+            resp = await client.post(url, json=payload)
+            assert resp.status == 429
+
+
 async def test_user_query_routes_and_equipment_no(
     client: TestClient,
     auth_headers: dict[str, str],
