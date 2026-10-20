@@ -403,3 +403,22 @@ def test_model_config_validation() -> None:
 
     with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
         ModelConfig(provider="gemini", model="gemini-3.6-flash", max_concurrency=0)
+
+
+def test_server_config_trace_log_flags(tmp_path: Path) -> None:
+    """Verify trace_log_file and trace_log_unsafe defaults and env overrides."""
+    config = ServerConfig()
+    assert config.trace_log_unsafe is False
+
+    config_dir = tmp_path / "config"
+    custom_trace = str(tmp_path / "custom_trace.log")
+    with patch.dict(
+        os.environ,
+        {
+            "SUPERNOTE_TRACE_LOG_FILE": custom_trace,
+            "SUPERNOTE_TRACE_LOG_UNSAFE": "true",
+        },
+    ):
+        loaded = ServerConfig.load(config_dir)
+        assert loaded.trace_log_file == custom_trace
+        assert loaded.trace_log_unsafe is True

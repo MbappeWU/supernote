@@ -1,6 +1,5 @@
 import asyncio
 import importlib.resources
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -13,7 +12,6 @@ from aiohttp.web_urldispatcher import SystemRoute
 from aiohttp_asgi import ASGIResource
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import select
-from yarl import URL
 
 from supernote.models.base import create_error_response
 from supernote.server.db.migrations import run_migrations
@@ -57,115 +55,13 @@ from .services.summary import SummaryService
 from .services.user import UserService
 from .services.webhook import WebhookService
 from .socket import setup_socketio
+from .trace import trace_middleware
 from .utils.hashing import get_md5_hash
 from .utils.prompt_loader import PROMPT_LOADER
 from .utils.rate_limit import RateLimiter
 from .utils.url_signer import UrlSigner
 
 logger = logging.getLogger(__name__)
-
-TRUNCATE_BODY_LOG = 10 * 1024
-
-
-async def _write_trace_log(config: ServerConfig, log_entry: dict[str, Any]) -> None:
-    """Helper to write log entry to trace file."""
-    if not config.trace_log_file:
-        return
-
-    trace_log_path = Path(config.trace_log_file)
-
-    def write_op() -> None:
-        try:
-            trace_log_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(trace_log_path, "a") as f:
-                f.write(json.dumps(log_entry, indent=2) + "\n")
-                f.flush()
-        except Exception as e:
-            logger.error(f"Failed to write to trace log: {e}")
-
-    await asyncio.to_thread(write_op)
-
-
-@web.middleware
-async def trace_middleware(
-    request: web.Request,
-    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
-) -> web.StreamResponse:
-    # Process Request
-    try:
-        response = await handler(request)
-        # Capture Request Body (SAFELY AFTER HANDLER)
-        req_body_str = None
-        if "/api/oss/upload" in request.path:
-            req_body_str = "<multipart upload skipped>"
-        elif request.can_read_body and not request.content_type.startswith(
-            "multipart/"
-        ):
-            try:
-                # aiohttp allows reading multiple times once buffered
-                body_bytes = await request.read()
-                req_body_str = body_bytes.decode("utf-8", errors="replace")
-                if len(req_body_str) > TRUNCATE_BODY_LOG:
-                    req_body_str = req_body_str[:2048] + "... (truncated)"
-            except Exception:
-                req_body_str = "<error reading body>"
-
-        # Capture Response Body
-        res_body_str = None
-        if isinstance(response, web.Response) and response.body:
-            if is_binary_content_type(response.content_type):
-                res_body_str = "<binary data>"
-            else:
-                try:
-                    if isinstance(response.body, bytes):
-                        res_body_str = response.body.decode("utf-8", errors="replace")
-                        if len(res_body_str) > TRUNCATE_BODY_LOG:
-                            res_body_str = res_body_str[:2048] + "... (truncated)"
-                except Exception:
-                    res_body_str = "<error reading response>"
-
-        # Write Log
-        log_entry = {
-            "timestamp": time.time(),
-            "request": {
-                "method": request.method,
-                "url": str(_redact_url(request.url)),
-                "headers": _sanitize_headers(dict(request.headers)),
-                "body": try_parse_json(req_body_str),
-            },
-            "response": {
-                "status": response.status,
-                "headers": _sanitize_headers(dict(response.headers)),
-                "body": try_parse_json(res_body_str),
-            },
-        }
-        await _write_trace_log(request.app["config"], log_entry)
-        return response
-
-    except Exception as e:
-        logger.exception(f"Error handling request: {e}")
-        # Try to capture body even on error
-        req_body_str = "<unknown>"
-        try:
-            if request.can_read_body:
-                body_bytes = await request.read()
-                req_body_str = body_bytes.decode("utf-8", errors="replace")
-        except Exception:
-            pass
-
-        log_entry = {
-            "timestamp": time.time(),
-            "request": {
-                "method": request.method,
-                "url": str(_redact_url(request.url)),
-                "headers": _sanitize_headers(dict(request.headers)),
-                "body": try_parse_json(req_body_str),
-            },
-            "error": str(e),
-            "status": 500,
-        }
-        await _write_trace_log(request.app["config"], log_entry)
-        raise
 
 
 @web.middleware
@@ -217,57 +113,6 @@ async def metrics_middleware(
         HTTP_REQUEST_DURATION_SECONDS.labels(
             method=request.method, path=path_pattern
         ).observe(duration)
-
-
-def try_parse_json(body: str | None) -> Any:
-    """Attempt to parse string as JSON, return original if fails or is not string."""
-    if not isinstance(body, str):
-        return body
-    try:
-        return json.loads(body)
-    except Exception:
-        return body
-
-
-def is_binary_content_type(content_type: str) -> bool:
-    """Check if content type is likely binary."""
-    binary_types = [
-        "application/octet-stream",
-        "application/pdf",
-        "application/zip",
-        "image/",
-        "audio/",
-        "video/",
-    ]
-    return any(t in content_type for t in binary_types)
-
-
-def _sanitize_headers(headers: dict[str, Any]) -> dict[str, Any]:
-    new_headers = headers.copy()
-    if "x-access-token" in new_headers:
-        new_headers["x-access-token"] = "***"
-    if "Authorization" in new_headers:
-        new_headers["Authorization"] = "***"
-    return new_headers
-
-
-def _redact_url(url: Any) -> str:
-    """Redact sensitive query parameters from URL."""
-    # Handle yarl.URL or string
-    url_str = str(url)
-    if "signature=" not in url_str and "token=" not in url_str:
-        return url_str
-
-    try:
-        u = URL(url_str)
-        query = u.query.copy()
-        if "signature" in query:
-            query["signature"] = "***"
-        if "token" in query:
-            query["token"] = "***"
-        return str(u.with_query(query))
-    except Exception:
-        return url_str
 
 
 @web.middleware

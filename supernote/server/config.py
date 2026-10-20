@@ -211,6 +211,12 @@ class ServerConfig(DataClassYAMLMixin):
     Env Var: `SUPERNOTE_TRACE_LOG_FILE`
     """
 
+    trace_log_unsafe: bool = False
+    """Whether to disable credential and token redaction in the trace log for debugging.
+
+    Env Var: `SUPERNOTE_TRACE_LOG_UNSAFE`
+    """
+
     storage_dir: str = "storage"
     """Directory for storing files and database.
 
@@ -553,6 +559,16 @@ class ServerConfig(DataClassYAMLMixin):
                 "SUPERNOTE_WEB_NOTEBOOK_PREVIEW", config.web_notebook_preview
             )
             logger.info(f"Web Notebook Preview: {config.web_notebook_preview}")
+
+        if trace_log_file := os.getenv("SUPERNOTE_TRACE_LOG_FILE"):
+            config.trace_log_file = trace_log_file
+            logger.info(f"Using SUPERNOTE_TRACE_LOG_FILE: {config.trace_log_file}")
+
+        if os.getenv("SUPERNOTE_TRACE_LOG_UNSAFE"):
+            config.trace_log_unsafe = _get_bool_env(
+                "SUPERNOTE_TRACE_LOG_UNSAFE", config.trace_log_unsafe
+            )
+            logger.info(f"Trace Log Unsafe Mode: {config.trace_log_unsafe}")
 
         if config.trace_log_file is None:
             config.trace_log_file = str(
