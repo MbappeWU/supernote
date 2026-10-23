@@ -132,7 +132,6 @@ async def test_bind_equipment(
         assert unbound_resp.status == 200
         assert await unbound_resp.json() == {
             "success": True,
-            "status": "N",
         }
 
     resp = await client.post(

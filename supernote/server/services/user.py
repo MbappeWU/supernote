@@ -533,7 +533,7 @@ class UserService:
             )
             device = result.scalar_one_or_none()
             if not device:
-                return UserEquipmentVO(status="N")
+                return UserEquipmentVO()
             return UserEquipmentVO(
                 equipment_number=device.equipment_no,
                 user_id=device.user_id,

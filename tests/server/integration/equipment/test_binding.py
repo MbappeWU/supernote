@@ -53,7 +53,7 @@ async def test_device_binding_lifecycle(
     ):
         query_resp = await client.post(query_path, json={"equipmentNo": equipment_a})
         assert query_resp.status == 200
-        assert await query_resp.json() == {"success": True, "status": "N"}
+        assert await query_resp.json() == {"success": True}
 
     # 2. Bind the device
     resp = await client.post(

@@ -534,9 +534,7 @@ async def test_query_equipment_by_no(user_service: UserService) -> None:
         UserRegisterDTO(email="eq2@example.com", password=pw_md5)
     )
 
-    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
-        status="N"
-    )
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO()
 
     await user_service.bind_equipment("eq1@example.com", "SN-999")
     assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
@@ -553,6 +551,4 @@ async def test_query_equipment_by_no(user_service: UserService) -> None:
     )
 
     await user_service.unlink_equipment("SN-999", account="eq2@example.com")
-    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
-        status="N"
-    )
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO()
