@@ -1,5 +1,8 @@
 """Tests for supernote.client.admin module."""
 
+from typing import Any, cast
+
+import pytest
 from aiohttp import web
 from pytest_aiohttp import AiohttpClient
 
@@ -21,8 +24,8 @@ async def test_admin_client_endpoints(aiohttp_client: AiohttpClient) -> None:
         recorded_requests.append(("register", data))
         return web.json_response({"success": True})
 
-    async def handler_unregister(request: web.Request) -> web.Response:
-        recorded_requests.append(("unregister", None))
+    async def handler_account_clear(request: web.Request) -> web.Response:
+        recorded_requests.append(("account_clear", None))
         return web.json_response({"success": True})
 
     async def handler_password(request: web.Request) -> web.Response:
@@ -77,7 +80,7 @@ async def test_admin_client_endpoints(aiohttp_client: AiohttpClient) -> None:
     app = web.Application()
     app.router.add_get("/api/csrf", handler_csrf)
     app.router.add_post("/api/user/register", handler_register)
-    app.router.add_post("/api/user/unregister", handler_unregister)
+    app.router.add_post("/api/user/account/clear", handler_account_clear)
     app.router.add_put("/api/user/password", handler_password)
     app.router.add_put("/api/user/email", handler_email)
     app.router.add_post(
@@ -104,10 +107,14 @@ async def test_admin_client_endpoints(aiohttp_client: AiohttpClient) -> None:
     assert data["password"] == "pass123"
     assert data["userName"] == "User Name"
 
-    # 2. unregister
-    await admin.unregister()
+    # 2. clear_account requires confirm=True (rejects False and non-bool truthy values)
+    with pytest.raises(ValueError, match="confirm=True"):
+        await admin.clear_account()
+    with pytest.raises(ValueError, match="confirm=True"):
+        await admin.clear_account(confirm=cast(Any, "false"))
+    await admin.clear_account(confirm=True)
     req, data = recorded_requests[-1]
-    assert req == "unregister"
+    assert req == "account_clear"
 
     # 3. update_password
     await admin.update_password("newpass123")

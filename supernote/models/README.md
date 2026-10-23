@@ -46,7 +46,7 @@ The UserController is the main controller for handling user profile requests.
 The UserRegisterController is the main controller for handling user registration requests.
 
 *   `POST /api/user/register`: User Registration
-*   `POST /api/user/account/clear`: Delete Account
+*   `POST /api/user/account/clear`: Delete Account (**WARNING**: permanently deletes the user account and all cloud files, blobs, recycle bin items, summaries, schedule tasks, and active sessions)
 
 ### Password & Security
 

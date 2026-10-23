@@ -236,14 +236,18 @@ class SimpleTokenAuth(AbstractAuth):
         return self.token
 
 
-async def test_user_unregister(
+async def test_user_account_clear(
     client: TestClient,
     web_client: WebClient,
     admin_client: AdminClient,
     login_client: LoginClient,
     user_service: UserService,
+    server_config: ServerConfig,
 ) -> None:
-    """Test user unregister lifecycle and verify user ID / file isolation."""
+    """Test user account clear lifecycle and verify user ID / file isolation."""
+    unauth_clear = await client.post("/api/user/account/clear", json={})
+    assert unauth_clear.status == 401
+
     user1_id = await user_service.get_user_id("test@example.com")
 
     # User 1 creates a folder and uploads a file
@@ -257,8 +261,14 @@ async def test_user_unregister(
     assert len(res1.user_file_vo_list) == 1
     assert res1.user_file_vo_list[0].file_name == "secret.txt"
 
+    # Disabling registration causes account/clear to fail with 400
+    server_config.auth.enable_registration = False
+    with pytest.raises(ApiException):
+        await admin_client.clear_account(confirm=True)
+    server_config.auth.enable_registration = True
+
     # User 1 deletes their account
-    await admin_client.unregister()
+    await admin_client.clear_account(confirm=True)
 
     # User 2 registers
     base_url = str(client.make_url(""))
