@@ -3,6 +3,7 @@ from typing import Any
 
 from aiohttp.test_utils import TestClient
 
+from supernote.server.services.user import UserService
 from tests.server.conftest import TEST_PASSWORD, TEST_USERNAME
 
 
@@ -34,9 +35,10 @@ async def _login(client: TestClient, equipment_no: str) -> Any:
 
 
 async def test_device_binding_lifecycle(
-    create_test_user: Any, client: TestClient
+    create_test_user: Any, client: TestClient, user_service: UserService
 ) -> None:
     equipment_a = "SN-A"
+    user_id = await user_service.get_user_id(TEST_USERNAME)
 
     # 1. Login WITHOUT binding
     data = await _login(client, equipment_a)
@@ -44,6 +46,14 @@ async def test_device_binding_lifecycle(
     # Should not be bound yet
     assert data["isBind"] == "N"
     assert data["isBindEquipment"] == "N"
+
+    for query_path in (
+        "/api/equipment/query/by/equipmentno",
+        "/api/official/equipment/query/by/equipmentno",
+    ):
+        query_resp = await client.post(query_path, json={"equipmentNo": equipment_a})
+        assert query_resp.status == 200
+        assert await query_resp.json() == {"success": True}
 
     # 2. Bind the device
     resp = await client.post(
@@ -58,6 +68,19 @@ async def test_device_binding_lifecycle(
     )
     assert resp.status == 200
     assert (await resp.json())["success"] is True
+
+    for query_path in (
+        "/api/equipment/query/by/equipmentno",
+        "/api/official/equipment/query/by/equipmentno",
+    ):
+        query_resp = await client.post(query_path, json={"equipmentNo": equipment_a})
+        assert query_resp.status == 200
+        assert await query_resp.json() == {
+            "success": True,
+            "equipmentNumber": equipment_a,
+            "userId": user_id,
+            "status": "Y",
+        }
 
     # 3. Login AGAIN (verify binding)
     data = await _login(client, equipment_a)

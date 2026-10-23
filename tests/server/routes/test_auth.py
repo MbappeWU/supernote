@@ -10,6 +10,7 @@ from supernote.client.client import Client
 from supernote.client.exceptions import ApiException, UnauthorizedException
 from supernote.client.login_client import LoginClient
 from supernote.client.web import WebClient
+from supernote.models.equipment import UserEquipmentVO
 from supernote.server.config import ServerConfig
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import SupernoteError
@@ -104,11 +105,34 @@ async def test_login_invalid_credentials(login_client: LoginClient) -> None:
         await login_client.login("test@example.com", "wrongpassword")
 
 
-async def test_bind_equipment(client: TestClient, create_test_user: None) -> None:
+async def test_bind_equipment(
+    client: TestClient,
+    login_client: LoginClient,
+    user_service: UserService,
+    create_test_user: None,
+) -> None:
     resp = await client.post("/api/terminal/user/bindEquipment", json={})
     assert resp.status == 400
     data = await resp.json()
     assert data["errorMsg"] == "Missing data"
+
+    for path in (
+        "/api/equipment/query/by/equipmentno",
+        "/api/official/equipment/query/by/equipmentno",
+    ):
+        bad_resp = await client.post(path, json={})
+        assert bad_resp.status == 400
+        assert (await bad_resp.json())["errorMsg"] == "Invalid request format"
+
+        empty_resp = await client.post(path, json={"equipmentNo": ""})
+        assert empty_resp.status == 400
+        assert (await empty_resp.json())["errorMsg"] == "Invalid request format"
+
+        unbound_resp = await client.post(path, json={"equipmentNo": "EQ123"})
+        assert unbound_resp.status == 200
+        assert await unbound_resp.json() == {
+            "success": True,
+        }
 
     resp = await client.post(
         "/api/terminal/user/bindEquipment",
@@ -122,6 +146,26 @@ async def test_bind_equipment(client: TestClient, create_test_user: None) -> Non
     assert resp.status == 200
     data = await resp.json()
     assert data["success"] is True
+
+    user_id = await user_service.get_user_id("test@example.com")
+    for path in (
+        "/api/equipment/query/by/equipmentno",
+        "/api/official/equipment/query/by/equipmentno",
+    ):
+        bound_resp = await client.post(path, json={"equipmentNo": "EQ123"})
+        assert bound_resp.status == 200
+        assert await bound_resp.json() == {
+            "success": True,
+            "equipmentNumber": "EQ123",
+            "userId": user_id,
+            "status": "Y",
+        }
+
+    assert await login_client.query_equipment_by_no("EQ123") == UserEquipmentVO(
+        equipment_number="EQ123",
+        user_id=user_id,
+        status="Y",
+    )
 
 
 async def test_user_query(
