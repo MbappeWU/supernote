@@ -2,7 +2,8 @@ import logging
 
 from supernote.client.client import Client
 from supernote.models.base import BaseResponse
-from supernote.models.system import QueueStatusVO
+from supernote.models.extended import SystemTaskListVO
+from supernote.models.system import IntegrityReportVO, QueueStatusVO
 from supernote.models.user import (
     RetrievePasswordDTO,
     UpdateEmailDTO,
@@ -116,3 +117,38 @@ class AdminClient:
             json=payload,
         )
         logger.info(f"Triggered reprocessing of '{task_type}' tasks")
+
+    async def verify_integrity(
+        self,
+        user_id: int | None = None,
+    ) -> IntegrityReportVO:
+        """Verify VFS and blob storage integrity."""
+        params: dict[str, int] = {}
+        if user_id is not None:
+            params["user_id"] = user_id
+        return await self.client.get_json(
+            "/api/admin/integrity",
+            IntegrityReportVO,
+            params=params or None,
+        )
+
+    async def list_tasks(
+        self,
+        status: str | None = None,
+        file_id: int | None = None,
+        task_type: str | None = None,
+        limit: int = 100,
+    ) -> SystemTaskListVO:
+        """List system processing tasks with optional filters."""
+        params: dict[str, str | int] = {"limit": limit}
+        if status is not None:
+            params["status"] = status
+        if file_id is not None:
+            params["file_id"] = file_id
+        if task_type is not None:
+            params["task_type"] = task_type
+        return await self.client.get_json(
+            "/api/admin/tasks",
+            SystemTaskListVO,
+            params=params,
+        )

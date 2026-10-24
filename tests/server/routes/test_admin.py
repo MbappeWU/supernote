@@ -7,7 +7,9 @@ from aiohttp.test_utils import TestClient
 from sqlalchemy import delete, select
 
 from supernote.client.admin import AdminClient
+from supernote.client.auth import ConstantAuth
 from supernote.client.client import Client
+from supernote.client.exceptions import BadRequestException, ForbiddenException
 from supernote.models.base import ProcessingStatus
 from supernote.models.user import UserRegisterDTO
 from supernote.server.config import ServerConfig
@@ -61,6 +63,26 @@ def user_headers(setup_users: tuple[str, str]) -> dict[str, Any]:
     """Headers for a NORMAL user."""
     _, user_token = setup_users
     return {"x-access-token": user_token}
+
+
+@pytest.fixture
+def admin_api_client(client: TestClient, setup_users: tuple[str, str]) -> AdminClient:
+    """AdminClient authenticated as an ADMIN user."""
+    admin_token, _ = setup_users
+    base_url = str(client.make_url(""))
+    return AdminClient(
+        Client(client.session, auth=ConstantAuth(admin_token), host=base_url)
+    )
+
+
+@pytest.fixture
+def user_api_client(client: TestClient, setup_users: tuple[str, str]) -> AdminClient:
+    """AdminClient authenticated as a NORMAL (non-admin) user."""
+    _, user_token = setup_users
+    base_url = str(client.make_url(""))
+    return AdminClient(
+        Client(client.session, auth=ConstantAuth(user_token), host=base_url)
+    )
 
 
 async def test_admin_list_users_permission(
@@ -286,3 +308,100 @@ async def test_admin_reprocess(
     await asyncio.sleep(0)
     assert 8001 in published_ids
     assert 8002 not in published_ids
+
+
+async def test_admin_integrity(
+    admin_api_client: AdminClient,
+    user_service: UserService,
+) -> None:
+    """Test admin integrity endpoint returns report via AdminClient."""
+    report = await admin_api_client.verify_integrity()
+    assert report.success is True
+    assert report.scanned >= 16  # 2 users * 8 default folders
+    assert report.ok == report.scanned
+
+    user_id = await user_service.get_user_id("user@example.com")
+    assert user_id is not None
+    user_report = await admin_api_client.verify_integrity(user_id=user_id)
+    assert user_report.scanned == 8
+    assert user_report.ok == 8
+
+
+async def test_admin_integrity_permission(
+    user_api_client: AdminClient,
+) -> None:
+    """Test non-admin user cannot access integrity endpoint."""
+    with pytest.raises(ForbiddenException):
+        await user_api_client.verify_integrity()
+
+
+async def test_admin_integrity_invalid_user_id(
+    admin_api_client: AdminClient,
+) -> None:
+    """Test invalid user_id query parameter returns 400."""
+    with pytest.raises(BadRequestException):
+        await admin_api_client.client.get(
+            "/api/admin/integrity", params={"user_id": "abc"}
+        )
+
+
+async def test_admin_list_tasks(
+    session_manager: DatabaseSessionManager,
+    admin_api_client: AdminClient,
+) -> None:
+    """Test admin list tasks endpoint and filters via AdminClient."""
+    async with session_manager.session() as session:
+        session.add_all(
+            [
+                SystemTaskDO(
+                    file_id=101,
+                    task_type="OCR_EXTRACTION",
+                    key="page_1",
+                    status=ProcessingStatus.FAILED,
+                    retry_count=2,
+                    last_error="API timeout",
+                    update_time=2000,
+                ),
+                SystemTaskDO(
+                    file_id=102,
+                    task_type="SUMMARY_GENERATION",
+                    key="global",
+                    status=ProcessingStatus.COMPLETED,
+                    retry_count=0,
+                    update_time=3000,
+                ),
+            ]
+        )
+        await session.commit()
+
+    resp = await admin_api_client.list_tasks(
+        status="failed", file_id=101, task_type="ocr"
+    )
+    assert len(resp.tasks) == 1
+    assert resp.tasks[0].file_id == 101
+    assert resp.tasks[0].last_error == "API timeout"
+
+
+async def test_admin_list_tasks_permission(
+    user_api_client: AdminClient,
+) -> None:
+    """Test non-admin user cannot list system tasks."""
+    with pytest.raises(ForbiddenException):
+        await user_api_client.list_tasks()
+
+
+@pytest.mark.parametrize(
+    ("status", "task_type"),
+    [
+        ("bogus", None),
+        (None, "bogus"),
+    ],
+)
+async def test_admin_list_tasks_invalid_filters(
+    admin_api_client: AdminClient,
+    status: str | None,
+    task_type: str | None,
+) -> None:
+    """Test invalid filter parameters raise BadRequestException."""
+    with pytest.raises(BadRequestException):
+        await admin_api_client.list_tasks(status=status, task_type=task_type)

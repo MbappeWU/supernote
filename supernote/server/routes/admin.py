@@ -4,14 +4,22 @@ from aiohttp import web
 from mashumaro.exceptions import MissingField
 from sqlalchemy import delete, select
 
-from supernote.models.base import BaseResponse, TaskType, create_error_response
-from supernote.models.system import QueueStatusVO
+from supernote.models.base import (
+    BaseResponse,
+    ProcessingStatus,
+    TaskType,
+    create_error_response,
+)
+from supernote.models.extended import SystemTaskListVO, SystemTaskVO
+from supernote.models.system import IntegrityReportVO, QueueStatusVO
 from supernote.models.user import UserRegisterDTO
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import SystemTaskDO
+from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import LocalEventBus, NoteUpdatedEvent
 from supernote.server.exceptions import SupernoteError
+from supernote.server.services.integrity import IntegrityService
 from supernote.server.services.user import UserService
 
 routes = web.RouteTableDef()
@@ -178,3 +186,103 @@ async def handle_reprocess(request: web.Request) -> web.Response:
         )
 
     return web.json_response(BaseResponse().to_dict())
+
+
+@routes.get("/api/admin/integrity")
+@require_admin
+async def handle_verify_integrity(request: web.Request) -> web.Response:
+    """Verify VFS and blob storage integrity (Admin only)."""
+    user_id_str = request.query.get("user_id")
+
+    try:
+        user_id = int(user_id_str) if user_id_str is not None else None
+    except ValueError:
+        return web.json_response(
+            create_error_response("Invalid user_id").to_dict(),
+            status=400,
+        )
+
+    integrity_service: IntegrityService = request.app["integrity_service"]
+    session_manager: DatabaseSessionManager = request.app["session_manager"]
+
+    if user_id is not None:
+        user_ids = [user_id]
+    else:
+        async with session_manager.session() as session:
+            result = await session.execute(select(UserDO.id))
+            user_ids = list(result.scalars().all())
+
+    vo = IntegrityReportVO()
+    for uid in user_ids:
+        report = await integrity_service.verify_user_storage(uid)
+        vo.scanned += report.scanned
+        vo.missing_blob += report.missing_blob
+        vo.size_mismatch += report.size_mismatch
+        vo.hash_mismatch += report.hash_mismatch
+        vo.orphans += report.orphans
+        vo.ok += report.ok
+
+    return web.json_response(vo.to_dict())
+
+
+@routes.get("/api/admin/tasks")
+@require_admin
+async def handle_admin_list_tasks(request: web.Request) -> web.Response:
+    """List system processing tasks with optional filters (Admin only)."""
+    status_param = request.query.get("status")
+    file_id_str = request.query.get("file_id")
+    task_type_param = request.query.get("task_type")
+    limit_str = request.query.get("limit")
+
+    try:
+        file_id = int(file_id_str) if file_id_str is not None else None
+        limit = int(limit_str) if limit_str is not None else 100
+    except ValueError:
+        return web.json_response(
+            create_error_response("Invalid file_id or limit").to_dict(),
+            status=400,
+        )
+
+    status_filter: str | None = None
+    if status_param:
+        try:
+            status_filter = ProcessingStatus(status_param.upper()).value
+        except ValueError:
+            return web.json_response(
+                create_error_response(f"Invalid status: {status_param}").to_dict(),
+                status=400,
+            )
+
+    task_type_filter: str | None = None
+    if task_type_param:
+        try:
+            task_type_filter = TaskType.from_friendly(task_type_param).value
+        except ValueError:
+            return web.json_response(
+                create_error_response(
+                    f"Invalid task_type: {task_type_param}"
+                ).to_dict(),
+                status=400,
+            )
+
+    processor_service = request.app["processor_service"]
+    tasks = await processor_service.list_system_tasks(
+        limit=limit,
+        status=status_filter,
+        file_id=file_id,
+        task_type=task_type_filter,
+    )
+    task_vos = [
+        SystemTaskVO(
+            id=t.id,
+            file_id=t.file_id,
+            task_type=t.task_type,
+            key=t.key,
+            status=ProcessingStatus(t.status),
+            retry_count=t.retry_count,
+            last_error=t.last_error,
+            update_time=t.update_time,
+        )
+        for t in tasks
+    ]
+    return web.json_response(SystemTaskListVO(tasks=task_vos).to_dict())
