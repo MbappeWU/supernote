@@ -14,6 +14,7 @@ from supernote.models.system import (
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
+from supernote.server.db.models.summary import SummaryDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage
 from supernote.server.utils.paths import get_page_png_path
@@ -94,6 +95,9 @@ class IntegrityService:
             png_keys_by_file = await self._query_completed_png_keys(
                 session, user_id, file_id
             )
+            summaries_with_status = await self._query_summaries_with_status(
+                session, user_id, file_id
+            )
 
         for node, has_valid_parent in nodes_with_parent_ok:
             report.scanned += 1
@@ -147,6 +151,54 @@ class IntegrityService:
                     report,
                 ):
                     continue
+
+            report.ok += 1
+
+        for summary, has_valid_parent, has_valid_file in summaries_with_status:
+            report.scanned += 1
+            summary_name = (
+                summary.name or summary.source_path or summary.unique_identifier
+            )
+            issue_file_id = (
+                summary.file_id if summary.file_id is not None else summary.id
+            )
+
+            if not has_valid_parent:
+                detail = f"Summary {summary.id} has invalid parent group {summary.parent_unique_identifier}"
+                logger.error(
+                    f"Integrity Fail: Summary {summary.id} ({summary_name}) has invalid parent {summary.parent_unique_identifier}"
+                )
+                report.orphans += 1
+                report.issues.append(
+                    IntegrityIssueVO(
+                        user_id=user_id,
+                        file_id=issue_file_id,
+                        file_name=summary_name,
+                        issue_type=IntegrityIssueType.ORPHAN,
+                        detail=detail,
+                    )
+                )
+                continue
+
+            if not has_valid_file:
+                detail = f"Summary {summary.id} has invalid file_id={summary.file_id}"
+                logger.error(
+                    f"Integrity Fail: Summary {summary.id} ({summary_name}) has invalid file_id {summary.file_id}"
+                )
+                report.orphans += 1
+                report.issues.append(
+                    IntegrityIssueVO(
+                        user_id=user_id,
+                        file_id=issue_file_id,
+                        file_name=summary_name,
+                        issue_type=IntegrityIssueType.ORPHAN,
+                        detail=detail,
+                    )
+                )
+                continue
+
+            if not await self._check_summary_blob_integrity(user_id, summary, report):
+                continue
 
             report.ok += 1
 
@@ -483,3 +535,136 @@ class IntegrityService:
         if not passed:
             report.pipeline_issues += 1
         return passed
+
+    async def _query_summaries_with_status(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        file_id: int | None,
+    ) -> list[tuple[SummaryDO, bool, bool]]:
+        """Query active summaries along with whether their parent group and source file are valid."""
+        parent_group = aliased(SummaryDO)
+        source_file = aliased(UserFileDO)
+        stmt = (
+            select(
+                SummaryDO,
+                or_(
+                    SummaryDO.parent_unique_identifier.is_(None),
+                    SummaryDO.parent_unique_identifier == "",
+                    parent_group.id.is_not(None),
+                ),
+                or_(
+                    SummaryDO.file_id.is_(None),
+                    source_file.id.is_not(None),
+                ),
+            )
+            .outerjoin(
+                parent_group,
+                and_(
+                    parent_group.unique_identifier
+                    == SummaryDO.parent_unique_identifier,
+                    parent_group.user_id == user_id,
+                    parent_group.is_deleted.is_(False),
+                    parent_group.is_summary_group.is_(True),
+                ),
+            )
+            .outerjoin(
+                source_file,
+                and_(
+                    source_file.id == SummaryDO.file_id,
+                    source_file.user_id == user_id,
+                    source_file.is_active == "Y",
+                    source_file.is_folder == "N",
+                ),
+            )
+            .where(
+                SummaryDO.user_id == user_id,
+                SummaryDO.is_deleted.is_(False),
+            )
+        )
+        if file_id is not None:
+            stmt = stmt.where(SummaryDO.file_id == file_id)
+
+        rows = (await session.execute(stmt)).all()
+        return [
+            (summary, bool(has_valid_parent), bool(has_valid_file))
+            for summary, has_valid_parent, has_valid_file in rows
+        ]
+
+    async def _check_summary_blob_integrity(
+        self,
+        user_id: int,
+        summary: SummaryDO,
+        report: IntegrityReportVO,
+    ) -> bool:
+        """Verify physical handwriting blob existence and MD5 checksum for a summary."""
+        summary_name = summary.name or summary.source_path or summary.unique_identifier
+        issue_file_id = summary.file_id if summary.file_id is not None else summary.id
+
+        if not summary.handwrite_inner_name:
+            if summary.handwrite_md5:
+                detail = f"Summary {summary.id} missing handwrite_inner_name"
+                logger.error(
+                    f"Integrity Fail: Summary {summary.id} ({summary_name}) missing handwrite_inner_name"
+                )
+                report.missing_blob += 1
+                report.issues.append(
+                    IntegrityIssueVO(
+                        user_id=user_id,
+                        file_id=issue_file_id,
+                        file_name=summary_name,
+                        issue_type=IntegrityIssueType.MISSING_BLOB,
+                        detail=detail,
+                    )
+                )
+                return False
+            return True
+
+        try:
+            metadata = await self.blob_storage.get_metadata(
+                USER_DATA_BUCKET, summary.handwrite_inner_name, include_md5=True
+            )
+        except FileNotFoundError:
+            detail = (
+                f"Summary {summary.id} missing blob key {summary.handwrite_inner_name}"
+            )
+            logger.error(
+                f"Integrity Fail: Summary {summary.id} ({summary_name}) {detail}"
+            )
+            report.missing_blob += 1
+            report.issues.append(
+                IntegrityIssueVO(
+                    user_id=user_id,
+                    file_id=issue_file_id,
+                    file_name=summary_name,
+                    issue_type=IntegrityIssueType.MISSING_BLOB,
+                    detail=detail,
+                )
+            )
+            return False
+
+        if (
+            summary.handwrite_md5
+            and metadata.content_md5
+            and summary.handwrite_md5 != metadata.content_md5
+        ):
+            detail = (
+                f"Summary {summary.id} MD5 mismatch "
+                f"(Summary: {summary.handwrite_md5}, Blob: {metadata.content_md5})"
+            )
+            logger.error(
+                f"Integrity Fail: Summary {summary.id} hash mismatch. Summary: {summary.handwrite_md5}, Blob: {metadata.content_md5}"
+            )
+            report.hash_mismatch += 1
+            report.issues.append(
+                IntegrityIssueVO(
+                    user_id=user_id,
+                    file_id=issue_file_id,
+                    file_name=summary_name,
+                    issue_type=IntegrityIssueType.HASH_MISMATCH,
+                    detail=detail,
+                )
+            )
+            return False
+
+        return True

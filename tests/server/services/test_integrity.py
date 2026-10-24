@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 
 import pytest
@@ -10,6 +11,7 @@ from supernote.models.system import IntegrityIssueType
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
+from supernote.server.db.models.summary import SummaryDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage, LocalBlobStorage
 from supernote.server.services.integrity import _REMEDIATION_HINTS, IntegrityService
@@ -305,3 +307,194 @@ async def test_integrity_duplicate_root_folder(
 def test_remediation_hints_cover_all_issue_types() -> None:
     """Ensure every IntegrityIssueType has a remediation hint on the server."""
     assert set(_REMEDIATION_HINTS.keys()) == set(IntegrityIssueType)
+
+
+async def test_integrity_summary_valid_and_deleted(
+    integrity_service: IntegrityService,
+    blob_storage: LocalBlobStorage,
+    test_user_id: int,
+    db_session: AsyncSession,
+) -> None:
+    """Verify integrity check validates active summaries with blobs, groups, and file_ids and ignores deleted ones."""
+    file_content = b"note-content"
+    file_key = str(uuid.uuid4())
+    await blob_storage.put(USER_DATA_BUCKET, file_key, file_content)
+    file_do = UserFileDO(
+        user_id=test_user_id,
+        file_name="valid.note",
+        is_folder="N",
+        directory_id=0,
+        size=len(file_content),
+        md5=hashlib.md5(file_content).hexdigest(),
+        storage_key=file_key,
+        is_active="Y",
+    )
+    db_session.add(file_do)
+    await db_session.flush()
+
+    group_uuid = str(uuid.uuid4())
+    group_do = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier=group_uuid,
+        name="Group 1",
+        is_summary_group=True,
+    )
+
+    hw_bytes = b"handwriting-strokes"
+    hw_key = f"hw-{uuid.uuid4()}"
+    hw_md5 = hashlib.md5(hw_bytes).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, hw_key, hw_bytes)
+
+    summary_with_blob = SummaryDO(
+        user_id=test_user_id,
+        file_id=file_do.id,
+        unique_identifier=str(uuid.uuid4()),
+        parent_unique_identifier=group_uuid,
+        content="Summary with handwriting",
+        is_summary_group=False,
+        handwrite_inner_name=hw_key,
+        handwrite_md5=hw_md5,
+    )
+
+    summary_text_only = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier=str(uuid.uuid4()),
+        parent_unique_identifier=group_uuid,
+        content="Text only summary",
+        is_summary_group=False,
+    )
+
+    deleted_summary = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier=str(uuid.uuid4()),
+        parent_unique_identifier="non-existent-group",
+        handwrite_inner_name="missing-blob-key",
+        is_summary_group=False,
+        is_deleted=True,
+    )
+
+    db_session.add_all(
+        [group_do, summary_with_blob, summary_text_only, deleted_summary]
+    )
+    await db_session.commit()
+
+    report = await integrity_service.verify_user_storage(test_user_id)
+    assert (
+        report.scanned == 12
+    )  # 8 default folders + 1 file + 1 group + 2 active summaries
+    assert report.ok == 12
+    assert report.issues == []
+
+    # Scoped by file_id should scan the file and its linked summary
+    file_report = await integrity_service.verify_user_storage(
+        test_user_id, file_id=file_do.id
+    )
+    assert file_report.scanned == 2
+    assert file_report.ok == 2
+    assert file_report.issues == []
+
+
+async def test_integrity_summary_missing_blob_and_hash_mismatch(
+    integrity_service: IntegrityService,
+    blob_storage: LocalBlobStorage,
+    test_user_id: int,
+    db_session: AsyncSession,
+) -> None:
+    """Verify integrity check detects missing handwriting blobs and MD5 mismatches for summaries."""
+    hw_bytes = b"handwriting-strokes"
+    hw_key = f"hw-{uuid.uuid4()}"
+    await blob_storage.put(USER_DATA_BUCKET, hw_key, hw_bytes)
+
+    missing_blob_summary = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier="sum-missing-blob",
+        name="Missing Blob Summary",
+        content="Summary missing blob on disk",
+        is_summary_group=False,
+        handwrite_inner_name="non-existent-inner-name",
+        handwrite_md5="deadbeef",
+    )
+
+    missing_key_summary = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier="sum-missing-key",
+        content="Summary with md5 but no inner name",
+        is_summary_group=False,
+        handwrite_inner_name=None,
+        handwrite_md5="deadbeef",
+    )
+
+    bad_hash_summary = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier="sum-bad-hash",
+        source_path="/Note/bad.note",
+        content="Summary with wrong md5",
+        is_summary_group=False,
+        handwrite_inner_name=hw_key,
+        handwrite_md5="00000000000000000000000000000000",
+    )
+
+    db_session.add_all([missing_blob_summary, missing_key_summary, bad_hash_summary])
+    await db_session.commit()
+
+    report = await integrity_service.verify_user_storage(test_user_id)
+    assert report.scanned == 11  # 8 default folders + 3 summaries
+    assert report.missing_blob == 2
+    assert report.hash_mismatch == 1
+    assert report.ok == 8
+    assert [(i.file_name, i.issue_type) for i in report.issues] == [
+        ("Missing Blob Summary", IntegrityIssueType.MISSING_BLOB),
+        ("sum-missing-key", IntegrityIssueType.MISSING_BLOB),
+        ("/Note/bad.note", IntegrityIssueType.HASH_MISMATCH),
+    ]
+    assert len(report.remediations) == 2
+
+
+async def test_integrity_summary_orphans(
+    integrity_service: IntegrityService,
+    test_user_id: int,
+    db_session: AsyncSession,
+) -> None:
+    """Verify integrity check detects summaries with orphaned parent groups or invalid file_id."""
+    deleted_group_uuid = str(uuid.uuid4())
+    deleted_group = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier=deleted_group_uuid,
+        name="Deleted Group",
+        is_summary_group=True,
+        is_deleted=True,
+    )
+
+    orphan_parent_summary = SummaryDO(
+        user_id=test_user_id,
+        unique_identifier="sum-orphan-parent",
+        name="Orphan Parent Summary",
+        parent_unique_identifier=deleted_group_uuid,
+        content="Orphaned by deleted group",
+        is_summary_group=False,
+    )
+
+    orphan_file_summary = SummaryDO(
+        user_id=test_user_id,
+        file_id=999999,
+        unique_identifier="sum-orphan-file",
+        name="Orphan File Summary",
+        content="Orphaned by missing file_id",
+        is_summary_group=False,
+    )
+
+    db_session.add_all([deleted_group, orphan_parent_summary, orphan_file_summary])
+    await db_session.commit()
+
+    report = await integrity_service.verify_user_storage(test_user_id)
+    assert report.scanned == 10  # 8 default folders + 2 active summaries
+    assert report.orphans == 2
+    assert report.ok == 8
+    assert [(i.file_id, i.file_name, i.issue_type) for i in report.issues] == [
+        (
+            orphan_parent_summary.id,
+            "Orphan Parent Summary",
+            IntegrityIssueType.ORPHAN,
+        ),
+        (999999, "Orphan File Summary", IntegrityIssueType.ORPHAN),
+    ]
