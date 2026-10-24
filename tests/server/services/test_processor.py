@@ -1,7 +1,6 @@
 import asyncio
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -33,7 +32,6 @@ from supernote.server.services.processor_modules.page_hashing import PageHashing
 from supernote.server.services.processor_modules.summary import SummaryModule
 from supernote.server.services.summary import SummaryService
 from supernote.server.services.user import UserService
-from supernote.server.utils.hashing import get_md5_hash
 from supernote.server.utils.paths import get_page_png_path
 
 
@@ -128,36 +126,15 @@ async def test_processor_lifecycle(processor_service: ProcessorService) -> None:
 
 
 async def test_processor_handles_event(processor_service: ProcessorService) -> None:
+    hashing = SlowModule("Hashing", 0.0)
+    processor_service.register_modules(hashing=hashing, png=None)
     await processor_service.start()
-
-    # Spy on handle_note_updated
-    # We can't easily spy on the bound method directly because it's already subscribed
-    # But we can verify side effects, e.g., the item in queue.
 
     event = NoteUpdatedEvent(file_id=123, user_id=1, file_path="test.note")
     await processor_service.event_bus.publish(event)
-
-    # Wait briefly for async processing
     await asyncio.sleep(0.1)
 
-    # Check if item was enqueued (it gets popped by worker immediately, so checking processing_files is unreliable if efficient)
-    # However, since we didn't mock process_file, it will just log and finish.
-    # Let's mock process_file to verify it was called.
-
-    # To do this effectively, we should have mocked process_file BEFORE start() if we want to spy on it easily,
-    # or rely on log capture.
-    # Alternatively, we can inspect the queue size BUT workers consume it.
-
-    # Let's verify via side effect: process_file should have been called.
-    with patch(
-        "supernote.server.services.processor.ProcessorService.process_file",
-        new_callable=AsyncMock,
-    ) as mock_process:
-        # Publish again
-        await processor_service.event_bus.publish(event)
-        await asyncio.sleep(0.1)
-
-        mock_process.assert_called_with(123)
+    assert hashing.calls == [(123, None, None)]
 
     await processor_service.stop()
 
@@ -283,15 +260,11 @@ async def test_page_hashing_orphan_cleanup(
     session_manager: DatabaseSessionManager,
     file_service: FileService,
     blob_storage: BlobStorage,
+    test_note_path: Path,
 ) -> None:
     file_id = 888
     hashing_module = PageHashingModule(file_service=file_service)
-    current_content_hash = get_md5_hash("page_content_0")
-    await blob_storage.put(USER_DATA_BUCKET, "key", b"note-bytes")
-    for i in range(3):
-        await blob_storage.put(
-            CACHE_BUCKET, get_page_png_path(file_id, str(i)), f"png{i}".encode()
-        )
+    await blob_storage.put(USER_DATA_BUCKET, "key", test_note_path.read_bytes())
 
     async with session_manager.session() as session:
         session.add(
@@ -303,67 +276,80 @@ async def test_page_hashing_orphan_cleanup(
                 md5="hash",
             )
         )
-        for i in range(3):
-            session.add(
-                NotePageContentDO(
-                    file_id=file_id,
-                    page_index=i,
-                    page_id=str(i),
-                    content_hash=current_content_hash if i == 0 else f"old_{i}",
-                )
-            )
-            session.add(
-                SystemTaskDO(
-                    file_id=file_id,
-                    task_type="PNG_CONVERSION",
-                    key=f"page_{i}",
-                    status="COMPLETED",
-                )
-            )
         await session.commit()
 
-    mock_metadata = MagicMock()
-    mock_metadata.get_total_pages.return_value = 1
-    mock_page = MagicMock()
-    mock_page.__str__.return_value = "page_content_0"  # type: ignore[attr-defined]
-    mock_page.get.return_value = "0"  # Matches existing page_id "0"
-    mock_metadata.pages = [mock_page]
-
-    with (
-        patch(
-            "supernote.server.services.processor_modules.page_hashing.parse_metadata",
-            return_value=mock_metadata,
-        ),
-        patch(
-            "supernote.server.services.processor_modules.page_hashing._parse_helper",
-            return_value=mock_metadata,
-        ),
-    ):
-        await hashing_module.process(file_id, session_manager)
+    # Initial hashing populates the real pages from test_note_path
+    await hashing_module.process(file_id, session_manager)
 
     async with session_manager.session() as session:
-        contents = (
+        real_pages = (
             (
                 await session.execute(
-                    select(NotePageContentDO).where(
-                        NotePageContentDO.file_id == file_id
-                    )
+                    select(NotePageContentDO)
+                    .where(NotePageContentDO.file_id == file_id)
+                    .order_by(NotePageContentDO.page_index)
                 )
             )
             .scalars()
             .all()
         )
-        assert len(contents) == 1
-        assert contents[0].page_index == 0
+        real_page_ids = [p.page_id for p in real_pages]
+        assert len(real_page_ids) >= 1
+
+    orphan_page_ids = ["orphan_1", "orphan_2"]
+    all_page_ids = [*real_page_ids, *orphan_page_ids]
+    for pid in all_page_ids:
+        await blob_storage.put(
+            CACHE_BUCKET, get_page_png_path(file_id, pid), f"png_{pid}".encode()
+        )
+
+    async with session_manager.session() as session:
+        for idx, pid in enumerate(orphan_page_ids, start=len(real_page_ids)):
+            session.add(
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=idx,
+                    page_id=pid,
+                    content_hash=f"old_{idx}",
+                )
+            )
+        for pid in all_page_ids:
+            session.add(
+                SystemTaskDO(
+                    file_id=file_id,
+                    task_type="PNG_CONVERSION",
+                    key=f"page_{pid}",
+                    status="COMPLETED",
+                )
+            )
+        await session.commit()
+
+    await hashing_module.process(file_id, session_manager)
+
+    async with session_manager.session() as session:
+        contents = (
+            (
+                await session.execute(
+                    select(NotePageContentDO)
+                    .where(NotePageContentDO.file_id == file_id)
+                    .order_by(NotePageContentDO.page_index)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [c.page_id for c in contents] == real_page_ids
 
         stmt = select(SystemTaskDO).where(SystemTaskDO.file_id == file_id)
         tasks = (await session.execute(stmt)).scalars().all()
-        assert len(tasks) == 1
-        assert tasks[0].key == "page_0"
+        assert {t.key for t in tasks} == {f"page_{pid}" for pid in real_page_ids}
 
-    assert await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "0"))
-    assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "1"))
-    assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "2"))
+    for pid in real_page_ids:
+        assert await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, pid))
+    for pid in orphan_page_ids:
+        assert not await blob_storage.exists(
+            CACHE_BUCKET, get_page_png_path(file_id, pid)
+        )
 
 
 async def test_recover_tasks_enqueues_incomplete(
@@ -396,39 +382,32 @@ async def test_recover_tasks_enqueues_incomplete(
     assert set(ids) == {1, 2}
 
 
-async def test_start_calls_poll_loop(processor_service: ProcessorService) -> None:
-    async def fake_poll_loop() -> None:
-        try:
-            await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            pass
+async def test_start_calls_poll_loop(
+    processor_service: ProcessorService,
+    session_manager: DatabaseSessionManager,
+) -> None:
+    hashing = SlowModule("Hashing", 0.0)
+    processor_service.register_modules(hashing=hashing, png=None)
 
-    with patch(
-        "supernote.server.services.processor.ProcessorService.recover_tasks",
-        new_callable=AsyncMock,
-    ) as mock_recover:
-        # We don't mock poll_loop with just AsyncMock because it finishes instantly.
-        # We replace it with a fake that sleeps so we can assert it's running.
-        with patch(
-            "supernote.server.services.processor.ProcessorService.poll_loop",
-            side_effect=fake_poll_loop,
-        ):
-            with patch(
-                "supernote.server.services.processor.ProcessorService.worker_loop",
-                return_value=AsyncMock(),
-            ):
-                await processor_service.start()
-                await asyncio.sleep(0.01)
-                mock_recover.assert_called_once()
-                # Verify poll loop started
-                assert processor_service.polling_task is not None
-                assert not processor_service.polling_task.done()
+    async with session_manager.session() as session:
+        session.add(
+            SystemTaskDO(file_id=1, task_type="PNG", key="page_0", status="FAILED")
+        )
+        await session.commit()
 
-                await processor_service.stop()
-                assert (
-                    processor_service.polling_task.cancelled()
-                    or processor_service.polling_task.done()
-                )
+    await processor_service.start()
+    await asyncio.sleep(0.05)
+
+    assert hashing.calls == [(1, None, None)]
+    assert processor_service.polling_task is not None
+    assert not processor_service.polling_task.done()
+    assert len(processor_service.workers) == processor_service.concurrency
+
+    await processor_service.stop()
+    assert (
+        processor_service.polling_task.cancelled()
+        or processor_service.polling_task.done()
+    )
 
 
 async def test_recover_stalled_tasks_time_threshold(
@@ -559,35 +538,31 @@ async def test_processor_pause_resume(
     hashing = SlowModule("Hashing", 0.0)
     processor_service.register_modules(hashing=hashing, png=None)
 
-    with patch(
-        "supernote.server.services.processor.ProcessorService.process_file",
-        new_callable=AsyncMock,
-    ) as mock_process:
-        # Start the workers (they will be blocked since it's paused)
-        for i in range(processor_service.concurrency):
-            worker = asyncio.create_task(processor_service.worker_loop(i))
-            processor_service.workers.append(worker)
+    # Start the workers (they will be blocked since it's paused)
+    for i in range(processor_service.concurrency):
+        worker = asyncio.create_task(processor_service.worker_loop(i))
+        processor_service.workers.append(worker)
 
-        # Enqueue file ID
-        await processor_service.queue.put(101)
-        await asyncio.sleep(0.1)
+    # Enqueue file ID
+    await processor_service.queue.put(101)
+    await asyncio.sleep(0.1)
 
-        # process_file should NOT have been called
-        mock_process.assert_not_called()
+    # Module should NOT have been called while paused
+    assert hashing.calls == []
 
-        # 3. Resume
-        await processor_service.resume()
-        assert processor_service.is_processing_enabled() is True
-        assert await coordination_service.get_value("queue_paused") == "false"
+    # 3. Resume
+    await processor_service.resume()
+    assert processor_service.is_processing_enabled() is True
+    assert await coordination_service.get_value("queue_paused") == "false"
 
-        # Wait for the worker to process the item
-        await asyncio.sleep(0.1)
+    # Wait for the worker to process the item
+    await asyncio.sleep(0.1)
 
-        # process_file should now have been called
-        mock_process.assert_called_once_with(101)
+    # Module should now have been called for file 101
+    assert hashing.calls == [(101, None, None)]
 
-        # Cleanup
-        await processor_service.stop()
+    # Cleanup
+    await processor_service.stop()
 
 
 async def test_process_file_without_page_modules(
