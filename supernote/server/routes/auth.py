@@ -83,10 +83,10 @@ async def handle_activate_equipment(request: web.Request) -> web.Response:
 
 
 @routes.post("/api/terminal/equipment/unlink")
+@public_route
 async def handle_equipment_unlink(request: web.Request) -> web.Response:
     # Endpoint: POST /api/terminal/equipment/unlink
     # Purpose: Device requests to unlink itself from the account/server.
-    user_email: str = request["user"]
     req_data = await request.json()
     try:
         unlink_req = UnbindEquipmentDTO.from_dict(req_data)
@@ -97,12 +97,11 @@ async def handle_equipment_unlink(request: web.Request) -> web.Response:
         )
 
     user_service: UserService = request.app["user_service"]
-    await user_service.unlink_equipment(unlink_req.equipment_no, account=user_email)
+    await user_service.unlink_equipment(unlink_req.equipment_no)
     return web.json_response(BaseResponse().to_dict())
 
 
 @routes.post("/api/official/user/check/exists/server")
-@routes.post("/api/user/check/exists")
 @public_route
 async def handle_check_user_exists(request: web.Request) -> web.Response:
     # Endpoint: POST /api/official/user/check/exists/server

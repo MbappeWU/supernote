@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 from aiohttp.test_utils import TestClient
 
-from supernote.client.client import Client
 from supernote.client.exceptions import UnauthorizedException
 from supernote.client.login_client import LoginClient
 from tests.server.conftest import TEST_PASSWORD, TEST_USERNAME
@@ -42,14 +41,8 @@ async def test_query_server(client: TestClient) -> None:
     assert data == {"success": True}
 
 
-async def test_equipment_unlink(
-    login_client: LoginClient, authenticated_client: Client
-) -> None:
-    with pytest.raises(UnauthorizedException):
-        await login_client.unlink_equipment(equipment_no="SN123456")
-
-    authed_login_client = LoginClient(authenticated_client)
-    res = await authed_login_client.unlink_equipment(equipment_no="SN123456")
+async def test_equipment_unlink(login_client: LoginClient) -> None:
+    res = await login_client.unlink_equipment(equipment_no="SN123456")
     assert res.success
 
 

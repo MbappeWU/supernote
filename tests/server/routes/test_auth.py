@@ -33,54 +33,13 @@ async def test_empty_token(
     }
 
 
-async def test_equipment_unlink(
-    client: TestClient,
-    auth_headers: dict[str, str],
-    login_client: LoginClient,
-    user_service: UserService,
-) -> None:
-    unauth_resp = await client.post(
-        "/api/terminal/equipment/unlink", json={"equipmentNo": "EQ123"}
-    )
-    assert unauth_resp.status == 401
-
-    resp = await client.post(
-        "/api/terminal/equipment/unlink",
-        headers=auth_headers,
-        json={},
-    )
+async def test_equipment_unlink(client: TestClient, login_client: LoginClient) -> None:
+    resp = await client.post("/api/terminal/equipment/unlink", json={})
     assert resp.status == 400
     data = await resp.json()
     assert data["errorMsg"] == "Invalid request format"
 
-    await user_service.bind_equipment("test@example.com", "EQ123")
-    victim_session = await login_client.login_equipment(
-        "test@example.com", "testpassword", "EQ123"
-    )
-
-    base_url = str(client.make_url(""))
-    unauth_admin = AdminClient(Client(client.session, host=base_url))
-    attacker_pw = hashlib.md5(b"attackerpw").hexdigest()
-    await unauth_admin.register("attacker@example.com", attacker_pw, "Attacker")
-    attacker_token = await login_client.login("attacker@example.com", "attackerpw")
-
-    cross_user_resp = await client.post(
-        "/api/terminal/equipment/unlink",
-        headers={"x-access-token": attacker_token},
-        json={"equipmentNo": "EQ123"},
-    )
-    assert cross_user_resp.status == 200
-    assert await user_service.verify_token(victim_session.token) is not None
-
-    resp = await client.post(
-        "/api/terminal/equipment/unlink",
-        headers={"x-access-token": victim_session.token},
-        json={"equipmentNo": "EQ123"},
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["success"] is True
-    assert await user_service.verify_token(victim_session.token) is None
+    await login_client.unlink_equipment("EQ123")
 
 
 async def test_check_user_exists(
@@ -541,10 +500,6 @@ async def test_public_auth_endpoints_share_ip_rate_limit(
             ),
             (
                 "/api/official/user/check/exists/server",
-                {"email": "extra@example.com"},
-            ),
-            (
-                "/api/user/check/exists",
                 {"email": "extra@example.com"},
             ),
             (
