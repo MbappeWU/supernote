@@ -7,13 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from supernote.client.device import DeviceClient
 from supernote.models.base import ProcessingStatus, TaskType
 from supernote.models.system import IntegrityIssueType
-from supernote.server.constants import USER_DATA_BUCKET
+from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage, LocalBlobStorage
 from supernote.server.services.integrity import _REMEDIATION_HINTS, IntegrityService
 from supernote.server.services.user import UserService
+from supernote.server.utils.paths import get_page_png_path
 
 
 @pytest.fixture
@@ -216,19 +217,19 @@ async def test_integrity_pipeline_issues(
             SystemTaskDO(
                 file_id=note_do.id,
                 task_type=TaskType.PNG_CONVERSION.value,
-                key="page_1",
+                key="page_P1",
                 status=ProcessingStatus.COMPLETED,
             ),
             SystemTaskDO(
                 file_id=note_do.id,
                 task_type=TaskType.OCR_EXTRACTION.value,
-                key="page_1",
+                key="page_P1",
                 status=ProcessingStatus.COMPLETED,
             ),
             NotePageContentDO(
                 file_id=note_do.id,
                 page_index=0,
-                page_id="page_1",
+                page_id="P1",
                 text_content=None,
             ),
         ]
@@ -248,6 +249,32 @@ async def test_integrity_pipeline_issues(
         IntegrityIssueType.MISSING_CACHE_BLOB,
         IntegrityIssueType.MISSING_PAGE_CONTENT,
     }
+
+    # Now populate the PNG cache blob at the unprefixed page_id path and OCR text
+    await blob_storage.put(
+        CACHE_BUCKET, get_page_png_path(note_do.id, "P1"), b"png-bytes"
+    )
+    await db_session.execute(
+        update(NotePageContentDO)
+        .where(NotePageContentDO.file_id == note_do.id)
+        .values(text_content="extracted text")
+    )
+    await db_session.execute(
+        update(SystemTaskDO)
+        .where(
+            SystemTaskDO.file_id == note_do.id,
+            SystemTaskDO.task_type == TaskType.SUMMARY_GENERATION.value,
+        )
+        .values(status=ProcessingStatus.COMPLETED, last_error=None)
+    )
+    await db_session.commit()
+
+    healthy_report = await integrity_service.verify_user_storage(
+        test_user_id, file_id=note_do.id
+    )
+    assert healthy_report.pipeline_issues == 0
+    assert healthy_report.ok == 1
+    assert healthy_report.issues == []
 
 
 async def test_integrity_duplicate_root_folder(

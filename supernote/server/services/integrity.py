@@ -351,9 +351,10 @@ class IntegrityService:
             .join(UserFileDO, UserFileDO.id == SystemTaskDO.file_id)
             .outerjoin(
                 NotePageContentDO,
+                # SystemTaskDO.key uses 'page_{page_id}' whereas NotePageContentDO stores raw 'page_id'
                 and_(
                     NotePageContentDO.file_id == SystemTaskDO.file_id,
-                    NotePageContentDO.page_id == SystemTaskDO.key,
+                    "page_" + NotePageContentDO.page_id == SystemTaskDO.key,
                 ),
             )
             .where(
@@ -465,7 +466,8 @@ class IntegrityService:
             )
 
         for png_key in png_keys:
-            png_path = get_page_png_path(node.id, png_key)
+            page_id = png_key.removeprefix("page_")
+            png_path = get_page_png_path(node.id, page_id)
             if not await self.blob_storage.exists(CACHE_BUCKET, png_path):
                 passed = False
                 report.issues.append(
