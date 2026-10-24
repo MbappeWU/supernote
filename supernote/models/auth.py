@@ -33,14 +33,8 @@ class Equipment(BaseEnum):
     USER_PLATFORM = 4
 
 
-def _deserialize_int_equipment(value: str | int) -> Equipment:
+def _deserialize_int_equipment(value: str) -> Equipment:
     return Equipment(int(value))
-
-
-def _deserialize_str(value: str | int | None) -> str:
-    if value is None:
-        return ""
-    return str(value)
 
 
 class LoginMethod(str, BaseEnum):
@@ -67,10 +61,7 @@ class LoginDTO(DataClassJSONMixin):
     password: str
     """Hashed password. Schema: SHA256(MD5(pwd) + randomCode)) or MD5(pwd + randomCode)."""
 
-    timestamp: str = field(
-        metadata=field_options(deserialize=_deserialize_str),
-        default="",
-    )
+    timestamp: str = ""
     """Client timestamp in milliseconds."""
 
     login_method: LoginMethod = field(
