@@ -288,3 +288,49 @@ async def test_move_task_between_groups_and_inbox(
     back_in_inbox = await schedule_service.get_task(user_id, inbox_task.task_id)
     assert back_in_inbox is not None
     assert back_in_inbox.task_list_id is None
+
+
+async def test_update_and_batch_update_preserve_last_modified(
+    schedule_service: ScheduleService,
+) -> None:
+    """Verify update_task and batch_update_tasks preserve client update_time."""
+    user_id = 445
+    group = await schedule_service.create_group(user_id, "Sync Group")
+    task = await schedule_service.create_task(
+        user_id,
+        group.task_list_id,
+        "Task with metadata",
+        last_modified_ms=1710000001000,
+    )
+    assert task.update_time == 1710000001000
+
+    # Sort-only batch update preserves existing update_time and still matches since filter via sort_time
+    await schedule_service.batch_update_tasks(
+        user_id,
+        [
+            {
+                "task_id": task.task_id,
+                "sort": 3,
+                "sort_time": 1710000005000,
+                "update_time": 1710000001000,
+            }
+        ],
+    )
+    reordered = await schedule_service.get_task(user_id, task.task_id)
+    assert reordered is not None
+    assert reordered.sort == 3
+    assert reordered.sort_time == 1710000005000
+    assert reordered.update_time == 1710000001000
+    delta = await schedule_service.list_tasks(user_id, since=1710000002000)
+    assert [t.task_id for t in delta] == [task.task_id]
+
+    # Single update_task with explicit update_time
+    updated_single = await schedule_service.update_task(
+        user_id,
+        task.task_id,
+        title="Updated via single",
+        update_time=1710000020000,
+    )
+    assert updated_single is not None
+    assert updated_single.title == "Updated via single"
+    assert updated_single.update_time == 1710000020000

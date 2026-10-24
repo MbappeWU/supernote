@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Any, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from supernote.server.db.models.schedule import ScheduleTaskDO, ScheduleTaskGroupDO
@@ -24,6 +24,7 @@ TASK_BASE_FIELDS: set[str] = {
     "recurrence",
     "is_reminder_on",
     "task_list_id",
+    "update_time",
 }
 
 TASK_SORT_FIELDS: set[str] = {
@@ -276,7 +277,13 @@ class ScheduleService:
                 query = query.where(ScheduleTaskDO.task_list_id == group_id)
 
             if since is not None:
-                query = query.where(ScheduleTaskDO.update_time > since)
+                query = query.where(
+                    or_(
+                        ScheduleTaskDO.update_time > since,
+                        ScheduleTaskDO.sort_time > since,
+                        ScheduleTaskDO.planer_sort_time > since,
+                    )
+                )
 
             query = query.order_by(ScheduleTaskDO.create_time.desc())
             result = await session.execute(query)
@@ -287,7 +294,8 @@ class ScheduleService:
     ) -> ScheduleTaskDO | None:
         """Update a task."""
         updates = {k: v for k, v in kwargs.items() if k in TASK_ALLOWED_UPDATE_FIELDS}
-        updates["update_time"] = int(time.time() * 1000)
+        if not updates.get("update_time"):
+            updates["update_time"] = int(time.time() * 1000)
 
         async with self.session_manager.session() as session:
             if not (task := await self.get_task(user_id, task_id)):
@@ -342,7 +350,8 @@ class ScheduleService:
                 }
                 if not updates:
                     continue
-                updates["update_time"] = now_ms
+                if not updates.get("update_time"):
+                    updates["update_time"] = now_ms
 
                 stmt = (
                     update(ScheduleTaskDO)

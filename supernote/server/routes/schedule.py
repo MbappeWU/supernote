@@ -39,6 +39,8 @@ def _extract_task_updates(
 ) -> dict[str, Any]:
     """Extract populated update fields from UpdateScheduleTaskDTO into a service dict."""
     updates: dict[str, Any] = {}
+    if dto.last_modified is not None and dto.last_modified != 0:
+        updates["update_time"] = dto.last_modified
     for f in fields(dto):
         if f.name in ("task_id", "last_modified", "is_deleted"):
             continue

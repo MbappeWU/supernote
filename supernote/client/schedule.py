@@ -214,6 +214,7 @@ class ScheduleClient:
         recurrence: str | None = None,
         is_reminder_on: bool | None = None,
         task_list_id: str | None = None,
+        last_modified_ms: int | None = None,
     ) -> UpdateScheduleTaskVO:
         """Update a task using DTO."""
         is_reminder_on_value: BooleanEnum | None = None
@@ -230,7 +231,11 @@ class ScheduleClient:
             recurrence=recurrence,
             is_reminder_on=is_reminder_on_value,
             task_list_id=task_list_id,
-            last_modified=int(time.time() * 1000),
+            last_modified=(
+                last_modified_ms
+                if last_modified_ms is not None
+                else int(time.time() * 1000)
+            ),
         )
         return await self._client.put_json(
             "/api/file/schedule/task", UpdateScheduleTaskVO, json=dto.to_dict()
