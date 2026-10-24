@@ -1,8 +1,9 @@
 """Tests for supernote.cli.main."""
 
+import argparse
 import importlib
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -75,12 +76,10 @@ def test_main_missing_dependency_error_non_admin(capsys):
 
 
 def test_main_no_func_attr(capsys):
-    with patch("argparse.ArgumentParser.parse_args") as mock_parse:
-        mock_args = MagicMock()
-        mock_args.command = "custom"
-        del mock_args.func  # ensure no func attribute
-        mock_parse.return_value = mock_args
-
+    with patch(
+        "argparse.ArgumentParser.parse_args",
+        return_value=argparse.Namespace(command="custom"),
+    ):
         with patch.object(sys, "argv", ["supernote"]):
             with pytest.raises(SystemExit) as exc_info:
                 main()

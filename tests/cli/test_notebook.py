@@ -254,32 +254,30 @@ def test_subcommand_convert_invalid_color(test_note_path: Path, capsys):
     assert "4 colors are required" in captured.err
 
 
-def test_subcommand_reconstruct(test_note_path: Path, tmp_path: Path):
+def test_subcommand_reconstruct(test_data_dir: Path, tmp_path: Path):
+    latest_note = test_data_dir / "dsummersl" / "sn2md_20260618.note"
     out_file = tmp_path / "reconstructed.note"
-    args = argparse.Namespace(input=str(test_note_path), output=str(out_file))
-    with patch(
-        "supernote.cli.notebook.reconstruct", return_value=b"reconstructed_data"
-    ):
-        subcommand_reconstruct(args)
-        assert out_file.exists()
-        assert out_file.read_bytes() == b"reconstructed_data"
+    args = argparse.Namespace(input=str(latest_note), output=str(out_file))
+    subcommand_reconstruct(args)
+    assert out_file.exists()
+    assert out_file.stat().st_size > 0
 
 
-def test_subcommand_merge_single(test_note_path: Path, tmp_path: Path):
+def test_subcommand_merge_single(test_data_dir: Path, tmp_path: Path):
+    latest_note = test_data_dir / "dsummersl" / "sn2md_20260618.note"
     out_file = tmp_path / "merged.note"
-    args = argparse.Namespace(input=[str(test_note_path)], output=str(out_file))
-    with patch("supernote.cli.notebook.reconstruct", return_value=b"merged_data"):
-        subcommand_merge(args)
-        assert out_file.exists()
-        assert out_file.read_bytes() == b"merged_data"
+    args = argparse.Namespace(input=[str(latest_note)], output=str(out_file))
+    subcommand_merge(args)
+    assert out_file.exists()
+    assert out_file.stat().st_size > 0
 
 
-def test_subcommand_merge_multiple(test_note_path: Path, tmp_path: Path):
+def test_subcommand_merge_multiple(test_data_dir: Path, tmp_path: Path):
+    latest_note = test_data_dir / "dsummersl" / "sn2md_20260618.note"
     out_file = tmp_path / "merged_multi.note"
     args = argparse.Namespace(
-        input=[str(test_note_path), str(test_note_path)], output=str(out_file)
+        input=[str(latest_note), str(latest_note)], output=str(out_file)
     )
-    with patch("supernote.cli.notebook.merge", return_value=b"merged_multi_data"):
-        subcommand_merge(args)
-        assert out_file.exists()
-        assert out_file.read_bytes() == b"merged_multi_data"
+    subcommand_merge(args)
+    assert out_file.exists()
+    assert out_file.stat().st_size > 0
