@@ -17,8 +17,6 @@ from supernote.models.auth import (
     SendSmsVO,
     SmsLoginDTO,
     SmsLoginVO,
-    UserCheckDTO,
-    UserCheckVO,
     UserPreAuthRequest,
     UserPreAuthResponse,
 )
@@ -29,6 +27,7 @@ from supernote.models.equipment import (
     UserEquipmentDTO,
     UserEquipmentVO,
 )
+from supernote.models.user import UserCheckDTO, UserCheckVO
 
 from .client import Client
 from .exceptions import ApiException, SmsVerificationRequired

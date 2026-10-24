@@ -18,33 +18,6 @@ from mashumaro.config import BaseConfig
 from mashumaro.mixins.json import DataClassJSONMixin
 
 from .base import BaseEnum, BaseResponse
-from .user import UserCheckDTO, UserCheckVO
-
-__all__ = [
-    "COUNTRY_CODE",
-    "BROWSER",
-    "LANGUAGE",
-    "Equipment",
-    "UserCheckDTO",
-    "UserCheckVO",
-    "LoginMethod",
-    "LoginDTO",
-    "LoginVO",
-    "RandomCodeDTO",
-    "RandomCodeVO",
-    "QueryTokenDTO",
-    "QueryTokenVO",
-    "OSType",
-    "UserVO",
-    "SmsLoginDTO",
-    "SmsLoginVO",
-    "UserPreAuthRequest",
-    "UserPreAuthResponse",
-    "SendSmsDTO",
-    "SendSmsVO",
-    "EmailDTO",
-    "ValidCodeDTO",
-]
 
 COUNTRY_CODE = 1
 BROWSER = "Chrome142"

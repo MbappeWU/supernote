@@ -8,7 +8,6 @@ from supernote.models.auth import (
     QueryTokenVO,
     RandomCodeDTO,
     RandomCodeVO,
-    UserCheckDTO,
 )
 from supernote.models.base import BaseResponse, create_error_response
 from supernote.models.equipment import (
@@ -22,6 +21,7 @@ from supernote.models.user import (
     RetrievePasswordDTO,
     UpdateEmailDTO,
     UpdatePasswordDTO,
+    UserCheckDTO,
     UserInfo,
     UserQueryByIdVO,
     UserQueryDTO,
