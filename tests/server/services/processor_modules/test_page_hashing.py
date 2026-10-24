@@ -121,14 +121,20 @@ async def test_process_with_real_file(
         page.embedding = "[0.1, 0.2]"
         page.embedding_model = "old-model"
 
-        # Add a mock downstream task that should be invalidated (deleted)
+        # Add mock downstream tasks that should be invalidated (deleted)
         ocr_task = SystemTaskDO(
             file_id=file_id,
             task_type="OCR_EXTRACTION",
             key=f"page_{page.page_id}",
             status="COMPLETED",
         )
-        session.add(ocr_task)
+        summary_task = SystemTaskDO(
+            file_id=file_id,
+            task_type="SUMMARY_GENERATION",
+            key="global",
+            status="COMPLETED",
+        )
+        session.add_all([ocr_task, summary_task])
         await session.commit()
 
     # Run process again
@@ -155,7 +161,7 @@ async def test_process_with_real_file(
         assert page.embedding is None
         assert page.embedding_model is None
 
-        # Check that the downstream task was invalidated (deleted)
+        # Check that the downstream page and summary tasks were invalidated (deleted)
         invalidated_task = (
             (
                 await session.execute(
@@ -169,6 +175,20 @@ async def test_process_with_real_file(
             .first()
         )
         assert invalidated_task is None
+
+        invalidated_summary_task = (
+            (
+                await session.execute(
+                    select(SystemTaskDO)
+                    .where(SystemTaskDO.file_id == file_id)
+                    .where(SystemTaskDO.task_type == "SUMMARY_GENERATION")
+                    .where(SystemTaskDO.key == "global")
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert invalidated_summary_task is None
 
     # Test Deletion
     # We will simulate deletion by manually adding an extra page that doesn't exist in the file.
