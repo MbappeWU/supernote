@@ -631,10 +631,3 @@ async def test_check_user_server_and_registration(user_service: UserService) -> 
         )
         == BaseResponse()
     )
-
-    # Legacy login challenge fallback when timestamp is empty (single-use)
-    code, _ = await user_service.generate_random_code("check@example.com")
-    client_hash = hash_with_salt(pw_md5, code)
-    vo = await user_service.login("check@example.com", client_hash, "")
-    assert vo is not None
-    assert await user_service.login("check@example.com", client_hash, "") is None

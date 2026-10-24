@@ -339,16 +339,10 @@ class UserService:
         timestamp = str(ts_ms)
 
         # Store in coordination service with short TTL (e.g. 5 mins), scoped by account and timestamp
-        ttl_seconds = int(RANDOM_CODE_TTL.total_seconds())
         await self._coordination_service.set_value(
             f"challenge:{account}:{timestamp}",
             random_code,
-            ttl=ttl_seconds,
-        )
-        await self._coordination_service.set_value(
-            f"challenge:{account}:latest",
-            timestamp,
-            ttl=ttl_seconds,
+            ttl=int(RANDOM_CODE_TTL.total_seconds()),
         )
 
         return random_code, timestamp
@@ -379,19 +373,11 @@ class UserService:
         client_hash: str,
         timestamp: str,
     ) -> bool:
-        resolved_timestamp = timestamp
-        if not resolved_timestamp:
-            resolved_timestamp = (
-                await self._coordination_service.pop_value(
-                    f"challenge:{account}:latest"
-                )
-                or ""
-            )
-        if not resolved_timestamp:
+        if not timestamp:
             return False
 
         random_code = await self._coordination_service.pop_value(
-            f"challenge:{account}:{resolved_timestamp}"
+            f"challenge:{account}:{timestamp}"
         )
         if not random_code:
             return False

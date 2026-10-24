@@ -163,7 +163,6 @@ async def handle_query_token(request: web.Request) -> web.Response:
 
 
 @routes.post("/api/official/user/query/random/code")
-@routes.post("/api/user/query/random/code")
 @public_route
 async def handle_random_code(request: web.Request) -> web.Response:
     # Endpoint: POST /api/official/user/query/random/code
@@ -189,10 +188,8 @@ async def handle_random_code(request: web.Request) -> web.Response:
 
 @routes.post("/api/official/user/account/login/new")
 @routes.post("/api/official/user/account/login/equipment")
-@routes.post("/api/user/account/login")
 @routes.get("/api/official/user/account/login/new")
 @routes.get("/api/official/user/account/login/equipment")
-@routes.get("/api/user/account/login")
 @public_route
 async def handle_login(request: web.Request) -> web.Response:
     # Endpoint: POST / GET /api/official/user/account/login/new

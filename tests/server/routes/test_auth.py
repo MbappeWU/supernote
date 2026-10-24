@@ -127,7 +127,7 @@ async def test_check_user_exists(
     }
 
 
-async def test_check_user_registration_and_login_aliases(
+async def test_check_user_registration(
     client: TestClient,
     user_service: UserService,
     create_test_user: None,
@@ -173,34 +173,7 @@ async def test_check_user_registration_and_login_aliases(
     assert avail_resp.status == 200
     assert await avail_resp.json() == {"success": True}
 
-    get_login_resp = await client.get("/api/user/account/login")
-    assert get_login_resp.status == 200
-    assert await get_login_resp.json() == {"success": True}
-
     pw_md5 = hashlib.md5(b"testpassword").hexdigest()
-
-    rc_resp = await client.post(
-        "/api/user/query/random/code",
-        json={"account": "test@example.com", "countryCode": "1"},
-    )
-    assert rc_resp.status == 200
-    rc_data = await rc_resp.json()
-
-    legacy_login_resp = await client.post(
-        "/api/user/account/login",
-        json={
-            "account": "test@example.com",
-            "password": hash_with_salt(pw_md5, rc_data["randomCode"]),
-            "equipment": 3,
-            "equipmentNo": "SN123",
-            "loginMethod": "2",
-        },
-    )
-    assert legacy_login_resp.status == 200
-    legacy_login_data = await legacy_login_resp.json()
-    assert legacy_login_data["success"] is True
-    assert await user_service.verify_token(legacy_login_data["token"]) is not None
-
     rc_new_resp = await client.post(
         "/api/official/user/query/random/code",
         json={"account": "test@example.com", "countryCode": ""},

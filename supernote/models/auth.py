@@ -52,7 +52,6 @@ class LoginDTO(DataClassJSONMixin):
     This is used by the following POST endpoints:
         /api/official/user/account/login/equipment
         /api/official/user/account/login/new
-        /api/user/account/login
     """
 
     account: str
@@ -61,13 +60,10 @@ class LoginDTO(DataClassJSONMixin):
     password: str
     """Hashed password. Schema: SHA256(MD5(pwd) + randomCode)) or MD5(pwd + randomCode)."""
 
-    timestamp: str = ""
+    timestamp: str
     """Client timestamp in milliseconds."""
 
-    login_method: LoginMethod = field(
-        metadata=field_options(alias="loginMethod"),
-        default=LoginMethod.EMAIL,
-    )
+    login_method: LoginMethod = field(metadata=field_options(alias="loginMethod"))
     """Login method."""
 
     language: str = LANGUAGE
