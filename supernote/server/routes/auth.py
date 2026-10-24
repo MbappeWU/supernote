@@ -90,6 +90,8 @@ async def handle_equipment_unlink(request: web.Request) -> web.Response:
     req_data = await request.json()
     try:
         unlink_req = UnbindEquipmentDTO.from_dict(req_data)
+        if not unlink_req.equipment_no:
+            raise ValueError("Missing equipmentNo")
     except (MissingField, ValueError):
         return web.json_response(
             create_error_response("Invalid request format").to_dict(),

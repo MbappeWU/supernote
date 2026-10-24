@@ -33,13 +33,12 @@ async def test_empty_token(
     }
 
 
-async def test_equipment_unlink(client: TestClient, login_client: LoginClient) -> None:
-    resp = await client.post("/api/terminal/equipment/unlink", json={})
-    assert resp.status == 400
-    data = await resp.json()
-    assert data["errorMsg"] == "Invalid request format"
+async def test_equipment_unlink(login_client: LoginClient) -> None:
+    with pytest.raises(ApiException, match="Invalid request format"):
+        await login_client.unlink_equipment("")
 
-    await login_client.unlink_equipment("EQ123")
+    res = await login_client.unlink_equipment("EQ123")
+    assert res.success is True
 
 
 async def test_check_user_exists(
