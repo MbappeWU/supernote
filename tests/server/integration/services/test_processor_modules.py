@@ -1,50 +1,85 @@
-from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
+from supernote.server.db.models.note_processing import NotePageContentDO
+from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import LocalEventBus
+from supernote.server.services.blob import BlobStorage
+from supernote.server.services.file import FileService
 from supernote.server.services.processor import ProcessorService
-from supernote.server.services.processor_modules.embedding import EmbeddingModule
-from supernote.server.services.processor_modules.ocr import OcrModule
-from supernote.server.services.processor_modules.page_hashing import PageHashingModule
-from supernote.server.services.processor_modules.png_conversion import (
-    PngConversionModule,
-)
-from supernote.server.services.processor_modules.summary import SummaryModule
+from supernote.server.services.processor_modules import ProcessorModule
+from supernote.server.services.summary import SummaryService
+from supernote.server.services.user import UserService
+
+
+@dataclass
+class FakeModule(ProcessorModule):
+    """Fake processor module that records invocations and returns a configured outcome."""
+
+    module_name: str
+    should_succeed: bool = True
+    calls: list[tuple[int, int | None, str | None]] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return self.module_name
+
+    @property
+    def task_type(self) -> str:
+        return self.module_name.upper()
+
+    async def process(
+        self,
+        file_id: int,
+        session_manager: DatabaseSessionManager,
+        page_index: int | None = None,
+        page_id: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        self.calls.append((file_id, page_index, page_id))
+        if not self.should_succeed:
+            raise RuntimeError(f"{self.module_name} failed")
 
 
 @pytest.fixture
-def processor_service() -> ProcessorService:
-    service = ProcessorService(
-        event_bus=MagicMock(spec=LocalEventBus),
-        session_manager=MagicMock(),
-        file_service=MagicMock(),
-        summary_service=MagicMock(),
+def processor_service(
+    storage_root: Path,
+    blob_storage: BlobStorage,
+    user_service: UserService,
+    session_manager: DatabaseSessionManager,
+) -> ProcessorService:
+    event_bus = LocalEventBus()
+    file_service = FileService(
+        storage_root=storage_root,
+        blob_storage=blob_storage,
+        user_service=user_service,
+        session_manager=session_manager,
+        event_bus=event_bus,
     )
-    return service
+    summary_service = SummaryService(
+        user_service=user_service,
+        session_manager=session_manager,
+    )
+    return ProcessorService(
+        event_bus=event_bus,
+        session_manager=session_manager,
+        file_service=file_service,
+        summary_service=summary_service,
+    )
 
 
 async def test_explicit_orchestration_flow(
     processor_service: ProcessorService,
+    session_manager: DatabaseSessionManager,
 ) -> None:
-    # Setup - Create Mocks explicitly
-    hashing = MagicMock(spec=PageHashingModule)
-    hashing.run = AsyncMock(return_value=True)
+    hashing = FakeModule("hashing")
+    png = FakeModule("png")
+    ocr = FakeModule("ocr")
+    embedding = FakeModule("embedding")
+    summary = FakeModule("summary")
 
-    png = MagicMock(spec=PngConversionModule)
-    png.run = AsyncMock(return_value=True)
-
-    ocr = MagicMock(spec=OcrModule)
-    ocr.run = AsyncMock(return_value=True)
-
-    embedding = MagicMock(spec=EmbeddingModule)
-    embedding.run = AsyncMock(return_value=True)
-
-    summary = MagicMock(spec=SummaryModule)
-    summary.run = AsyncMock(return_value=True)
-
-    # Register
     processor_service.register_modules(
         hashing=hashing,
         png=png,
@@ -53,54 +88,40 @@ async def test_explicit_orchestration_flow(
         summary=summary,
     )
 
-    # Mock DB Session (2 pages)
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.all.return_value = [(0, "p0"), (1, "p1")]
-    mock_session.execute.return_value = mock_result
-
-    sm_mock = cast(MagicMock, processor_service.session_manager)
-    sm_mock.session.return_value.__aenter__.return_value = mock_session
-
-    # Execute
     file_id = 123
+    async with session_manager.session() as session:
+        session.add_all(
+            [
+                NotePageContentDO(
+                    file_id=file_id, page_index=0, page_id="p0", content_hash="h0"
+                ),
+                NotePageContentDO(
+                    file_id=file_id, page_index=1, page_id="p1", content_hash="h1"
+                ),
+            ]
+        )
+        await session.commit()
+
     await processor_service.process_file(file_id)
 
-    # Verify flow
-    hashing.run.assert_called_once_with(file_id, sm_mock)
-
-    # Per-Page Pipeline (Parallel across pages)
-    png.run.assert_any_call(file_id, sm_mock, page_index=0, page_id="p0")
-    png.run.assert_any_call(file_id, sm_mock, page_index=1, page_id="p1")
-    ocr.run.assert_any_call(file_id, sm_mock, page_index=0, page_id="p0")
-    embedding.run.assert_any_call(file_id, sm_mock, page_index=0, page_id="p0")
-
-    # Summary (Global) runs last
-    summary.run.assert_called_once_with(file_id, sm_mock)
+    assert hashing.calls == [(file_id, None, None)]
+    assert set(png.calls) == {(file_id, 0, "p0"), (file_id, 1, "p1")}
+    assert set(ocr.calls) == {(file_id, 0, "p0"), (file_id, 1, "p1")}
+    assert set(embedding.calls) == {(file_id, 0, "p0"), (file_id, 1, "p1")}
+    assert summary.calls == [(file_id, None, None)]
 
 
 async def test_dependant_skipping(
     processor_service: ProcessorService,
+    session_manager: DatabaseSessionManager,
 ) -> None:
     """Verify that if a module fails (returns False), the page pipeline stops."""
-    # Setup - Create Mocks explicitly
-    hashing = MagicMock(spec=PageHashingModule)
-    hashing.run = AsyncMock(return_value=True)
+    hashing = FakeModule("hashing")
+    png = FakeModule("png", should_succeed=False)
+    ocr = FakeModule("ocr")
+    embedding = FakeModule("embedding")
+    summary = FakeModule("summary")
 
-    # PNG returns FALSE -> Failure/Stall
-    png = MagicMock(spec=PngConversionModule)
-    png.run = AsyncMock(return_value=False)
-
-    ocr = MagicMock(spec=OcrModule)
-    ocr.run = AsyncMock(return_value=True)
-
-    embedding = MagicMock(spec=EmbeddingModule)
-    embedding.run = AsyncMock(return_value=True)
-
-    summary = MagicMock(spec=SummaryModule)
-    summary.run = AsyncMock(return_value=True)
-
-    # Register
     processor_service.register_modules(
         hashing=hashing,
         png=png,
@@ -109,24 +130,18 @@ async def test_dependant_skipping(
         summary=summary,
     )
 
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.all.return_value = [(0, "p0")]
-    mock_session.execute.return_value = mock_result
-
-    sm_mock = cast(MagicMock, processor_service.session_manager)
-    sm_mock.session.return_value.__aenter__.return_value = mock_session
-
-    # Execute
     file_id = 123
+    async with session_manager.session() as session:
+        session.add(
+            NotePageContentDO(
+                file_id=file_id, page_index=0, page_id="p0", content_hash="h0"
+            )
+        )
+        await session.commit()
+
     await processor_service.process_file(file_id)
 
-    # Verify
-    png.run.assert_called_once_with(file_id, sm_mock, page_index=0, page_id="p0")
-
-    # OCR and Embedding should NOT be checked because PNG returned False
-    ocr.run.assert_not_called()
-    embedding.run.assert_not_called()
-
-    # Summary (Global) should still run
-    summary.run.assert_called_once_with(file_id, sm_mock)
+    assert png.calls == [(file_id, 0, "p0")]
+    assert ocr.calls == []
+    assert embedding.calls == []
+    assert summary.calls == [(file_id, None, None)]
