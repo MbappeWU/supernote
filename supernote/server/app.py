@@ -11,9 +11,9 @@ from aiohttp import web
 from aiohttp.web_urldispatcher import SystemRoute
 from aiohttp_asgi import ASGIResource
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from sqlalchemy import select
 
 from supernote.models.base import create_error_response
+from supernote.models.user import UserRegisterDTO
 from supernote.server.db.migrations import run_migrations
 from supernote.server.mcp.auth import create_auth_app
 from supernote.server.mcp.server import create_mcp_server, run_server, set_services
@@ -24,7 +24,6 @@ from .ai.models.ocr import create_ocr_model
 from .ai.models.summary import create_summary_model
 from .config import AuthConfig, ServerConfig
 from .constants import MAX_UPLOAD_SIZE
-from .db.models.user import UserDO
 from .db.session import DatabaseSessionManager
 from .events import LocalEventBus
 from .metrics import HTTP_REQUEST_DURATION_SECONDS, HTTP_REQUESTS_TOTAL
@@ -374,22 +373,17 @@ def create_app(config: ServerConfig) -> web.Application:
 
 
 async def bootstrap_ephemeral_user(app: web.Application) -> None:
-    """Create a default user for ephemeral mode if it doesn't exist."""
-    session_manager: DatabaseSessionManager = app["session_manager"]
-    async with session_manager.session() as session:
-        # Check if user already exists
-        result = await session.execute(
-            select(UserDO).where(UserDO.email == "debug@example.com")
-        )
-        if not result.scalar_one_or_none():
-            logger.info("Creating default user debug@example.com / password")
-            user = UserDO(
+    """Create a default admin user and system folders for ephemeral mode if not present."""
+    user_service: UserService = app["user_service"]
+    if not await user_service.check_user_exists("debug@example.com"):
+        logger.info("Creating default user debug@example.com / password")
+        await user_service.register(
+            UserRegisterDTO(
                 email="debug@example.com",
-                password_md5=get_md5_hash("password"),
-                display_name="Debug User",
+                password=get_md5_hash("password"),
+                user_name="Debug User",
             )
-            session.add(user)
-            await session.commit()
+        )
 
 
 def run(args: Any) -> None:

@@ -11,10 +11,12 @@ import sys
 import pytest
 from aiohttp.test_utils import TestClient
 from pytest_aiohttp import AiohttpClient
+from sqlalchemy import delete, select
 
 from supernote.models.file_device import FileUploadApplyLocalDTO
-from supernote.server.app import create_app
+from supernote.server.app import bootstrap_ephemeral_user, create_app
 from supernote.server.config import ServerConfig
+from supernote.server.db.models.user import UserDO
 from supernote.server.services.processor_modules.png_conversion import (
     PngConversionModule,
 )
@@ -240,3 +242,27 @@ def test_png_module_registration_matrix(
     page_modules = app["processor_service"].page_modules
     has_png = any(isinstance(m, PngConversionModule) for m in page_modules)
     assert has_png is expected_png
+
+
+async def test_bootstrap_ephemeral_user(client: TestClient) -> None:
+    """Verify bootstrap_ephemeral_user registers debug@example.com as an admin with system folders."""
+    assert client.app is not None
+    session_manager = client.app["session_manager"]
+    async with session_manager.session() as session:
+        await session.execute(delete(UserDO))
+        await session.commit()
+
+    await bootstrap_ephemeral_user(client.app)
+
+    async with session_manager.session() as session:
+        user = (
+            await session.execute(
+                select(UserDO).where(UserDO.email == "debug@example.com")
+            )
+        ).scalar_one()
+        assert user.is_admin is True
+
+    integrity_service = client.app["integrity_service"]
+    report = await integrity_service.verify_user_storage(user.id)
+    assert report.scanned == 8
+    assert report.ok == 8
