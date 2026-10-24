@@ -289,3 +289,67 @@ async def test_summary_transcript_with_dates(
     assert "--- Page 1 ---" in transcript.content
     assert "Page ID: P20231027120000abc" in transcript.content
     assert "Page Date (Inferred): 2023-10-27" in transcript.content
+
+
+async def test_summary_waits_until_all_pages_have_ocr_text(
+    summary_module: SummaryModule,
+    session_manager: DatabaseSessionManager,
+    fake_summary_model: FakeSummaryModel,
+) -> None:
+    user_id = 105
+    user_email = "partial@example.com"
+    file_id = 555
+
+    async with session_manager.session() as session:
+        session.add(UserDO(id=user_id, email=user_email, password_md5="hash"))
+        session.add(
+            UserFileDO(
+                id=file_id,
+                user_id=user_id,
+                storage_key="partial_key",
+                file_name="partial.note",
+                directory_id=0,
+            )
+        )
+        session.add_all(
+            [
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=0,
+                    page_id="p0",
+                    content_hash="h0",
+                    text_content="Page 1 text",
+                ),
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=1,
+                    page_id="p1",
+                    content_hash="h1",
+                    text_content=None,
+                ),
+            ]
+        )
+        await session.commit()
+
+    # While page 2 still has text_content=None, SummaryModule must wait
+    assert await summary_module.run_if_needed(file_id, session_manager) is False
+    await summary_module.run(file_id, session_manager)
+    assert fake_summary_model.calls == []
+
+    # Once page 2 OCR finishes, SummaryModule runs and marks SUMMARY_GENERATION COMPLETED
+    async with session_manager.session() as session:
+        p1 = (
+            await session.execute(
+                select(NotePageContentDO)
+                .where(NotePageContentDO.file_id == file_id)
+                .where(NotePageContentDO.page_id == "p1")
+            )
+        ).scalar_one()
+        p1.text_content = "Page 2 text"
+        await session.commit()
+
+    assert await summary_module.run_if_needed(file_id, session_manager) is True
+    await summary_module.run(file_id, session_manager)
+    assert len(fake_summary_model.calls) == 1
+    assert "Page 1 text" in fake_summary_model.calls[0]
+    assert "Page 2 text" in fake_summary_model.calls[0]

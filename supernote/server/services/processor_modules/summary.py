@@ -72,7 +72,25 @@ class SummaryModule(ProcessorModule):
         if page_index is not None:
             return False
 
-        return await super().run_if_needed(file_id, session_manager, page_index)
+        if not await super().run_if_needed(file_id, session_manager, page_index):
+            return False
+
+        async with session_manager.session() as session:
+            pages = (
+                (
+                    await session.execute(
+                        select(NotePageContentDO.text_content).where(
+                            NotePageContentDO.file_id == file_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not pages or any(text is None for text in pages):
+                return False
+
+        return True
 
     async def process(
         self,
