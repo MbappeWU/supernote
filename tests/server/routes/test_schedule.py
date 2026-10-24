@@ -919,18 +919,14 @@ async def test_task_update_preserves_last_modified_and_clears_nullable_fields(
     assert repopulated.recurrence == "FREQ=DAILY;INTERVAL=1"
     assert repopulated.links == link_b64
 
-    # 3. Partial single update with explicit null values clears those nullable fields
-    raw_resp = await authenticated_client.put(
-        "/api/file/schedule/task",
-        json={
-            "taskId": task_id,
-            "links": None,
-            "recurrence": None,
-            "taskListId": None,
-            "lastModified": 1710000700000,
-        },
+    # 3. Partial single update with explicit None values clears those nullable fields
+    await schedule.update_task(
+        task_id,
+        links=None,
+        recurrence=None,
+        task_list_id=None,
+        last_modified_ms=1710000700000,
     )
-    assert raw_resp.status == 200
     after_partial_clear = await schedule.get_task(task_id)
     assert after_partial_clear.last_modified == 1710000700000
     assert after_partial_clear.links is None

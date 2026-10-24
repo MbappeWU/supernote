@@ -24,6 +24,8 @@ from supernote.models.schedule import (
 
 from .client import Client
 
+_UNSET = object()
+
 
 class ScheduleClient:
     """Client for Schedule APIs using standard DTOs."""
@@ -208,15 +210,15 @@ class ScheduleClient:
         self,
         task_id: str,
         title: str | None = None,
-        detail: str | None = None,
+        detail: str | None | object = _UNSET,
         status: str | None = None,
-        importance: str | None = None,
+        importance: str | None | object = _UNSET,
         due_time: int | None = None,
         completed_time_ms: int | None = None,
-        recurrence: str | None = None,
+        recurrence: str | None | object = _UNSET,
         is_reminder_on: bool | None = None,
-        links: str | None = None,
-        task_list_id: str | None = None,
+        links: str | None | object = _UNSET,
+        task_list_id: str | None | object = _UNSET,
         last_modified_ms: int | None = None,
     ) -> UpdateScheduleTaskVO:
         """Update a task using DTO."""
@@ -227,25 +229,35 @@ class ScheduleClient:
         dto = UpdateScheduleTaskDTO(
             task_id=task_id,
             title=title,
-            detail=detail,
+            detail=detail if isinstance(detail, str) else None,
             status=status,
-            importance=importance,
+            importance=importance if isinstance(importance, str) else None,
             due_time=due_time,
             completed_time=completed_time_ms,
-            recurrence=recurrence,
+            recurrence=recurrence if isinstance(recurrence, str) else None,
             is_reminder_on=is_reminder_on_value,
-            links=links,
-            task_list_id=task_list_id,
+            links=links if isinstance(links, str) else None,
+            task_list_id=task_list_id if isinstance(task_list_id, str) else None,
             last_modified=(
                 last_modified_ms
                 if last_modified_ms is not None
                 else int(time.time() * 1000)
             ),
         )
+        payload = dto.to_dict()
+        for alias, value in (
+            ("detail", detail),
+            ("importance", importance),
+            ("recurrence", recurrence),
+            ("links", links),
+            ("taskListId", task_list_id),
+        ):
+            if value is None:
+                payload[alias] = None
         return await self._client.put_json(
             "/api/file/schedule/task",
             UpdateScheduleTaskVO,
-            json=dto.to_dict(),
+            json=payload,
         )
 
     async def batch_update_tasks(
