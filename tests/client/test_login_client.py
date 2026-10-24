@@ -11,6 +11,8 @@ from supernote.client.exceptions import ApiException, SmsVerificationRequired
 from supernote.client.hashing import hash_password
 from supernote.client.login_client import LoginClient
 from supernote.models.auth import LoginVO, RandomCodeVO
+from supernote.models.base import BaseResponse
+from supernote.models.user import UserCheckVO
 
 
 async def handler_csrf(request: web.Request) -> web.Response:
@@ -318,3 +320,44 @@ async def test_login_headers(aiohttp_client) -> None:
     headers = data["data"]
     assert headers.get("Referer") == base_url.rstrip("/")
     assert headers.get("Origin") == base_url.rstrip("/")
+
+
+async def test_login_client_user_checks(aiohttp_client: AiohttpClient) -> None:
+    """Test check_user_exists and check_user_registration in LoginClient."""
+
+    async def handler_check_server(request: web.Request) -> web.Response:
+        data = await request.json()
+        if data.get("email") == "user@example.com":
+            return web.json_response(
+                {
+                    "success": True,
+                    "userId": 42,
+                    "uniqueMachineId": "machine-uuid",
+                    "dms": "ALL",
+                }
+            )
+        return web.json_response(
+            {"success": False, "errorCode": "E0018", "errorMsg": "User not found"}
+        )
+
+    async def handler_check_reg(request: web.Request) -> web.Response:
+        return web.json_response({"success": True})
+
+    app = web.Application()
+    app.router.add_get("/api/csrf", handler_csrf)
+    app.router.add_post("/api/official/user/check/exists/server", handler_check_server)
+    app.router.add_post("/api/user/check/exists", handler_check_reg)
+
+    test_client = await aiohttp_client(app)
+    base_url = str(test_client.make_url(""))
+    client = Client(test_client.session, host=base_url)
+    login_client = LoginClient(client)
+
+    assert await login_client.check_user_exists("user@example.com") == UserCheckVO(
+        user_id=42,
+        unique_machine_id="machine-uuid",
+        dms="ALL",
+    )
+    assert await login_client.check_user_registration(email="new@example.com") == (
+        BaseResponse()
+    )

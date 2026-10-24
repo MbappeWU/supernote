@@ -10,6 +10,7 @@ from supernote.client.client import Client
 from supernote.client.exceptions import ApiException, UnauthorizedException
 from supernote.client.login_client import LoginClient
 from supernote.client.web import WebClient
+from supernote.models.base import BaseResponse
 from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import UserCheckVO
 from supernote.server.config import ServerConfig
@@ -84,83 +85,43 @@ async def test_equipment_unlink(
 
 
 async def test_check_user_exists(
-    client: TestClient,
     login_client: LoginClient,
     user_service: UserService,
     create_test_user: None,
 ) -> None:
-    bad_resp = await client.post("/api/official/user/check/exists/server", json={})
-    assert bad_resp.status == 400
-    assert (await bad_resp.json())["errorMsg"] == "Invalid request format"
+    with pytest.raises(ApiException, match="Invalid request format"):
+        await login_client.check_user_exists("")
 
     user_id = await user_service.get_user_id("test@example.com")
-    resp = await client.post(
-        "/api/official/user/check/exists/server", json={"email": "test@example.com"}
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    machine_id = data.get("uniqueMachineId")
-    assert isinstance(machine_id, str) and len(machine_id) > 0
-    assert data == {
-        "success": True,
-        "userId": user_id,
-        "uniqueMachineId": machine_id,
-        "dms": "ALL",
-    }
-
-    assert await login_client.check_user_exists("test@example.com") == UserCheckVO(
+    res = await login_client.check_user_exists("test@example.com")
+    assert isinstance(res.unique_machine_id, str) and len(res.unique_machine_id) > 0
+    assert res == UserCheckVO(
         user_id=user_id,
-        unique_machine_id=machine_id,
+        unique_machine_id=res.unique_machine_id,
         dms="ALL",
     )
 
-    resp = await client.post(
-        "/api/official/user/check/exists/server",
-        json={"email": "unknown@example.com"},
-    )
-    assert resp.status == 200
-    assert await resp.json() == {
-        "success": False,
-        "errorCode": "E0018",
-        "errorMsg": "User not found",
-    }
+    with pytest.raises(ApiException, match="User not found"):
+        await login_client.check_user_exists("unknown@example.com")
 
 
 async def test_check_user_registration(
-    client: TestClient,
-    user_service: UserService,
+    login_client: LoginClient,
     create_test_user: None,
 ) -> None:
-    bad_resp = await client.post("/api/user/check/exists", json={})
-    assert bad_resp.status == 400
-    assert (await bad_resp.json())["errorMsg"] == "Invalid request format"
+    with pytest.raises(ApiException, match="Invalid request format"):
+        await login_client.check_user_registration()
 
-    dup_email_resp = await client.post(
-        "/api/user/check/exists", json={"email": "test@example.com"}
-    )
-    assert dup_email_resp.status == 200
-    assert await dup_email_resp.json() == {
-        "success": False,
-        "errorCode": "E0105",
-        "errorMsg": "Email already registered",
-    }
+    with pytest.raises(ApiException, match="Email already registered"):
+        await login_client.check_user_registration(email="test@example.com")
 
-    dup_name_resp = await client.post(
-        "/api/user/check/exists", json={"userName": "Test User"}
-    )
-    assert dup_name_resp.status == 200
-    assert await dup_name_resp.json() == {
-        "success": False,
-        "errorCode": "E0107",
-        "errorMsg": "Username already exists",
-    }
+    with pytest.raises(ApiException, match="Username already exists"):
+        await login_client.check_user_registration(user_name="Test User")
 
-    avail_resp = await client.post(
-        "/api/user/check/exists",
-        json={"email": "available@example.com"},
+    assert (
+        await login_client.check_user_registration(email="available@example.com")
+        == BaseResponse()
     )
-    assert avail_resp.status == 200
-    assert await avail_resp.json() == {"success": True}
 
 
 async def test_login_invalid_credentials(login_client: LoginClient) -> None:
