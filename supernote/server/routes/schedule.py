@@ -34,11 +34,23 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 
+TASK_NULLABLE_FIELD_ALIASES: dict[str, str] = {
+    "task_list_id": "taskListId",
+    "detail": "detail",
+    "importance": "importance",
+    "recurrence": "recurrence",
+    "links": "links",
+}
+
+
 def _extract_task_updates(
-    dto: UpdateScheduleTaskDTO, *, clear_missing_task_list: bool = False
+    dto: UpdateScheduleTaskDTO,
+    *,
+    raw_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Extract populated update fields from UpdateScheduleTaskDTO into a service dict."""
     updates: dict[str, Any] = {}
+    is_full_snapshot = dto.is_deleted is not None
     if dto.last_modified is not None and dto.last_modified != 0:
         updates["update_time"] = dto.last_modified
     for f in fields(dto):
@@ -50,8 +62,13 @@ def _extract_task_updates(
                 updates["is_reminder_on"] = val == BooleanEnum.YES
             else:
                 updates[f.name] = val
-        elif clear_missing_task_list and f.name == "task_list_id":
-            updates["task_list_id"] = None
+        elif f.name in TASK_NULLABLE_FIELD_ALIASES and (
+            is_full_snapshot
+            or (
+                raw_data is not None and TASK_NULLABLE_FIELD_ALIASES[f.name] in raw_data
+            )
+        ):
+            updates[f.name] = None
     return updates
 
 
@@ -276,7 +293,9 @@ async def update_task(request: web.Request) -> web.Response:
         schedule_service: ScheduleService = request.app["schedule_service"]
         user_id = await request.app["user_service"].get_user_id(user)
 
-        updates = _extract_task_updates(dto)
+        updates = _extract_task_updates(
+            dto, raw_data=data if isinstance(data, dict) else None
+        )
         if not (
             updated_task := await schedule_service.update_task(
                 user_id, dto.task_id, **updates
@@ -303,12 +322,20 @@ async def batch_update_task_list(request: web.Request) -> web.Response:
         schedule_service: ScheduleService = request.app["schedule_service"]
         user_id = await request.app["user_service"].get_user_id(user)
 
+        raw_items = (
+            data.get("updateScheduleTaskList") if isinstance(data, dict) else None
+        )
         updates_list: list[dict[str, Any]] = []
-        for item in dto.update_schedule_task_list:
+        for idx, item in enumerate(dto.update_schedule_task_list):
             if item.task_id:
-                item_updates = _extract_task_updates(
-                    item, clear_missing_task_list=item.is_deleted is not None
+                raw_item = (
+                    raw_items[idx]
+                    if isinstance(raw_items, list)
+                    and idx < len(raw_items)
+                    and isinstance(raw_items[idx], dict)
+                    else None
                 )
+                item_updates = _extract_task_updates(item, raw_data=raw_item)
                 item_updates["task_id"] = item.task_id
                 updates_list.append(item_updates)
 

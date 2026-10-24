@@ -40,6 +40,14 @@ TASK_SORT_FIELDS: set[str] = {
 
 TASK_ALLOWED_UPDATE_FIELDS: set[str] = TASK_BASE_FIELDS | TASK_SORT_FIELDS | {"links"}
 
+TASK_NULLABLE_FIELDS: set[str] = {
+    "task_list_id",
+    "detail",
+    "importance",
+    "recurrence",
+    "links",
+}
+
 
 class ScheduleService:
     """Schedule service."""
@@ -346,7 +354,7 @@ class ScheduleService:
                     k: v
                     for k, v in item.items()
                     if k in TASK_ALLOWED_UPDATE_FIELDS
-                    and (v is not None or k == "task_list_id")
+                    and (v is not None or k in TASK_NULLABLE_FIELDS)
                 }
                 if not updates:
                     continue

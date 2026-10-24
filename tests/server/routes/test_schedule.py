@@ -13,6 +13,7 @@ from supernote.models.schedule import (
     AddScheduleTaskVO,
     ScheduleTaskGroupItem,
     ScheduleTaskLinkDTO,
+    UpdateScheduleTaskDTO,
     UpdateScheduleTaskVO,
 )
 
@@ -828,21 +829,18 @@ async def test_batch_move_task_between_group_and_inbox(
     moved_detail = await schedule.get_task(inbox_vo.task_id)
     assert moved_detail.task_list_id == group_vo.task_list_id
 
-    batch_resp = await authenticated_client.put(
-        "/api/file/schedule/task/list",
-        json={
-            "updateScheduleTaskList": [
-                {
-                    "taskId": inbox_vo.task_id,
-                    "title": "Inbox Item B Back in Inbox",
-                    "status": "needsAction",
-                    "isDeleted": "N",
-                    "lastModified": 1710000200000,
-                }
-            ]
-        },
+    batch_res = await schedule.batch_update_tasks(
+        [
+            UpdateScheduleTaskDTO(
+                task_id=inbox_vo.task_id,
+                title="Inbox Item B Back in Inbox",
+                status="needsAction",
+                is_deleted=BooleanEnum.NO,
+                last_modified=1710000200000,
+            )
+        ]
     )
-    assert batch_resp.status == 200
+    assert batch_res.success is True
     back_detail = await schedule.get_task(inbox_vo.task_id)
     assert back_detail.task_list_id is None
     assert back_detail.title == "Inbox Item B Back in Inbox"
@@ -852,28 +850,94 @@ async def test_batch_move_task_between_group_and_inbox(
     await schedule.delete_group(group_vo.task_list_id)
 
 
-async def test_task_update_preserves_last_modified(
+async def test_task_update_preserves_last_modified_and_clears_nullable_fields(
     authenticated_client: Client,
 ) -> None:
-    """Verify PUT /api/file/schedule/task and /task/list preserve client lastModified."""
+    """Verify PUT /api/file/schedule/task and /task/list preserve lastModified and clear nullable fields."""
     schedule = ScheduleClient(authenticated_client)
 
-    group_vo = await schedule.create_group("LastModified Group")
+    group_vo = await schedule.create_group("Nullable Fields Group")
     assert group_vo.task_list_id is not None
     group_id = group_vo.task_list_id
 
-    task_vo = await schedule.create_task(group_id, "Task With Timestamp")
+    link_b64 = ScheduleTaskLinkDTO(
+        app_name="Note", path="/Note/Test.note", page=1
+    ).to_b64()
+    task_vo = await schedule.create_task(
+        group_id,
+        "Task With All Optional Fields",
+        detail="Some notes",
+        importance="high",
+        recurrence="FREQ=WEEKLY;INTERVAL=1",
+        links=link_b64,
+    )
     assert task_vo.task_id is not None
     task_id = task_vo.task_id
 
+    # 1. Full device snapshot via batch_update_tasks clears omitted nullable fields and preserves lastModified
+    res = await schedule.batch_update_tasks(
+        [
+            UpdateScheduleTaskDTO(
+                task_id=task_id,
+                title="Task Cleared via Snapshot",
+                status="needsAction",
+                is_reminder_on=BooleanEnum.NO,
+                is_deleted=BooleanEnum.NO,
+                last_modified=1710000500000,
+                sort=2,
+                sort_time=1710000500000,
+            )
+        ]
+    )
+    assert res.success is True
+
+    detail = await schedule.get_task(task_id)
+    assert detail.title == "Task Cleared via Snapshot"
+    assert detail.last_modified == 1710000500000
+    assert detail.task_list_id is None
+    assert detail.detail is None
+    assert detail.importance is None
+    assert detail.recurrence is None
+    assert detail.links is None
+
+    # 2. Repopulate via single update_task and verify client lastModified is preserved
     await schedule.update_task(
         task_id,
-        title="Task Updated Single",
+        title="Task Repopulated",
+        detail="New detail",
+        importance="low",
+        recurrence="FREQ=DAILY;INTERVAL=1",
+        links=link_b64,
+        task_list_id=group_id,
         last_modified_ms=1710000600000,
     )
-    detail = await schedule.get_task(task_id)
-    assert detail.title == "Task Updated Single"
-    assert detail.last_modified == 1710000600000
+    repopulated = await schedule.get_task(task_id)
+    assert repopulated.last_modified == 1710000600000
+    assert repopulated.task_list_id == group_id
+    assert repopulated.detail == "New detail"
+    assert repopulated.importance == "low"
+    assert repopulated.recurrence == "FREQ=DAILY;INTERVAL=1"
+    assert repopulated.links == link_b64
+
+    # 3. Partial single update with explicit null values clears those nullable fields
+    raw_resp = await authenticated_client.put(
+        "/api/file/schedule/task",
+        json={
+            "taskId": task_id,
+            "links": None,
+            "recurrence": None,
+            "taskListId": None,
+            "lastModified": 1710000700000,
+        },
+    )
+    assert raw_resp.status == 200
+    after_partial_clear = await schedule.get_task(task_id)
+    assert after_partial_clear.last_modified == 1710000700000
+    assert after_partial_clear.links is None
+    assert after_partial_clear.recurrence is None
+    assert after_partial_clear.task_list_id is None
+    assert after_partial_clear.detail == "New detail"
+    assert after_partial_clear.importance == "low"
 
     await schedule.delete_task(task_id)
     await schedule.delete_group(group_id)

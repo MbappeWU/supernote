@@ -439,6 +439,7 @@ class UpdateScheduleTaskDTO(DataClassJSONMixin):
 
     class Config(BaseConfig):
         serialize_by_alias = True
+        omit_none = True
 
 
 @dataclass
@@ -458,6 +459,7 @@ class UpdateScheduleTaskListDTO(DataClassJSONMixin):
 
     class Config(BaseConfig):
         serialize_by_alias = True
+        omit_none = True
 
 
 @dataclass

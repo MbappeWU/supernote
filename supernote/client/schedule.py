@@ -18,6 +18,7 @@ from supernote.models.schedule import (
     ScheduleTaskVO,
     UpdateScheduleTaskDTO,
     UpdateScheduleTaskGroupDTO,
+    UpdateScheduleTaskListDTO,
     UpdateScheduleTaskVO,
 )
 
@@ -206,13 +207,15 @@ class ScheduleClient:
     async def update_task(
         self,
         task_id: str,
-        title: str,
+        title: str | None = None,
         detail: str | None = None,
         status: str | None = None,
         importance: str | None = None,
         due_time: int | None = None,
+        completed_time_ms: int | None = None,
         recurrence: str | None = None,
         is_reminder_on: bool | None = None,
+        links: str | None = None,
         task_list_id: str | None = None,
         last_modified_ms: int | None = None,
     ) -> UpdateScheduleTaskVO:
@@ -228,8 +231,10 @@ class ScheduleClient:
             status=status,
             importance=importance,
             due_time=due_time,
+            completed_time=completed_time_ms,
             recurrence=recurrence,
             is_reminder_on=is_reminder_on_value,
+            links=links,
             task_list_id=task_list_id,
             last_modified=(
                 last_modified_ms
@@ -238,7 +243,25 @@ class ScheduleClient:
             ),
         )
         return await self._client.put_json(
-            "/api/file/schedule/task", UpdateScheduleTaskVO, json=dto.to_dict()
+            "/api/file/schedule/task",
+            UpdateScheduleTaskVO,
+            json=dto.to_dict(),
+        )
+
+    async def batch_update_tasks(
+        self,
+        tasks: list[UpdateScheduleTaskDTO],
+        task_list_id: str | None = None,
+    ) -> BaseResponse:
+        """Batch update a list of schedule tasks."""
+        dto = UpdateScheduleTaskListDTO(
+            task_list_id=task_list_id,
+            update_schedule_task_list=tasks,
+        )
+        return await self._client.put_json(
+            "/api/file/schedule/task/list",
+            BaseResponse,
+            json=dto.to_dict(),
         )
 
     async def delete_task(self, task_id: str) -> None:
