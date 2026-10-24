@@ -87,7 +87,17 @@ class SummaryModule(ProcessorModule):
                 .scalars()
                 .all()
             )
-            if not pages or any(text is None for text in pages):
+            if not pages:
+                logger.debug(
+                    f"No pages found for file {file_id}; skipping summary generation"
+                )
+                return False
+            missing_count = sum(1 for text in pages if text is None)
+            if missing_count > 0:
+                logger.warning(
+                    f"OCR prerequisite not met for summary of file {file_id} "
+                    f"({missing_count}/{len(pages)} pages missing text)"
+                )
                 return False
 
         return True

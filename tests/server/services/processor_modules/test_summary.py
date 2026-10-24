@@ -295,6 +295,7 @@ async def test_summary_waits_until_all_pages_have_ocr_text(
     summary_module: SummaryModule,
     session_manager: DatabaseSessionManager,
     fake_summary_model: FakeSummaryModel,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     user_id = 105
     user_email = "partial@example.com"
@@ -331,8 +332,13 @@ async def test_summary_waits_until_all_pages_have_ocr_text(
         )
         await session.commit()
 
-    # While page 2 still has text_content=None, SummaryModule must wait
-    assert await summary_module.run_if_needed(file_id, session_manager) is False
+    # While page 2 still has text_content=None, SummaryModule must wait and log why
+    with caplog.at_level("WARNING"):
+        assert await summary_module.run_if_needed(file_id, session_manager) is False
+    assert (
+        f"OCR prerequisite not met for summary of file {file_id} (1/2 pages missing text)"
+        in caplog.text
+    )
     await summary_module.run(file_id, session_manager)
     assert fake_summary_model.calls == []
 
