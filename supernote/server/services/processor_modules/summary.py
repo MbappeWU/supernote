@@ -72,7 +72,35 @@ class SummaryModule(ProcessorModule):
         if page_index is not None:
             return False
 
-        return await super().run_if_needed(file_id, session_manager, page_index)
+        if not await super().run_if_needed(file_id, session_manager, page_index):
+            return False
+
+        async with session_manager.session() as session:
+            pages = (
+                (
+                    await session.execute(
+                        select(NotePageContentDO.text_content).where(
+                            NotePageContentDO.file_id == file_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not pages:
+                logger.debug(
+                    f"No pages found for file {file_id}; skipping summary generation"
+                )
+                return False
+            missing_count = sum(1 for text in pages if text is None)
+            if missing_count > 0:
+                logger.warning(
+                    f"OCR prerequisite not met for summary of file {file_id} "
+                    f"({missing_count}/{len(pages)} pages missing text)"
+                )
+                return False
+
+        return True
 
     async def process(
         self,
