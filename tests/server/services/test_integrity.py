@@ -5,8 +5,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.client.device import DeviceClient
+from supernote.models.base import ProcessingStatus, TaskType
 from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
+from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage, LocalBlobStorage
 from supernote.server.services.integrity import IntegrityService
@@ -172,3 +174,72 @@ async def test_integrity_basic(
     assert report.hash_mismatch == 0
     assert report.scanned == 8  # Default folders
     assert report.ok == 8
+
+
+async def test_integrity_pipeline_issues(
+    integrity_service: IntegrityService,
+    blob_storage: LocalBlobStorage,
+    test_user_id: int,
+    db_session: AsyncSession,
+) -> None:
+    """Verify note processing pipeline and cache artifact checks."""
+    content = b"note-bytes"
+    key = str(uuid.uuid4())
+    meta = await blob_storage.put(USER_DATA_BUCKET, key, content)
+    note_do = UserFileDO(
+        user_id=test_user_id,
+        file_name="broken_pipeline.note",
+        is_folder="N",
+        directory_id=0,
+        size=len(content),
+        md5=meta.content_md5,
+        storage_key=key,
+        is_active="Y",
+    )
+    db_session.add(note_do)
+    await db_session.flush()
+
+    db_session.add_all(
+        [
+            SystemTaskDO(
+                file_id=note_do.id,
+                task_type=TaskType.SUMMARY_GENERATION.value,
+                key="global",
+                status=ProcessingStatus.FAILED,
+                last_error="Gemini quota exceeded",
+            ),
+            SystemTaskDO(
+                file_id=note_do.id,
+                task_type=TaskType.PNG_CONVERSION.value,
+                key="page_1",
+                status=ProcessingStatus.COMPLETED,
+            ),
+            SystemTaskDO(
+                file_id=note_do.id,
+                task_type=TaskType.OCR_EXTRACTION.value,
+                key="page_1",
+                status=ProcessingStatus.COMPLETED,
+            ),
+            NotePageContentDO(
+                file_id=note_do.id,
+                page_index=0,
+                page_id="page_1",
+                text_content=None,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    file_report = await integrity_service.verify_user_storage(
+        test_user_id, file_id=note_do.id
+    )
+    assert file_report.scanned == 1
+    assert file_report.pipeline_issues == 1
+    assert file_report.ok == 0
+
+    issue_types = {issue.issue_type for issue in file_report.issues}
+    assert issue_types == {
+        "task_failed",
+        "missing_cache_blob",
+        "missing_page_content",
+    }
