@@ -451,6 +451,20 @@ class QueueStatusVO(BaseResponse):
     """List of file IDs currently being processed."""
 
 
+@dataclass
+class IntegrityIssueVO(DataClassJSONMixin):
+    """Details of a single storage integrity issue."""
+
+    user_id: int = field(metadata=field_options(alias="userId"))
+    file_id: int = field(metadata=field_options(alias="fileId"))
+    file_name: str = field(metadata=field_options(alias="fileName"))
+    issue_type: str = field(metadata=field_options(alias="issueType"))
+    detail: str
+
+    class Config(BaseConfig):
+        serialize_by_alias = True
+
+
 @dataclass(kw_only=True)
 class IntegrityReportVO(BaseResponse):
     """Storage integrity report response.
@@ -476,3 +490,6 @@ class IntegrityReportVO(BaseResponse):
 
     ok: int = 0
     """Number of nodes that passed all integrity checks."""
+
+    issues: list[IntegrityIssueVO] = field(default_factory=list)
+    """Detailed list of detected integrity issues."""

@@ -88,6 +88,16 @@ async def test_integrity_check(
     # Scanned: 8 (default folders) + Docs + good + bad_size = 11
     assert report.scanned == 11
     assert report.ok == 9  # Some default folders are ok
+    assert {i.issue_type for i in report.issues} == {"missing_blob", "size_mismatch"}
+    assert {i.file_name for i in report.issues} == {"good.txt", "bad_size.txt"}
+
+    file_report = await integrity_service.verify_user_storage(
+        user_id, file_id=good_file.id
+    )
+    assert file_report.scanned == 1
+    assert file_report.missing_blob == 1
+    assert len(file_report.issues) == 1
+    assert file_report.issues[0].file_id == good_file.id
 
 
 async def test_integrity_orphans(

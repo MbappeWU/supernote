@@ -11,11 +11,10 @@ from supernote.models.base import (
     create_error_response,
 )
 from supernote.models.extended import SystemTaskListVO, SystemTaskVO
-from supernote.models.system import IntegrityReportVO, QueueStatusVO
+from supernote.models.system import QueueStatusVO
 from supernote.models.user import UserRegisterDTO
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import SystemTaskDO
-from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import LocalEventBus, NoteUpdatedEvent
 from supernote.server.exceptions import SupernoteError
@@ -191,38 +190,30 @@ async def handle_reprocess(request: web.Request) -> web.Response:
 @routes.get("/api/admin/integrity")
 @require_admin
 async def handle_verify_integrity(request: web.Request) -> web.Response:
-    """Verify VFS and blob storage integrity (Admin only)."""
+    """Verify VFS and blob storage integrity for a user (Admin only)."""
     user_id_str = request.query.get("user_id")
+    file_id_str = request.query.get("file_id")
+
+    if user_id_str is None:
+        return web.json_response(
+            create_error_response("Missing required parameter: user_id").to_dict(),
+            status=400,
+        )
 
     try:
-        user_id = int(user_id_str) if user_id_str is not None else None
+        user_id = int(user_id_str)
+        file_id = int(file_id_str) if file_id_str is not None else None
     except ValueError:
         return web.json_response(
-            create_error_response("Invalid user_id").to_dict(),
+            create_error_response("Invalid user_id or file_id").to_dict(),
             status=400,
         )
 
     integrity_service: IntegrityService = request.app["integrity_service"]
-    session_manager: DatabaseSessionManager = request.app["session_manager"]
-
-    if user_id is not None:
-        user_ids = [user_id]
-    else:
-        async with session_manager.session() as session:
-            result = await session.execute(select(UserDO.id))
-            user_ids = list(result.scalars().all())
-
-    vo = IntegrityReportVO()
-    for uid in user_ids:
-        report = await integrity_service.verify_user_storage(uid)
-        vo.scanned += report.scanned
-        vo.missing_blob += report.missing_blob
-        vo.size_mismatch += report.size_mismatch
-        vo.hash_mismatch += report.hash_mismatch
-        vo.orphans += report.orphans
-        vo.ok += report.ok
-
-    return web.json_response(vo.to_dict())
+    report = await integrity_service.verify_user_storage(
+        user_id=user_id, file_id=file_id
+    )
+    return web.json_response(report.to_dict())
 
 
 @routes.get("/api/admin/tasks")

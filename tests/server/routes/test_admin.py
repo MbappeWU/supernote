@@ -313,18 +313,28 @@ async def test_admin_reprocess(
 async def test_admin_integrity(
     admin_api_client: AdminClient,
     user_service: UserService,
+    session_manager: DatabaseSessionManager,
 ) -> None:
     """Test admin integrity endpoint returns report via AdminClient."""
-    report = await admin_api_client.verify_integrity()
-    assert report.success is True
-    assert report.scanned >= 16  # 2 users * 8 default folders
-    assert report.ok == report.scanned
-
     user_id = await user_service.get_user_id("user@example.com")
     assert user_id is not None
     user_report = await admin_api_client.verify_integrity(user_id=user_id)
+    assert user_report.success is True
     assert user_report.scanned == 8
     assert user_report.ok == 8
+    assert user_report.issues == []
+
+    async with session_manager.session() as session:
+        result = await session.execute(
+            select(UserFileDO.id).where(UserFileDO.user_id == user_id).limit(1)
+        )
+        folder_id = result.scalar_one()
+
+    file_report = await admin_api_client.verify_integrity(
+        user_id=user_id, file_id=folder_id
+    )
+    assert file_report.scanned == 1
+    assert file_report.ok == 1
 
 
 async def test_admin_integrity_permission(
@@ -332,17 +342,24 @@ async def test_admin_integrity_permission(
 ) -> None:
     """Test non-admin user cannot access integrity endpoint."""
     with pytest.raises(ForbiddenException):
-        await user_api_client.verify_integrity()
+        await user_api_client.verify_integrity(user_id=1)
 
 
-async def test_admin_integrity_invalid_user_id(
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"user_id": "abc"},
+        {"user_id": "1", "file_id": "abc"},
+    ],
+)
+async def test_admin_integrity_invalid_params(
     admin_api_client: AdminClient,
+    params: dict[str, str],
 ) -> None:
-    """Test invalid user_id query parameter returns 400."""
+    """Test missing or invalid user_id / file_id query parameters return 400."""
     with pytest.raises(BadRequestException):
-        await admin_api_client.client.get(
-            "/api/admin/integrity", params={"user_id": "abc"}
-        )
+        await admin_api_client.client.get("/api/admin/integrity", params=params)
 
 
 async def test_admin_list_tasks(
