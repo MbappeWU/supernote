@@ -3,6 +3,7 @@
 import hashlib
 import math
 from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 
@@ -405,6 +406,25 @@ async def test_delete_user_data_purges_summaries_tags_and_isolated_blobs(
         )
         await session.commit()
 
+    # Transient OSError during blob deletion preserves DB metadata so retry finishes cleanup
+    orig_delete = blob_storage.delete
+    calls = 0
+
+    async def flaky_delete(bucket: str, key: str) -> None:
+        nonlocal calls
+        calls += 1
+        if key == u1_exclusive_hw and calls == 1:
+            raise OSError("Simulated transient storage failure")
+        await orig_delete(bucket, key)
+
+    with (
+        patch.object(blob_storage, "delete", side_effect=flaky_delete),
+        pytest.raises(OSError, match="Simulated transient storage failure"),
+    ):
+        await summary_service.delete_user_data(u1_id)
+
+    # Metadata is still intact after transient failure; retry completes idempotently
+    assert len(await summary_service.list_summaries(USER_EMAIL)) == 4
     await summary_service.delete_user_data(u1_id)
 
     assert await summary_service.list_tags(USER_EMAIL) == []
