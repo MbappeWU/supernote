@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from supernote.models.base import TaskType
 from supernote.server.ai.models.fake.embedding import FakeEmbeddingModel
 from supernote.server.ai.models.fake.ocr import FakeOcrModel
 from supernote.server.ai.models.fake.summary import FakeSummaryModel
@@ -89,8 +90,8 @@ class SlowModule(ProcessorModule):
         return self._name
 
     @property
-    def task_type(self) -> str:
-        return "SLOW_TASK"
+    def task_type(self) -> TaskType:
+        return TaskType.PNG_CONVERSION
 
     async def run_if_needed(self, *args: object, **kwargs: object) -> bool:
         return True

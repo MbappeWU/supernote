@@ -1,6 +1,7 @@
 import json
 import logging
 
+from supernote.models.base import TaskType
 from supernote.server.ai.models.embedding import EmbeddingModel, EmbeddingTaskType
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.file import FileService
@@ -26,8 +27,8 @@ class EmbeddingModule(ProcessorModule):
         return "EmbeddingModule"
 
     @property
-    def task_type(self) -> str:
-        return "EMBEDDING_GENERATION"
+    def task_type(self) -> TaskType:
+        return TaskType.EMBEDDING_GENERATION
 
     @property
     def enabled(self) -> bool:

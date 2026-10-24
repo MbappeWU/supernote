@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from supernote.models.base import TaskType
 from supernote.models.summary import (
     METADATA_SEGMENTS,
     AddSummaryDTO,
@@ -53,8 +54,8 @@ class SummaryModule(ProcessorModule):
         return "SummaryModule"
 
     @property
-    def task_type(self) -> str:
-        return "SUMMARY_GENERATION"
+    def task_type(self) -> TaskType:
+        return TaskType.SUMMARY_GENERATION
 
     @property
     def enabled(self) -> bool:

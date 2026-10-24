@@ -1,5 +1,6 @@
 import logging
 
+from supernote.models.base import TaskType
 from supernote.server.ai.models.ocr import OcrModel
 from supernote.server.ai.prompts import PageMetadata, format_ocr_prompt
 from supernote.server.constants import CACHE_BUCKET
@@ -29,8 +30,8 @@ class OcrModule(ProcessorModule):
         return "OcrModule"
 
     @property
-    def task_type(self) -> str:
-        return "OCR_EXTRACTION"
+    def task_type(self) -> TaskType:
+        return TaskType.OCR_EXTRACTION
 
     @property
     def enabled(self) -> bool:

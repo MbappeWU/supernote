@@ -83,7 +83,7 @@ class TaskType(str, BaseEnum):
         obj.friendly_name = friendly_name
         return obj
 
-    PAGE_HASHING = ("PAGE_HASHING", "hashing")
+    PAGE_HASHING = ("HASHING", "hashing")
     PNG_CONVERSION = ("PNG_CONVERSION", "png")
     OCR_EXTRACTION = ("OCR_EXTRACTION", "ocr")
     EMBEDDING_GENERATION = ("EMBEDDING_GENERATION", "embedding")
@@ -102,11 +102,13 @@ class TaskType(str, BaseEnum):
     @classmethod
     def friendly_names(cls) -> list[str]:
         """Return a list of all raw values and friendly short names."""
-        return [
-            name
-            for member in cls
-            for name in (member.value.lower(), member.friendly_name)
-        ]
+        return list(
+            dict.fromkeys(
+                name
+                for member in cls
+                for name in (member.value.lower(), member.friendly_name)
+            )
+        )
 
 
 @dataclass

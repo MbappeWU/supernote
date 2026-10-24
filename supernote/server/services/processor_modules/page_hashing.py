@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
+from supernote.models.base import TaskType
 from supernote.notebook.parser import parse_metadata
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
@@ -46,8 +47,8 @@ class PageHashingModule(ProcessorModule):
         return "PageHashingModule"
 
     @property
-    def task_type(self) -> str:
-        return "HASHING"
+    def task_type(self) -> TaskType:
+        return TaskType.PAGE_HASHING
 
     async def run_if_needed(
         self,
@@ -212,7 +213,7 @@ class PageHashingModule(ProcessorModule):
                 await session.execute(
                     delete(SystemTaskDO)
                     .where(SystemTaskDO.file_id == file_id)
-                    .where(SystemTaskDO.task_type == "SUMMARY_GENERATION")
+                    .where(SystemTaskDO.task_type == TaskType.SUMMARY_GENERATION.value)
                 )
 
             await session.commit()
