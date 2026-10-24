@@ -117,6 +117,7 @@ class PageHashingModule(ProcessorModule):
 
             # Track which page_ids are present in the current file
             current_page_ids = set()
+            any_page_changed = False
 
             for i in range(total_pages):
                 page_info = metadata.pages[i]
@@ -142,6 +143,7 @@ class PageHashingModule(ProcessorModule):
                             f"Page {page_id} moved from {row.page_index} to {i}"
                         )
                         row.page_index = i
+                        any_page_changed = True
 
                     # Check for Content Change
                     if row.content_hash != current_hash:
@@ -152,20 +154,12 @@ class PageHashingModule(ProcessorModule):
                         row.text_content = None  # Clear OCR
                         row.embedding = None  # Clear Embedding
                         row.embedding_model = None
+                        any_page_changed = True
 
-                        # Invalidate downstream tasks
-                        # Note: Tasks are keyed by page_index usually?
-                        # We should probably migrate tasks to use page_id too,
-                        # but for now let's invalidate based on the NEW index
-                        # or just all tasks for this file/page logic.
-                        # Ideally, SystemTaskDO key should be page_id.
-                        # For now, let's assume keys are "page_{page_index}".
-                        # If page moved, the old task key "page_{old_idx}" is irrelevant,
-                        # and we need to trigger "page_{new_idx}".
-                        # Refactoring SystemTaskDO is out of scope?
-                        # Let's clean up tasks for this "logical" page.
-                        # Actually, keeping it simple: invalidate tasks for the CURRENT index.
-                        # Update: Use page_id for task keys now.
+                        # SystemTaskDO rows act as completion checkpoints; deleting
+                        # the page's task rows causes downstream page modules (PNG,
+                        # OCR, Embedding) to see no COMPLETED record in run_if_needed()
+                        # and re-process this page.
                         page_task_key = f"page_{page_id}"
                         await session.execute(
                             delete(SystemTaskDO)
@@ -175,6 +169,7 @@ class PageHashingModule(ProcessorModule):
                 else:
                     # INSERT path
                     logger.info(f"New page {page_id} at index {i} detected.")
+                    any_page_changed = True
                     new_content = NotePageContentDO(
                         file_id=file_id,
                         page_index=i,
@@ -191,6 +186,7 @@ class PageHashingModule(ProcessorModule):
             for pid, row in existing_map.items():
                 if pid not in current_page_ids:
                     logger.info(f"Page {pid} deleted (was at {row.page_index}).")
+                    any_page_changed = True
                     await session.delete(row)
 
                     # Cleanup Blobs
@@ -208,5 +204,15 @@ class PageHashingModule(ProcessorModule):
                         .where(SystemTaskDO.file_id == file_id)
                         .where(SystemTaskDO.key == f"page_{pid}")
                     )
+
+            if any_page_changed:
+                # Delete the COMPLETED summary checkpoint so SummaryModule.run_if_needed()
+                # returns True during the global post-processing stage (and during
+                # missing-task recovery if interrupted) to regenerate the notebook summary.
+                await session.execute(
+                    delete(SystemTaskDO)
+                    .where(SystemTaskDO.file_id == file_id)
+                    .where(SystemTaskDO.task_type == "SUMMARY_GENERATION")
+                )
 
             await session.commit()
