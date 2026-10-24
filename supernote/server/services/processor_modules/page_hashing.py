@@ -156,7 +156,10 @@ class PageHashingModule(ProcessorModule):
                         row.embedding_model = None
                         any_page_changed = True
 
-                        # Invalidate downstream tasks
+                        # SystemTaskDO rows act as completion checkpoints; deleting
+                        # the page's task rows causes downstream page modules (PNG,
+                        # OCR, Embedding) to see no COMPLETED record in run_if_needed()
+                        # and re-process this page.
                         page_task_key = f"page_{page_id}"
                         await session.execute(
                             delete(SystemTaskDO)
@@ -203,6 +206,9 @@ class PageHashingModule(ProcessorModule):
                     )
 
             if any_page_changed:
+                # Delete the COMPLETED summary checkpoint so SummaryModule.run_if_needed()
+                # returns True during the global post-processing stage (and during
+                # missing-task recovery if interrupted) to regenerate the notebook summary.
                 await session.execute(
                     delete(SystemTaskDO)
                     .where(SystemTaskDO.file_id == file_id)
