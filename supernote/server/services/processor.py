@@ -75,13 +75,7 @@ class ProcessorService:
         self.global_post_modules: list[ProcessorModule] = []
 
     def _update_queue_metrics(self) -> None:
-        try:
-            qsize = self.queue.qsize()
-            if not isinstance(qsize, (int, float)):
-                qsize = 0
-            PROCESSOR_QUEUE_SIZE.set(qsize)
-        except Exception:
-            pass
+        PROCESSOR_QUEUE_SIZE.set(self.queue.qsize())
         PROCESSOR_FILES_PROCESSING.set(len(self.processing_files))
 
     def register_modules(
@@ -208,7 +202,16 @@ class ProcessorService:
             result = await session.execute(stmt)
             page_ids = result.scalars().all()
 
-            # Delete DB records
+            # Delete DB records (including parent summary group rows)
+            parent_uuids_stmt = select(SummaryDO.parent_unique_identifier).where(
+                SummaryDO.file_id == file_id,
+                SummaryDO.parent_unique_identifier.is_not(None),
+            )
+            parent_uuids = [
+                u
+                for u in (await session.execute(parent_uuids_stmt)).scalars().all()
+                if u
+            ]
             await session.execute(
                 delete(NotePageContentDO).where(NotePageContentDO.file_id == file_id)
             )
@@ -216,6 +219,13 @@ class ProcessorService:
                 delete(SystemTaskDO).where(SystemTaskDO.file_id == file_id)
             )
             await session.execute(delete(SummaryDO).where(SummaryDO.file_id == file_id))
+            if parent_uuids:
+                await session.execute(
+                    delete(SummaryDO).where(
+                        SummaryDO.unique_identifier.in_(parent_uuids),
+                        SummaryDO.is_summary_group.is_(True),
+                    )
+                )
             await session.commit()
 
         # Delete Blobs (PNGs)

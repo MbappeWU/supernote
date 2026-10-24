@@ -179,21 +179,40 @@ async def test_handle_note_deleted_cleanup(
     processor_service: ProcessorService,
     session_manager: DatabaseSessionManager,
     blob_storage: BlobStorage,
+    file_service: FileService,
+    summary_service: SummaryService,
+    test_user_id: int,
 ) -> None:
     file_id = 999
     await blob_storage.put(CACHE_BUCKET, get_page_png_path(file_id, "p0"), b"png0")
     await blob_storage.put(CACHE_BUCKET, get_page_png_path(file_id, "p1"), b"png1")
 
-    # Setup mock data in DB
     async with session_manager.session() as session:
         session.add(
-            NotePageContentDO(
-                file_id=file_id, page_index=0, page_id="p0", content_hash="h1"
+            UserFileDO(
+                id=file_id,
+                user_id=test_user_id,
+                storage_key="delete_test_key",
+                file_name="delete_me.note",
+                directory_id=0,
             )
         )
         session.add(
             NotePageContentDO(
-                file_id=file_id, page_index=1, page_id="p1", content_hash="h2"
+                file_id=file_id,
+                page_index=0,
+                page_id="p0",
+                content_hash="h1",
+                text_content="Page 1 text",
+            )
+        )
+        session.add(
+            NotePageContentDO(
+                file_id=file_id,
+                page_index=1,
+                page_id="p1",
+                content_hash="h2",
+                text_content="Page 2 text",
             )
         )
 
@@ -207,21 +226,20 @@ async def test_handle_note_deleted_cleanup(
                 file_id=file_id, task_type="OCR", key="page_0", status="COMPLETED"
             )
         )
-        session.add(
-            SummaryDO(
-                user_id=1,
-                file_id=file_id,
-                unique_identifier="summary_delete_test",
-                content="test content",
-            )
-        )
         await session.commit()
 
+    summary_module = SummaryModule(
+        file_service=file_service,
+        summary_service=summary_service,
+        summary_model=FakeSummaryModel(),
+    )
+    assert await summary_module.run(file_id, session_manager) is True
+
     # Trigger deletion event
-    event = NoteDeletedEvent(file_id=file_id, user_id=1)
+    event = NoteDeletedEvent(file_id=file_id, user_id=test_user_id)
     await processor_service.handle_note_deleted(event)
 
-    # Verify DB records are gone
+    # Verify DB records (including parent summary group) are gone
     async with session_manager.session() as session:
         contents = (
             (
@@ -246,7 +264,7 @@ async def test_handle_note_deleted_cleanup(
         summaries = (
             (
                 await session.execute(
-                    select(SummaryDO).where(SummaryDO.file_id == file_id)
+                    select(SummaryDO).where(SummaryDO.user_id == test_user_id)
                 )
             )
             .scalars()
