@@ -3,6 +3,7 @@ from collections import defaultdict
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from supernote.models.base import ProcessingStatus, TaskType
 from supernote.models.system import IntegrityIssueVO, IntegrityReportVO
@@ -38,11 +39,9 @@ class IntegrityService:
         report = IntegrityReportVO()
 
         async with self.session_manager.session() as session:
-            stmt = select(UserFileDO).where(
-                UserFileDO.user_id == user_id,
-                UserFileDO.is_active == "Y",
+            nodes_with_parent_ok = await self._query_nodes_with_parent_status(
+                session, user_id, file_id
             )
-            all_nodes = (await session.execute(stmt)).scalars().all()
             db_issues_by_file = await self._query_pipeline_db_issues(
                 session, user_id, file_id
             )
@@ -50,15 +49,24 @@ class IntegrityService:
                 session, user_id, file_id
             )
 
-        valid_dirs = {0} | {n.id for n in all_nodes if n.is_folder == "Y"}
-
-        for node in all_nodes:
-            if file_id is not None and node.id != file_id:
-                continue
-
+        for node, has_valid_parent in nodes_with_parent_ok:
             report.scanned += 1
 
-            if not self._check_parent_validity(user_id, node, valid_dirs, report):
+            if not has_valid_parent:
+                detail = f"Invalid parent directory_id={node.directory_id}"
+                logger.error(
+                    f"Integrity Fail: Node {node.id} ({node.file_name}) has invalid parent {node.directory_id}"
+                )
+                report.orphans += 1
+                report.issues.append(
+                    IntegrityIssueVO(
+                        user_id=user_id,
+                        file_id=node.id,
+                        file_name=node.file_name,
+                        issue_type="orphan",
+                        detail=detail,
+                    )
+                )
                 continue
 
             if node.is_folder == "Y":
@@ -82,32 +90,45 @@ class IntegrityService:
 
         return report
 
-    def _check_parent_validity(
+    async def _query_nodes_with_parent_status(
         self,
+        session: AsyncSession,
         user_id: int,
-        node: UserFileDO,
-        valid_dirs: set[int],
-        report: IntegrityReportVO,
-    ) -> bool:
-        """Verify that a VFS node's parent folder is active and belongs to the user."""
-        if node.directory_id in valid_dirs:
-            return True
-
-        detail = f"Invalid parent directory_id={node.directory_id}"
-        logger.error(
-            f"Integrity Fail: Node {node.id} ({node.file_name}) has invalid parent {node.directory_id}"
-        )
-        report.orphans += 1
-        report.issues.append(
-            IntegrityIssueVO(
-                user_id=user_id,
-                file_id=node.id,
-                file_name=node.file_name,
-                issue_type="orphan",
-                detail=detail,
+        file_id: int | None,
+    ) -> list[tuple[UserFileDO, bool]]:
+        """Query target VFS nodes along with whether their parent directory is valid."""
+        parent_folder = aliased(UserFileDO)
+        stmt = (
+            select(
+                UserFileDO,
+                # Parent is valid if node is at root (0) or joined active folder exists
+                or_(
+                    UserFileDO.directory_id == 0,
+                    parent_folder.id.is_not(None),
+                ),
+            )
+            .outerjoin(
+                parent_folder,
+                # Match parent folder owned by the same user that is active and a folder
+                and_(
+                    parent_folder.id == UserFileDO.directory_id,
+                    parent_folder.user_id == user_id,
+                    parent_folder.is_active == "Y",
+                    parent_folder.is_folder == "Y",
+                ),
+            )
+            .where(
+                # Scope to active VFS nodes owned by this user
+                UserFileDO.user_id == user_id,
+                UserFileDO.is_active == "Y",
             )
         )
-        return False
+        if file_id is not None:
+            # Restrict to a single file/folder node when file_id is specified
+            stmt = stmt.where(UserFileDO.id == file_id)
+
+        rows = (await session.execute(stmt)).all()
+        return [(node, bool(has_valid_parent)) for node, has_valid_parent in rows]
 
     async def _check_blob_integrity(
         self,
