@@ -17,7 +17,6 @@ from supernote.models.auth import (
     SendSmsVO,
     SmsLoginDTO,
     SmsLoginVO,
-    UserCheckDTO,
     UserPreAuthRequest,
     UserPreAuthResponse,
 )
@@ -28,6 +27,7 @@ from supernote.models.equipment import (
     UserEquipmentDTO,
     UserEquipmentVO,
 )
+from supernote.models.user import UserCheckDTO, UserCheckVO
 
 from .client import Client
 from .exceptions import ApiException, SmsVerificationRequired
@@ -165,11 +165,11 @@ class LoginClient:
                 raise SmsVerificationRequired(str(err), random_code_timestamp) from err
             raise
 
-    async def check_user_exists(self, email: str) -> BaseResponse:
+    async def check_user_exists(self, email: str) -> UserCheckVO:
         """Check if a user exists on the server."""
         payload = UserCheckDTO(email=email).to_dict()
         return await self._client.post_json(
-            "/api/official/user/check/exists/server", BaseResponse, json=payload
+            "/api/official/user/check/exists/server", UserCheckVO, json=payload
         )
 
     async def bind_equipment(

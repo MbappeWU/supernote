@@ -37,20 +37,6 @@ def _deserialize_int_equipment(value: str) -> Equipment:
     return Equipment(int(value))
 
 
-@dataclass
-class UserCheckDTO(DataClassJSONMixin):
-    """Request to check user existence."""
-
-    email: str
-    country_code: str = field(metadata=field_options(alias="countryCode"), default="")
-    telephone: str = ""
-    user_name: str = field(metadata=field_options(alias="userName"), default="")
-    domain: str = ""
-
-    class Config(BaseConfig):
-        serialize_by_alias = True
-
-
 class LoginMethod(str, BaseEnum):
     """Method for logging in to account."""
 

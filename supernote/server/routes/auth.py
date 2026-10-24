@@ -8,7 +8,6 @@ from supernote.models.auth import (
     QueryTokenVO,
     RandomCodeDTO,
     RandomCodeVO,
-    UserCheckDTO,
 )
 from supernote.models.base import BaseResponse, create_error_response
 from supernote.models.equipment import (
@@ -22,6 +21,7 @@ from supernote.models.user import (
     RetrievePasswordDTO,
     UpdateEmailDTO,
     UpdatePasswordDTO,
+    UserCheckDTO,
     UserInfo,
     UserQueryByIdVO,
     UserQueryDTO,
@@ -102,13 +102,16 @@ async def handle_equipment_unlink(request: web.Request) -> web.Response:
 
 
 @routes.post("/api/official/user/check/exists/server")
+@routes.post("/api/user/check/exists")
 @public_route
 async def handle_check_user_exists(request: web.Request) -> web.Response:
     # Endpoint: POST /api/official/user/check/exists/server
-    # Purpose: Check if the user exists on this server.
+    # Purpose: Check if the user exists on this server and return server/user routing metadata.
     req_data = await request.json()
     try:
         user_check_req = UserCheckDTO.from_dict(req_data)
+        if not user_check_req.email:
+            raise ValueError("Missing email")
     except (MissingField, ValueError):
         return web.json_response(
             create_error_response("Invalid request format").to_dict(),
@@ -119,10 +122,8 @@ async def handle_check_user_exists(request: web.Request) -> web.Response:
     except RateLimitExceeded as e:
         return e.to_response()
     user_service: UserService = request.app["user_service"]
-    if await user_service.check_user_exists(user_check_req.email or ""):
-        return web.json_response(BaseResponse().to_dict())
-    else:
-        return web.json_response(create_error_response("User not found").to_dict())
+    result = await user_service.check_user_server(user_check_req)
+    return web.json_response(result.to_dict())
 
 
 @routes.post("/api/user/query/token")

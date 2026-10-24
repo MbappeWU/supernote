@@ -11,6 +11,7 @@ from supernote.client.exceptions import ApiException, UnauthorizedException
 from supernote.client.login_client import LoginClient
 from supernote.client.web import WebClient
 from supernote.models.equipment import UserEquipmentVO
+from supernote.models.user import UserCheckVO
 from supernote.server.config import ServerConfig
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import SupernoteError
@@ -82,22 +83,25 @@ async def test_equipment_unlink(
     assert await user_service.verify_token(victim_session.token) is None
 
 
-async def test_check_user_exists(client: TestClient, create_test_user: None) -> None:
-    resp = await client.post(
-        "/api/official/user/check/exists/server", json={"email": "test@example.com"}
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["success"] is True
+async def test_check_user_exists(
+    login_client: LoginClient,
+    user_service: UserService,
+    create_test_user: None,
+) -> None:
+    with pytest.raises(ApiException, match="Invalid request format"):
+        await login_client.check_user_exists("")
 
-    resp = await client.post(
-        "/api/official/user/check/exists/server",
-        json={"email": "unknown@example.com"},
+    user_id = await user_service.get_user_id("test@example.com")
+    res = await login_client.check_user_exists("test@example.com")
+    assert isinstance(res.unique_machine_id, str) and len(res.unique_machine_id) > 0
+    assert res == UserCheckVO(
+        user_id=user_id,
+        unique_machine_id=res.unique_machine_id,
+        dms="ALL",
     )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["success"] is False
-    assert data["errorMsg"] == "User not found"
+
+    with pytest.raises(ApiException, match="User not found"):
+        await login_client.check_user_exists("unknown@example.com")
 
 
 async def test_login_invalid_credentials(login_client: LoginClient) -> None:
@@ -537,6 +541,10 @@ async def test_public_auth_endpoints_share_ip_rate_limit(
             ),
             (
                 "/api/official/user/check/exists/server",
+                {"email": "extra@example.com"},
+            ),
+            (
+                "/api/user/check/exists",
                 {"email": "extra@example.com"},
             ),
             (
