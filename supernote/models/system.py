@@ -22,7 +22,7 @@ from mashumaro import field_options
 from mashumaro.config import BaseConfig
 from mashumaro.mixins.json import DataClassJSONMixin
 
-from .base import BaseResponse
+from .base import BaseEnum, BaseResponse
 
 
 @dataclass
@@ -451,6 +451,20 @@ class QueueStatusVO(BaseResponse):
     """List of file IDs currently being processed."""
 
 
+class IntegrityIssueType(str, BaseEnum):
+    """Types of storage and pipeline integrity issues."""
+
+    ORPHAN = "orphan"
+    DUPLICATE_ROOT_FOLDER = "duplicate_root_folder"
+    MISSING_BLOB = "missing_blob"
+    SIZE_MISMATCH = "size_mismatch"
+    HASH_MISMATCH = "hash_mismatch"
+    TASK_FAILED = "task_failed"
+    MISSING_CACHE_BLOB = "missing_cache_blob"
+    MISSING_PAGE_CONTENT = "missing_page_content"
+    MISSING_PAGE_EMBEDDING = "missing_page_embedding"
+
+
 @dataclass
 class IntegrityIssueVO(DataClassJSONMixin):
     """Details of a single storage integrity issue."""
@@ -458,7 +472,7 @@ class IntegrityIssueVO(DataClassJSONMixin):
     user_id: int = field(metadata=field_options(alias="userId"))
     file_id: int = field(metadata=field_options(alias="fileId"))
     file_name: str = field(metadata=field_options(alias="fileName"))
-    issue_type: str = field(metadata=field_options(alias="issueType"))
+    issue_type: IntegrityIssueType = field(metadata=field_options(alias="issueType"))
     detail: str
 
     class Config(BaseConfig):
@@ -503,3 +517,6 @@ class IntegrityReportVO(BaseResponse):
 
     issues: list[IntegrityIssueVO] = field(default_factory=list)
     """Detailed list of detected integrity issues."""
+
+    remediations: list[str] = field(default_factory=list)
+    """Suggested remediation steps for detected integrity issues."""

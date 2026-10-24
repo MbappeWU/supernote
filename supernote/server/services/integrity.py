@@ -6,7 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from supernote.models.base import ProcessingStatus, TaskType
-from supernote.models.system import IntegrityIssueVO, IntegrityReportVO
+from supernote.models.system import (
+    IntegrityIssueType,
+    IntegrityIssueVO,
+    IntegrityReportVO,
+)
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
@@ -18,6 +22,45 @@ logger = logging.getLogger(__name__)
 
 IntegrityIssue = IntegrityIssueVO
 IntegrityReport = IntegrityReportVO
+
+_GITHUB_ISSUES_URL = "https://github.com/allenporter/supernote/issues"
+
+_REMEDIATION_HINTS: dict[IntegrityIssueType, str] = {
+    IntegrityIssueType.MISSING_CACHE_BLOB: (
+        "Run 'supernote admin reprocess --type png' to regenerate missing PNG cache images."
+    ),
+    IntegrityIssueType.MISSING_PAGE_CONTENT: (
+        "Run 'supernote admin reprocess --type ocr' to re-extract missing page text. "
+        f"This is an unexpected server state; please report an issue at {_GITHUB_ISSUES_URL}."
+    ),
+    IntegrityIssueType.MISSING_PAGE_EMBEDDING: (
+        "Run 'supernote admin reprocess --type embedding' to regenerate missing page embeddings. "
+        f"This is an unexpected server state; please report an issue at {_GITHUB_ISSUES_URL}."
+    ),
+    IntegrityIssueType.TASK_FAILED: (
+        "Run 'supernote admin tasks --status failed' to inspect task errors, then "
+        "'supernote admin reprocess --type all --file-id <ID>' to retry."
+    ),
+    IntegrityIssueType.MISSING_BLOB: (
+        "Re-upload or re-sync affected files from a Supernote device or restore missing blobs from backup."
+    ),
+    IntegrityIssueType.SIZE_MISMATCH: (
+        "Re-upload or re-sync affected files from a Supernote device or restore blobs from backup. "
+        f"This is an unexpected server state; please report an issue at {_GITHUB_ISSUES_URL}."
+    ),
+    IntegrityIssueType.HASH_MISMATCH: (
+        "Re-upload or re-sync affected files from a Supernote device or restore blobs from backup. "
+        f"This is an unexpected server state; please report an issue at {_GITHUB_ISSUES_URL}."
+    ),
+    IntegrityIssueType.ORPHAN: (
+        "Orphaned VFS nodes have an invalid parent folder. "
+        f"This is an unexpected server bug; please report an issue at {_GITHUB_ISSUES_URL}."
+    ),
+    IntegrityIssueType.DUPLICATE_ROOT_FOLDER: (
+        "Duplicate case-variant root folders were detected. "
+        f"This is an unexpected server bug; please report an issue at {_GITHUB_ISSUES_URL}."
+    ),
+}
 
 
 class IntegrityService:
@@ -66,7 +109,7 @@ class IntegrityService:
                         user_id=user_id,
                         file_id=node.id,
                         file_name=node.file_name,
-                        issue_type="orphan",
+                        issue_type=IntegrityIssueType.ORPHAN,
                         detail=detail,
                     )
                 )
@@ -84,7 +127,7 @@ class IntegrityService:
                             user_id=user_id,
                             file_id=node.id,
                             file_name=node.file_name,
-                            issue_type="duplicate_root_folder",
+                            issue_type=IntegrityIssueType.DUPLICATE_ROOT_FOLDER,
                             detail=detail,
                         )
                     )
@@ -107,6 +150,13 @@ class IntegrityService:
 
             report.ok += 1
 
+        report.remediations = list(
+            dict.fromkeys(
+                _REMEDIATION_HINTS[issue.issue_type]
+                for issue in report.issues
+                if issue.issue_type in _REMEDIATION_HINTS
+            )
+        )
         return report
 
     async def _query_nodes_with_parent_status(
@@ -213,7 +263,7 @@ class IntegrityService:
                     user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
-                    issue_type="missing_blob",
+                    issue_type=IntegrityIssueType.MISSING_BLOB,
                     detail=detail,
                 )
             )
@@ -232,7 +282,7 @@ class IntegrityService:
                     user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
-                    issue_type="missing_blob",
+                    issue_type=IntegrityIssueType.MISSING_BLOB,
                     detail=detail,
                 )
             )
@@ -249,7 +299,7 @@ class IntegrityService:
                     user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
-                    issue_type="size_mismatch",
+                    issue_type=IntegrityIssueType.SIZE_MISMATCH,
                     detail=detail,
                 )
             )
@@ -266,7 +316,7 @@ class IntegrityService:
                     user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
-                    issue_type="hash_mismatch",
+                    issue_type=IntegrityIssueType.HASH_MISMATCH,
                     detail=detail,
                 )
             )
@@ -279,7 +329,7 @@ class IntegrityService:
         session: AsyncSession,
         user_id: int,
         file_id: int | None,
-    ) -> dict[int, list[tuple[str, str]]]:
+    ) -> dict[int, list[tuple[IntegrityIssueType, str]]]:
         """Query failed tasks and completed OCR/embedding tasks missing DB page content."""
         # Scope to active, non-folder files owned by this user (and optional file_id)
         note_filters = [
@@ -333,26 +383,28 @@ class IntegrityService:
             )
         )
 
-        issues_by_file: dict[int, list[tuple[str, str]]] = defaultdict(list)
+        issues_by_file: dict[int, list[tuple[IntegrityIssueType, str]]] = defaultdict(
+            list
+        )
         for fid, t_type, t_key, t_status, t_err in (await session.execute(stmt)).all():
             if t_status == ProcessingStatus.FAILED:
                 issues_by_file[fid].append(
                     (
-                        "task_failed",
+                        IntegrityIssueType.TASK_FAILED,
                         f"Task {t_type} ({t_key}) failed: {t_err or 'unknown error'}",
                     )
                 )
             elif t_type == TaskType.OCR_EXTRACTION.value:
                 issues_by_file[fid].append(
                     (
-                        "missing_page_content",
+                        IntegrityIssueType.MISSING_PAGE_CONTENT,
                         f"Completed OCR task ({t_key}) missing page text content",
                     )
                 )
             elif t_type == TaskType.EMBEDDING_GENERATION.value:
                 issues_by_file[fid].append(
                     (
-                        "missing_page_embedding",
+                        IntegrityIssueType.MISSING_PAGE_EMBEDDING,
                         f"Completed EMBEDDING task ({t_key}) missing page embedding",
                     )
                 )
@@ -393,7 +445,7 @@ class IntegrityService:
         self,
         user_id: int,
         node: UserFileDO,
-        db_issues: list[tuple[str, str]],
+        db_issues: list[tuple[IntegrityIssueType, str]],
         png_keys: list[str],
         report: IntegrityReportVO,
     ) -> bool:
@@ -421,7 +473,7 @@ class IntegrityService:
                         user_id=user_id,
                         file_id=node.id,
                         file_name=node.file_name,
-                        issue_type="missing_cache_blob",
+                        issue_type=IntegrityIssueType.MISSING_CACHE_BLOB,
                         detail=f"Completed PNG task ({png_key}) missing cache blob {png_path}",
                     )
                 )
