@@ -494,15 +494,26 @@ class ProcessorService:
             )
 
     async def list_system_tasks(
-        self, user_id: int | None = None, limit: int = 100
+        self,
+        user_id: int | None = None,
+        limit: int = 100,
+        status: str | None = None,
+        file_id: int | None = None,
+        task_type: str | None = None,
     ) -> list[SystemTaskDO]:
-        """List recent system tasks, optionally scoped to a specific user."""
+        """List recent system tasks with optional filtering."""
         async with self.session_manager.session() as session:
             stmt = select(SystemTaskDO)
             if user_id is not None:
                 stmt = stmt.join(
                     UserFileDO, SystemTaskDO.file_id == UserFileDO.id
                 ).where(UserFileDO.user_id == user_id)
+            if status:
+                stmt = stmt.where(SystemTaskDO.status == status.upper())
+            if file_id is not None:
+                stmt = stmt.where(SystemTaskDO.file_id == file_id)
+            if task_type:
+                stmt = stmt.where(SystemTaskDO.task_type == task_type)
             stmt = stmt.order_by(SystemTaskDO.update_time.desc()).limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())

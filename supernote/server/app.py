@@ -43,6 +43,7 @@ from .routes.decorators import public_route
 from .services.blob import LocalBlobStorage
 from .services.coordination import CoordinationService, SqliteCoordinationService
 from .services.file import FileService
+from .services.integrity import IntegrityService
 from .services.processor import ProcessorService
 from .services.processor_modules.embedding import EmbeddingModule
 from .services.processor_modules.ocr import OcrModule
@@ -212,6 +213,7 @@ def create_app(config: ServerConfig) -> web.Application:
     )
     app["user_service"] = user_service
     app["file_service"] = file_service
+    app["integrity_service"] = IntegrityService(session_manager, blob_storage)
     app["url_signer"] = UrlSigner(config.auth.secret_key, coordination_service)
     app["schedule_service"] = ScheduleService(session_manager)
     ocr_model = create_ocr_model(config)

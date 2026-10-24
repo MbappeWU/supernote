@@ -449,3 +449,30 @@ class QueueStatusVO(BaseResponse):
         metadata=field_options(alias="processingFiles"), default_factory=list
     )
     """List of file IDs currently being processed."""
+
+
+@dataclass(kw_only=True)
+class IntegrityReportVO(BaseResponse):
+    """Storage integrity report response.
+
+    Used by:
+        /api/admin/integrity (GET)
+    """
+
+    scanned: int = 0
+    """Total number of active VFS nodes scanned."""
+
+    missing_blob: int = field(metadata=field_options(alias="missingBlob"), default=0)
+    """Number of files with a missing storage key or missing physical blob."""
+
+    size_mismatch: int = field(metadata=field_options(alias="sizeMismatch"), default=0)
+    """Number of files whose VFS size differs from the physical blob size."""
+
+    hash_mismatch: int = field(metadata=field_options(alias="hashMismatch"), default=0)
+    """Number of files whose VFS MD5 differs from the physical blob MD5."""
+
+    orphans: int = 0
+    """Number of nodes referencing a non-existent or inactive parent folder."""
+
+    ok: int = 0
+    """Number of nodes that passed all integrity checks."""

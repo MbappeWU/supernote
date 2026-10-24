@@ -3,11 +3,12 @@
 import asyncio
 import getpass
 import hashlib
+import json
 import sys
 
 from supernote.client.admin import AdminClient
 from supernote.client.exceptions import ApiException
-from supernote.models.base import TaskType
+from supernote.models.base import ProcessingStatus, TaskType
 
 from .client import create_session
 
@@ -206,6 +207,115 @@ def reprocess(args):
     asyncio.run(reprocess_async(args.url, args.type, args.file_id))
 
 
+async def integrity_async(
+    url: str | None = None,
+    user_id: int | None = None,
+    as_json: bool = False,
+) -> None:
+    """Verify server storage integrity."""
+    async with create_session(url) as session:
+        admin_client = AdminClient(session.client)
+        try:
+            report = await admin_client.verify_integrity(user_id=user_id)
+        except Exception as e:
+            print(f"Failed to verify integrity: {e}")
+            sys.exit(1)
+
+        if as_json:
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print()
+            print("Storage Integrity Report")
+            print("========================")
+            print(f"Scanned Nodes:     {report.scanned}")
+            print(f"OK Nodes:          {report.ok}")
+            print(f"Orphans:           {report.orphans}")
+            print(f"Missing Blobs:     {report.missing_blob}")
+            print(f"Size Mismatches:   {report.size_mismatch}")
+            print(f"Hash Mismatches:   {report.hash_mismatch}")
+            print()
+
+        has_failures = bool(
+            report.orphans
+            or report.missing_blob
+            or report.size_mismatch
+            or report.hash_mismatch
+        )
+        if not as_json:
+            if has_failures:
+                print("Integrity issues detected.")
+            else:
+                print("All integrity checks passed.")
+        if has_failures:
+            sys.exit(1)
+
+
+def integrity(args) -> None:
+    asyncio.run(
+        integrity_async(
+            url=args.url,
+            user_id=args.user_id,
+            as_json=args.json,
+        )
+    )
+
+
+async def list_tasks_async(
+    url: str | None = None,
+    status: str | None = None,
+    file_id: int | None = None,
+    task_type: str | None = None,
+    limit: int = 100,
+    as_json: bool = False,
+) -> None:
+    """List system processing tasks."""
+    async with create_session(url) as session:
+        admin_client = AdminClient(session.client)
+        try:
+            resp = await admin_client.list_tasks(
+                status=status,
+                file_id=file_id,
+                task_type=task_type,
+                limit=limit,
+            )
+        except Exception as e:
+            print(f"Failed to list tasks: {e}")
+            sys.exit(1)
+
+        if as_json:
+            print(json.dumps(resp.to_dict(), indent=2))
+            return
+
+        tasks = resp.tasks
+        print(f"\nSystem Tasks ({len(tasks)}):\n")
+        if not tasks:
+            print("No matching tasks found.")
+            return
+
+        print(
+            f"{'File ID':<20} {'Type':<22} {'Key':<15} {'Status':<12} {'Retries':<8} {'Last Error'}"
+        )
+        print("-" * 95)
+        for t in tasks:
+            err = (t.last_error or "").replace("\n", " ")
+            print(
+                f"{t.file_id:<20} {t.task_type:<22} {t.key:<15} {t.status.value:<12} {t.retry_count:<8} {err}"
+            )
+
+
+def list_tasks(args) -> None:
+    asyncio.run(
+        list_tasks_async(
+            url=args.url,
+            status=args.status,
+            file_id=args.file_id,
+            task_type=args.type,
+            limit=args.limit,
+            as_json=args.json,
+        )
+    )
+
+
 def add_parser(subparsers):
     # 'admin' parent command
     parser_admin = subparsers.add_parser(
@@ -301,3 +411,61 @@ def add_parser(subparsers):
         help="Specific file ID to reprocess (default: all files)",
     )
     parser_reprocess.set_defaults(func=reprocess)
+
+    # --- Storage Integrity ---
+    parser_integrity = admin_subparsers.add_parser(
+        "integrity",
+        help="Verify VFS and blob storage integrity",
+    )
+    parser_integrity.add_argument(
+        "--user-id",
+        type=int,
+        default=None,
+        help="Check only a specific user ID (default: all users)",
+    )
+    parser_integrity.add_argument(
+        "--json",
+        action="store_true",
+        help="Output the integrity report as JSON",
+    )
+    parser_integrity.set_defaults(func=integrity)
+
+    # --- System Tasks Inspection ---
+    parser_tasks = admin_subparsers.add_parser(
+        "tasks",
+        help="Inspect background note processing tasks and errors",
+    )
+    status_choices = [
+        s.value.lower() for s in ProcessingStatus if s != ProcessingStatus.NONE
+    ]
+    parser_tasks.add_argument(
+        "--status",
+        choices=status_choices,
+        type=str.lower,
+        default=None,
+        help="Filter tasks by status (pending, processing, completed, failed)",
+    )
+    parser_tasks.add_argument(
+        "--file-id",
+        type=int,
+        default=None,
+        help="Filter tasks by file ID",
+    )
+    parser_tasks.add_argument(
+        "--type",
+        choices=TaskType.friendly_names(),
+        default=None,
+        help="Filter tasks by task type (e.g. ocr, png, embedding, summary)",
+    )
+    parser_tasks.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum number of tasks to return (default: 100)",
+    )
+    parser_tasks.add_argument(
+        "--json",
+        action="store_true",
+        help="Output the task list as JSON",
+    )
+    parser_tasks.set_defaults(func=list_tasks)

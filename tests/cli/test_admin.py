@@ -8,6 +8,8 @@ import pytest
 from supernote.cli.admin import (
     add_parser,
     add_user,
+    integrity,
+    list_tasks,
     list_users,
     queue_start,
     queue_status,
@@ -16,6 +18,9 @@ from supernote.cli.admin import (
     reset_password,
 )
 from supernote.client.exceptions import ApiException
+from supernote.models.base import ProcessingStatus
+from supernote.models.extended import SystemTaskListVO, SystemTaskVO
+from supernote.models.system import IntegrityReportVO
 
 
 def test_add_parser():
@@ -68,6 +73,19 @@ def test_add_parser():
     assert parsed.type == "ocr"
     assert parsed.file_id == 123
     assert parsed.func == reprocess
+
+    parsed = parser.parse_args(["admin", "integrity", "--user-id", "1", "--json"])
+    assert parsed.user_id == 1
+    assert parsed.json is True
+    assert parsed.func == integrity
+
+    parsed = parser.parse_args(
+        ["admin", "tasks", "--status", "failed", "--type", "ocr", "--json"]
+    )
+    assert parsed.status == "failed"
+    assert parsed.type == "ocr"
+    assert parsed.json is True
+    assert parsed.func == list_tasks
 
 
 def test_add_user_public_registration_success(capsys):
@@ -326,3 +344,201 @@ def test_reprocess_success(capsys):
 
     captured = capsys.readouterr()
     assert "Triggered reprocessing of 'summary' for file ID 42." in captured.out
+
+
+def test_integrity_success(capsys):
+    args = argparse.Namespace(url="http://localhost:8080", user_id=None, json=False)
+    mock_admin_client = AsyncMock()
+    mock_admin_client.verify_integrity.return_value = IntegrityReportVO(scanned=8, ok=8)
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        integrity(args)
+
+    captured = capsys.readouterr()
+    assert "All integrity checks passed." in captured.out
+
+
+def test_integrity_issues_detected(capsys):
+    args = argparse.Namespace(url="http://localhost:8080", user_id=1, json=False)
+    mock_admin_client = AsyncMock()
+    mock_admin_client.verify_integrity.return_value = IntegrityReportVO(
+        scanned=9,
+        ok=8,
+        missing_blob=1,
+    )
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        with pytest.raises(SystemExit) as exc_info:
+            integrity(args)
+        assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "Missing Blobs:     1" in captured.out
+    assert "Integrity issues detected." in captured.out
+
+
+def test_integrity_json(capsys):
+    args = argparse.Namespace(url="http://localhost:8080", user_id=None, json=True)
+    mock_admin_client = AsyncMock()
+    mock_admin_client.verify_integrity.return_value = IntegrityReportVO(scanned=8, ok=8)
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        integrity(args)
+
+    captured = capsys.readouterr()
+    assert '"scanned": 8' in captured.out
+    assert '"ok": 8' in captured.out
+
+
+def test_integrity_failure(capsys):
+    args = argparse.Namespace(url="http://localhost:8080", user_id=None, json=False)
+    mock_admin_client = AsyncMock()
+    mock_admin_client.verify_integrity.side_effect = Exception("Server Error")
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        with pytest.raises(SystemExit) as exc_info:
+            integrity(args)
+        assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "Failed to verify integrity: Server Error" in captured.out
+
+
+def test_list_tasks_cli(capsys):
+    args = argparse.Namespace(
+        url="http://localhost:8080",
+        status="failed",
+        file_id=None,
+        type="ocr",
+        limit=50,
+        json=False,
+    )
+    mock_admin_client = AsyncMock()
+    mock_admin_client.list_tasks.return_value = SystemTaskListVO(
+        tasks=[
+            SystemTaskVO(
+                id=1,
+                file_id=42,
+                task_type="OCR_EXTRACTION",
+                key="page_1",
+                status=ProcessingStatus.FAILED,
+                retry_count=2,
+                update_time=1000,
+                last_error="Rate limit exceeded",
+            )
+        ]
+    )
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        list_tasks(args)
+
+    captured = capsys.readouterr()
+    assert "OCR_EXTRACTION" in captured.out
+    assert "Rate limit exceeded" in captured.out
+
+
+def test_list_tasks_empty(capsys):
+    args = argparse.Namespace(
+        url="http://localhost:8080",
+        status=None,
+        file_id=None,
+        type=None,
+        limit=100,
+        json=False,
+    )
+    mock_admin_client = AsyncMock()
+    mock_admin_client.list_tasks.return_value = SystemTaskListVO(tasks=[])
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        list_tasks(args)
+
+    captured = capsys.readouterr()
+    assert "No matching tasks found." in captured.out
+
+
+def test_list_tasks_json(capsys):
+    args = argparse.Namespace(
+        url="http://localhost:8080",
+        status=None,
+        file_id=None,
+        type=None,
+        limit=100,
+        json=True,
+    )
+    mock_admin_client = AsyncMock()
+    mock_admin_client.list_tasks.return_value = SystemTaskListVO(tasks=[])
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        list_tasks(args)
+
+    captured = capsys.readouterr()
+    assert '"tasks": []' in captured.out
+
+
+def test_list_tasks_failure(capsys):
+    args = argparse.Namespace(
+        url="http://localhost:8080",
+        status=None,
+        file_id=None,
+        type=None,
+        limit=100,
+        json=False,
+    )
+    mock_admin_client = AsyncMock()
+    mock_admin_client.list_tasks.side_effect = Exception("Server Error")
+    mock_session = MagicMock()
+    mock_session.client = MagicMock()
+
+    with (
+        patch("supernote.cli.admin.create_session") as mock_create_session,
+        patch("supernote.cli.admin.AdminClient", return_value=mock_admin_client),
+    ):
+        mock_create_session.return_value.__aenter__.return_value = mock_session
+        with pytest.raises(SystemExit) as exc_info:
+            list_tasks(args)
+        assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "Failed to list tasks: Server Error" in captured.out
