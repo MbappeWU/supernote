@@ -488,6 +488,11 @@ class IntegrityReportVO(BaseResponse):
     orphans: int = 0
     """Number of nodes referencing a non-existent or inactive parent folder."""
 
+    pipeline_issues: int = field(
+        metadata=field_options(alias="pipelineIssues"), default=0
+    )
+    """Number of .note files with failed tasks or missing pipeline/cache artifacts."""
+
     ok: int = 0
     """Number of nodes that passed all integrity checks."""
 

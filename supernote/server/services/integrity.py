@@ -1,12 +1,17 @@
 import logging
+from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from supernote.models.base import ProcessingStatus, TaskType
 from supernote.models.system import IntegrityIssueVO, IntegrityReportVO
-from supernote.server.constants import USER_DATA_BUCKET
+from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
+from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage
+from supernote.server.utils.paths import get_page_png_path
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +20,7 @@ IntegrityReport = IntegrityReportVO
 
 
 class IntegrityService:
-    """Service to verify data consistency between VFS and BlobStorage."""
+    """Service to verify data consistency across VFS, BlobStorage, and Processing Pipeline."""
 
     def __init__(
         self, session_manager: DatabaseSessionManager, blob_storage: BlobStorage
@@ -33,128 +38,308 @@ class IntegrityService:
         report = IntegrityReportVO()
 
         async with self.session_manager.session() as session:
-            # Query all active files AND folders for this user
-            # We need folders to verify parent logic
             stmt = select(UserFileDO).where(
                 UserFileDO.user_id == user_id,
                 UserFileDO.is_active == "Y",
             )
-            result = await session.execute(stmt)
-            all_nodes = result.scalars().all()
+            all_nodes = (await session.execute(stmt)).scalars().all()
+            db_issues_by_file = await self._query_pipeline_db_issues(
+                session, user_id, file_id
+            )
+            png_keys_by_file = await self._query_completed_png_keys(
+                session, user_id, file_id
+            )
 
-            # Build a set of valid directory IDs (Root 0 is always valid)
-            valid_dirs = {0}
-            for node in all_nodes:
-                if node.is_folder == "Y":
-                    valid_dirs.add(node.id)
+        valid_dirs = {0} | {n.id for n in all_nodes if n.is_folder == "Y"}
 
-            for node in all_nodes:
-                if file_id is not None and node.id != file_id:
-                    continue
+        for node in all_nodes:
+            if file_id is not None and node.id != file_id:
+                continue
 
-                report.scanned += 1
+            report.scanned += 1
 
-                # Check 1: Orphan Check (Parent Validity)
-                if node.directory_id not in valid_dirs:
-                    detail = f"Invalid parent directory_id={node.directory_id}"
-                    logger.error(
-                        f"Integrity Fail: Node {node.id} ({node.file_name}) has invalid parent {node.directory_id}"
-                    )
-                    report.orphans += 1
-                    report.issues.append(
-                        IntegrityIssueVO(
-                            user_id=user_id,
-                            file_id=node.id,
-                            file_name=node.file_name,
-                            issue_type="orphan",
-                            detail=detail,
-                        )
-                    )
-                    continue
+            if not self._check_parent_validity(user_id, node, valid_dirs, report):
+                continue
 
-                if node.is_folder == "Y":
-                    report.ok += 1
-                    continue
-
-                # Check 2: Blob Integrity (Existence, Size, MD5)
-                if not node.storage_key:
-                    detail = "File missing storage key in VFS"
-                    logger.error(
-                        f"Integrity Fail: File {node.id} ({node.file_name}) missing storage key"
-                    )
-                    report.missing_blob += 1
-                    report.issues.append(
-                        IntegrityIssueVO(
-                            user_id=user_id,
-                            file_id=node.id,
-                            file_name=node.file_name,
-                            issue_type="missing_blob",
-                            detail=detail,
-                        )
-                    )
-                    continue
-
-                try:
-                    metadata = await self.blob_storage.get_metadata(
-                        USER_DATA_BUCKET, node.storage_key, include_md5=True
-                    )
-                except FileNotFoundError:
-                    detail = f"Missing blob key {node.storage_key}"
-                    logger.error(
-                        f"Integrity Fail: File {node.id} ({node.file_name}) {detail}"
-                    )
-                    report.missing_blob += 1
-                    report.issues.append(
-                        IntegrityIssueVO(
-                            user_id=user_id,
-                            file_id=node.id,
-                            file_name=node.file_name,
-                            issue_type="missing_blob",
-                            detail=detail,
-                        )
-                    )
-                    continue
-
-                if metadata.size != node.size:
-                    detail = f"Size mismatch (VFS: {node.size}, Blob: {metadata.size})"
-                    logger.warning(
-                        f"Integrity Warning: File {node.id} size mismatch. VFS: {node.size}, Blob: {metadata.size}"
-                    )
-                    report.size_mismatch += 1
-                    report.issues.append(
-                        IntegrityIssueVO(
-                            user_id=user_id,
-                            file_id=node.id,
-                            file_name=node.file_name,
-                            issue_type="size_mismatch",
-                            detail=detail,
-                        )
-                    )
-                    continue
-
-                if (
-                    node.md5
-                    and metadata.content_md5
-                    and node.md5 != metadata.content_md5
-                ):
-                    detail = (
-                        f"MD5 mismatch (VFS: {node.md5}, Blob: {metadata.content_md5})"
-                    )
-                    logger.error(
-                        f"Integrity Fail: File {node.id} hash mismatch. VFS: {node.md5}, Blob: {metadata.content_md5}"
-                    )
-                    report.hash_mismatch += 1
-                    report.issues.append(
-                        IntegrityIssueVO(
-                            user_id=user_id,
-                            file_id=node.id,
-                            file_name=node.file_name,
-                            issue_type="hash_mismatch",
-                            detail=detail,
-                        )
-                    )
-                    continue
-
+            if node.is_folder == "Y":
                 report.ok += 1
+                continue
+
+            if not await self._check_blob_integrity(user_id, node, report):
+                continue
+
+            if node.file_name.lower().endswith(".note"):
+                if not await self._check_note_pipeline(
+                    user_id,
+                    node,
+                    db_issues_by_file.get(node.id, []),
+                    png_keys_by_file.get(node.id, []),
+                    report,
+                ):
+                    continue
+
+            report.ok += 1
 
         return report
+
+    def _check_parent_validity(
+        self,
+        user_id: int,
+        node: UserFileDO,
+        valid_dirs: set[int],
+        report: IntegrityReportVO,
+    ) -> bool:
+        """Verify that a VFS node's parent folder is active and belongs to the user."""
+        if node.directory_id in valid_dirs:
+            return True
+
+        detail = f"Invalid parent directory_id={node.directory_id}"
+        logger.error(
+            f"Integrity Fail: Node {node.id} ({node.file_name}) has invalid parent {node.directory_id}"
+        )
+        report.orphans += 1
+        report.issues.append(
+            IntegrityIssueVO(
+                user_id=user_id,
+                file_id=node.id,
+                file_name=node.file_name,
+                issue_type="orphan",
+                detail=detail,
+            )
+        )
+        return False
+
+    async def _check_blob_integrity(
+        self,
+        user_id: int,
+        node: UserFileDO,
+        report: IntegrityReportVO,
+    ) -> bool:
+        """Verify physical blob existence, size, and MD5 checksum for a file node."""
+        if not node.storage_key:
+            detail = "File missing storage key in VFS"
+            logger.error(
+                f"Integrity Fail: File {node.id} ({node.file_name}) missing storage key"
+            )
+            report.missing_blob += 1
+            report.issues.append(
+                IntegrityIssueVO(
+                    user_id=user_id,
+                    file_id=node.id,
+                    file_name=node.file_name,
+                    issue_type="missing_blob",
+                    detail=detail,
+                )
+            )
+            return False
+
+        try:
+            metadata = await self.blob_storage.get_metadata(
+                USER_DATA_BUCKET, node.storage_key, include_md5=True
+            )
+        except FileNotFoundError:
+            detail = f"Missing blob key {node.storage_key}"
+            logger.error(f"Integrity Fail: File {node.id} ({node.file_name}) {detail}")
+            report.missing_blob += 1
+            report.issues.append(
+                IntegrityIssueVO(
+                    user_id=user_id,
+                    file_id=node.id,
+                    file_name=node.file_name,
+                    issue_type="missing_blob",
+                    detail=detail,
+                )
+            )
+            return False
+
+        if metadata.size != node.size:
+            detail = f"Size mismatch (VFS: {node.size}, Blob: {metadata.size})"
+            logger.warning(
+                f"Integrity Warning: File {node.id} size mismatch. VFS: {node.size}, Blob: {metadata.size}"
+            )
+            report.size_mismatch += 1
+            report.issues.append(
+                IntegrityIssueVO(
+                    user_id=user_id,
+                    file_id=node.id,
+                    file_name=node.file_name,
+                    issue_type="size_mismatch",
+                    detail=detail,
+                )
+            )
+            return False
+
+        if node.md5 and metadata.content_md5 and node.md5 != metadata.content_md5:
+            detail = f"MD5 mismatch (VFS: {node.md5}, Blob: {metadata.content_md5})"
+            logger.error(
+                f"Integrity Fail: File {node.id} hash mismatch. VFS: {node.md5}, Blob: {metadata.content_md5}"
+            )
+            report.hash_mismatch += 1
+            report.issues.append(
+                IntegrityIssueVO(
+                    user_id=user_id,
+                    file_id=node.id,
+                    file_name=node.file_name,
+                    issue_type="hash_mismatch",
+                    detail=detail,
+                )
+            )
+            return False
+
+        return True
+
+    async def _query_pipeline_db_issues(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        file_id: int | None,
+    ) -> dict[int, list[tuple[str, str]]]:
+        """Query failed tasks and completed OCR/embedding tasks missing DB page content."""
+        # Scope to active, non-folder files owned by this user (and optional file_id)
+        note_filters = [
+            UserFileDO.user_id == user_id,
+            UserFileDO.is_active == "Y",
+            UserFileDO.is_folder == "N",
+        ]
+        if file_id is not None:
+            note_filters.append(UserFileDO.id == file_id)
+
+        stmt = (
+            select(
+                SystemTaskDO.file_id,
+                SystemTaskDO.task_type,
+                SystemTaskDO.key,
+                SystemTaskDO.status,
+                SystemTaskDO.last_error,
+            )
+            .join(UserFileDO, UserFileDO.id == SystemTaskDO.file_id)
+            .outerjoin(
+                NotePageContentDO,
+                and_(
+                    NotePageContentDO.file_id == SystemTaskDO.file_id,
+                    NotePageContentDO.page_id == SystemTaskDO.key,
+                ),
+            )
+            .where(
+                *note_filters,
+                or_(
+                    # 1. Any processing task that ended in FAILED status
+                    SystemTaskDO.status == ProcessingStatus.FAILED,
+                    # 2. Completed OCR task whose page row or extracted text is missing
+                    and_(
+                        SystemTaskDO.status == ProcessingStatus.COMPLETED,
+                        SystemTaskDO.task_type == TaskType.OCR_EXTRACTION.value,
+                        or_(
+                            NotePageContentDO.id.is_(None),
+                            NotePageContentDO.text_content.is_(None),
+                        ),
+                    ),
+                    # 3. Completed embedding task whose page row or vector embedding is missing
+                    and_(
+                        SystemTaskDO.status == ProcessingStatus.COMPLETED,
+                        SystemTaskDO.task_type == TaskType.EMBEDDING_GENERATION.value,
+                        or_(
+                            NotePageContentDO.id.is_(None),
+                            NotePageContentDO.embedding.is_(None),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        issues_by_file: dict[int, list[tuple[str, str]]] = defaultdict(list)
+        for fid, t_type, t_key, t_status, t_err in (await session.execute(stmt)).all():
+            if t_status == ProcessingStatus.FAILED:
+                issues_by_file[fid].append(
+                    (
+                        "task_failed",
+                        f"Task {t_type} ({t_key}) failed: {t_err or 'unknown error'}",
+                    )
+                )
+            elif t_type == TaskType.OCR_EXTRACTION.value:
+                issues_by_file[fid].append(
+                    (
+                        "missing_page_content",
+                        f"Completed OCR task ({t_key}) missing page text content",
+                    )
+                )
+            elif t_type == TaskType.EMBEDDING_GENERATION.value:
+                issues_by_file[fid].append(
+                    (
+                        "missing_page_embedding",
+                        f"Completed EMBEDDING task ({t_key}) missing page embedding",
+                    )
+                )
+        return issues_by_file
+
+    async def _query_completed_png_keys(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        file_id: int | None,
+    ) -> dict[int, list[str]]:
+        """Query completed PNG_CONVERSION task keys per file ID."""
+        # Scope to active, non-folder files owned by this user (and optional file_id)
+        note_filters = [
+            UserFileDO.user_id == user_id,
+            UserFileDO.is_active == "Y",
+            UserFileDO.is_folder == "N",
+        ]
+        if file_id is not None:
+            note_filters.append(UserFileDO.id == file_id)
+
+        stmt = (
+            select(SystemTaskDO.file_id, SystemTaskDO.key)
+            .join(UserFileDO, UserFileDO.id == SystemTaskDO.file_id)
+            .where(
+                *note_filters,
+                # Completed PNG_CONVERSION tasks whose rendered PNG should exist in CACHE_BUCKET
+                SystemTaskDO.status == ProcessingStatus.COMPLETED,
+                SystemTaskDO.task_type == TaskType.PNG_CONVERSION.value,
+            )
+        )
+        keys_by_file: dict[int, list[str]] = defaultdict(list)
+        for fid, t_key in (await session.execute(stmt)).all():
+            keys_by_file[fid].append(t_key)
+        return keys_by_file
+
+    async def _check_note_pipeline(
+        self,
+        user_id: int,
+        node: UserFileDO,
+        db_issues: list[tuple[str, str]],
+        png_keys: list[str],
+        report: IntegrityReportVO,
+    ) -> bool:
+        """Verify processing tasks and cache artifacts for a .note file."""
+        passed = True
+
+        for issue_type, detail in db_issues:
+            passed = False
+            report.issues.append(
+                IntegrityIssueVO(
+                    user_id=user_id,
+                    file_id=node.id,
+                    file_name=node.file_name,
+                    issue_type=issue_type,
+                    detail=detail,
+                )
+            )
+
+        for png_key in png_keys:
+            png_path = get_page_png_path(node.id, png_key)
+            if not await self.blob_storage.exists(CACHE_BUCKET, png_path):
+                passed = False
+                report.issues.append(
+                    IntegrityIssueVO(
+                        user_id=user_id,
+                        file_id=node.id,
+                        file_name=node.file_name,
+                        issue_type="missing_cache_blob",
+                        detail=f"Completed PNG task ({png_key}) missing cache blob {png_path}",
+                    )
+                )
+
+        if not passed:
+            report.pipeline_issues += 1
+        return passed
