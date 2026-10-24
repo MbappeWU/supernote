@@ -219,6 +219,7 @@ async def integrity_async(
             print(f"Missing Blobs:     {report.missing_blob}")
             print(f"Size Mismatches:   {report.size_mismatch}")
             print(f"Hash Mismatches:   {report.hash_mismatch}")
+            print(f"Folder Anomalies:  {report.folder_anomalies}")
             print(f"Pipeline Issues:   {report.pipeline_issues}")
             print()
             if report.issues:
@@ -237,6 +238,7 @@ async def integrity_async(
             or report.missing_blob
             or report.size_mismatch
             or report.hash_mismatch
+            or report.folder_anomalies
             or report.pipeline_issues
         )
         if not as_json:

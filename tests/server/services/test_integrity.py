@@ -243,3 +243,26 @@ async def test_integrity_pipeline_issues(
         "missing_cache_blob",
         "missing_page_content",
     }
+
+
+async def test_integrity_duplicate_root_folder(
+    integrity_service: IntegrityService,
+    test_user_id: int,
+    db_session: AsyncSession,
+) -> None:
+    """Verify duplicate case-variant root folder detection."""
+    legacy_export = UserFileDO(
+        user_id=test_user_id,
+        file_name="Export",
+        is_folder="Y",
+        directory_id=0,
+        is_active="Y",
+    )
+    db_session.add(legacy_export)
+    await db_session.commit()
+
+    report = await integrity_service.verify_user_storage(test_user_id)
+    assert report.folder_anomalies == 1
+    assert len(report.issues) == 1
+    assert report.issues[0].issue_type == "duplicate_root_folder"
+    assert report.issues[0].file_name == "Export"

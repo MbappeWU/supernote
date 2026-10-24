@@ -1,7 +1,7 @@
 import logging
 from collections import defaultdict
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -42,6 +42,9 @@ class IntegrityService:
             nodes_with_parent_ok = await self._query_nodes_with_parent_status(
                 session, user_id, file_id
             )
+            duplicate_root_folders = await self._query_duplicate_root_folders(
+                session, user_id, file_id
+            )
             db_issues_by_file = await self._query_pipeline_db_issues(
                 session, user_id, file_id
             )
@@ -70,6 +73,22 @@ class IntegrityService:
                 continue
 
             if node.is_folder == "Y":
+                if node.id in duplicate_root_folders:
+                    detail = duplicate_root_folders[node.id]
+                    logger.warning(
+                        f"Integrity Warning: Folder {node.id} ({node.file_name}) {detail}"
+                    )
+                    report.folder_anomalies += 1
+                    report.issues.append(
+                        IntegrityIssueVO(
+                            user_id=user_id,
+                            file_id=node.id,
+                            file_name=node.file_name,
+                            issue_type="duplicate_root_folder",
+                            detail=detail,
+                        )
+                    )
+                    continue
                 report.ok += 1
                 continue
 
@@ -129,6 +148,52 @@ class IntegrityService:
 
         rows = (await session.execute(stmt)).all()
         return [(node, bool(has_valid_parent)) for node, has_valid_parent in rows]
+
+    async def _query_duplicate_root_folders(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        file_id: int | None,
+    ) -> dict[int, str]:
+        """Query non-uppercase root folders that conflict with a sibling root folder."""
+        sibling_folder = aliased(UserFileDO)
+        stmt = (
+            select(
+                UserFileDO.id,
+                UserFileDO.file_name,
+                sibling_folder.file_name,
+            )
+            .join(
+                sibling_folder,
+                # Match another active root folder owned by the same user with the same case-insensitive name
+                and_(
+                    sibling_folder.user_id == UserFileDO.user_id,
+                    sibling_folder.directory_id == 0,
+                    sibling_folder.is_active == "Y",
+                    sibling_folder.is_folder == "Y",
+                    sibling_folder.id != UserFileDO.id,
+                    func.upper(sibling_folder.file_name)
+                    == func.upper(UserFileDO.file_name),
+                ),
+            )
+            .where(
+                # Scope to non-uppercase active root folders owned by this user
+                UserFileDO.user_id == user_id,
+                UserFileDO.directory_id == 0,
+                UserFileDO.is_active == "Y",
+                UserFileDO.is_folder == "Y",
+                UserFileDO.file_name != func.upper(UserFileDO.file_name),
+            )
+        )
+        if file_id is not None:
+            # Restrict to a single folder node when file_id is specified
+            stmt = stmt.where(UserFileDO.id == file_id)
+
+        anomalies: dict[int, str] = {}
+        for folder_id, name, sibling_name in (await session.execute(stmt)).all():
+            names = ", ".join(sorted({name, sibling_name}))
+            anomalies[folder_id] = f"Duplicate case-variant root folders exist: {names}"
+        return anomalies
 
     async def _check_blob_integrity(
         self,

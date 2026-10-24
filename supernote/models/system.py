@@ -488,6 +488,11 @@ class IntegrityReportVO(BaseResponse):
     orphans: int = 0
     """Number of nodes referencing a non-existent or inactive parent folder."""
 
+    folder_anomalies: int = field(
+        metadata=field_options(alias="folderAnomalies"), default=0
+    )
+    """Number of duplicate case-variant root folders detected."""
+
     pipeline_issues: int = field(
         metadata=field_options(alias="pipelineIssues"), default=0
     )
