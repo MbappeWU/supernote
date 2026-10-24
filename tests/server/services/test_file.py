@@ -1,9 +1,9 @@
 """Unit tests for FileService recycle bin purge, reference-counted blob cleanup, and event publishing."""
 
+import asyncio
 import hashlib
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import update
@@ -11,18 +11,28 @@ from sqlalchemy import update
 from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.db.models.file import RecycleFileDO
 from supernote.server.db.session import DatabaseSessionManager
-from supernote.server.events import LocalEventBus, NoteDeletedEvent
+from supernote.server.events import Event, LocalEventBus, NoteDeletedEvent
 from supernote.server.services.blob import BlobStorage
 from supernote.server.services.file import RECYCLE_RETENTION_MS, FileService
 from supernote.server.services.user import UserService
 
 
 @pytest.fixture
-def mock_event_bus() -> MagicMock:
-    """Mock LocalEventBus for verifying published domain events."""
-    mock = MagicMock(spec=LocalEventBus)
-    mock.publish = AsyncMock()
-    return mock
+def event_bus() -> LocalEventBus:
+    """Real LocalEventBus for verifying published domain events."""
+    return LocalEventBus()
+
+
+@pytest.fixture
+def published_events(event_bus: LocalEventBus) -> list[Event]:
+    """Capture domain events published on the LocalEventBus."""
+    events: list[Event] = []
+
+    async def capture(event: Event) -> None:
+        events.append(event)
+
+    event_bus.subscribe(NoteDeletedEvent, capture)
+    return events
 
 
 @pytest.fixture
@@ -31,7 +41,7 @@ def file_service(
     blob_storage: BlobStorage,
     user_service: UserService,
     session_manager: DatabaseSessionManager,
-    mock_event_bus: MagicMock,
+    event_bus: LocalEventBus,
 ) -> FileService:
     """Fixture providing FileService with explicit DI dependencies."""
     return FileService(
@@ -39,15 +49,15 @@ def file_service(
         blob_storage=blob_storage,
         user_service=user_service,
         session_manager=session_manager,
-        event_bus=mock_event_bus,
+        event_bus=event_bus,
     )
 
 
 async def test_recycle_bin_lifecycle(
     file_service: FileService,
     blob_storage: BlobStorage,
-    mock_event_bus: MagicMock,
-    create_test_user: None,
+    published_events: list[Event],
+    test_user_id: int,
     test_users: list[str],
 ) -> None:
     """Verify moving files to recycle bin, restoring, permanent deletion, and NoteDeletedEvent."""
@@ -80,16 +90,16 @@ async def test_recycle_bin_lifecycle(
     recycled_items_2 = await file_service.list_recycle(user)
     recycle_id_2 = recycled_items_2[0].id
 
-    mock_event_bus.publish.reset_mock()
+    published_events.clear()
     await file_service.delete_from_recycle(user, [recycle_id_2])
+    await asyncio.sleep(0)
     assert len(await file_service.list_recycle(user)) == 0
     assert await blob_storage.exists(USER_DATA_BUCKET, "rec_blob") is False
 
     # Permanent purge of .note publishes NoteDeletedEvent
-    mock_event_bus.publish.assert_awaited_once()
-    delete_event = mock_event_bus.publish.call_args[0][0]
-    assert isinstance(delete_event, NoteDeletedEvent)
-    assert delete_event.file_id == file_entity.id
+    assert published_events == [
+        NoteDeletedEvent(file_id=file_entity.id, user_id=test_user_id)
+    ]
 
 
 async def test_file_shared_blob_reference_counting(
@@ -176,8 +186,8 @@ async def test_recycle_bin_opportunistic_retention_cleanup(
     file_service: FileService,
     blob_storage: BlobStorage,
     session_manager: DatabaseSessionManager,
-    mock_event_bus: MagicMock,
-    create_test_user: None,
+    published_events: list[Event],
+    test_user_id: int,
     test_users: list[str],
 ) -> None:
     """Verify expired recycle bin items (>30 days) are opportunistically purged while recent items survive."""
@@ -207,15 +217,15 @@ async def test_recycle_bin_opportunistic_retention_cleanup(
         )
         await session.commit()
 
-    mock_event_bus.publish.reset_mock()
+    published_events.clear()
 
     # Listing recycle bin opportunistically prunes the expired entry
     recycled = await file_service.list_recycle(user)
+    await asyncio.sleep(0)
     assert [r.name for r in recycled] == ["recent.note"]
     assert await blob_storage.exists(USER_DATA_BUCKET, "expired_blob") is False
     assert await blob_storage.exists(USER_DATA_BUCKET, "recent_blob") is True
 
-    mock_event_bus.publish.assert_awaited_once()
-    delete_event = mock_event_bus.publish.call_args[0][0]
-    assert isinstance(delete_event, NoteDeletedEvent)
-    assert delete_event.file_id == expired_file.id
+    assert published_events == [
+        NoteDeletedEvent(file_id=expired_file.id, user_id=test_user_id)
+    ]

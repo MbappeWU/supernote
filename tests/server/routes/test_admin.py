@@ -1,6 +1,6 @@
+import asyncio
 import hashlib
 from typing import Any
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient
@@ -15,6 +15,7 @@ from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import SystemTaskDO
 from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
+from supernote.server.events import Event, NoteUpdatedEvent
 from supernote.server.services.coordination import CoordinationService
 from supernote.server.services.user import UserService
 
@@ -267,19 +268,21 @@ async def test_admin_reprocess(
         )
         await session.commit()
 
-    with patch.object(
-        client.app["event_bus"], "publish", new_callable=AsyncMock
-    ) as mock_pub:
-        resp = await client.post(
-            "/api/admin/reprocess",
-            json={"task_type": "summary"},
-            headers=admin_headers,
-        )
-        assert resp.status == 200
-        published_ids = [
-            call.args[0].file_id
-            for call in mock_pub.call_args_list
-            if hasattr(call.args[0], "file_id")
-        ]
-        assert 8001 in published_ids
-        assert 8002 not in published_ids
+    published_ids: list[int] = []
+
+    async def capture_updated(event: Event) -> None:
+        if isinstance(event, NoteUpdatedEvent):
+            published_ids.append(event.file_id)
+
+    assert client.app is not None
+    client.app["event_bus"].subscribe(NoteUpdatedEvent, capture_updated)
+
+    resp = await client.post(
+        "/api/admin/reprocess",
+        json={"task_type": "summary"},
+        headers=admin_headers,
+    )
+    assert resp.status == 200
+    await asyncio.sleep(0)
+    assert 8001 in published_ids
+    assert 8002 not in published_ids
