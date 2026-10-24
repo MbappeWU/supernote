@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -28,28 +27,26 @@ def test_create_ocr_model_unconfigured(tmp_path: Path) -> None:
 
 
 def test_create_ocr_model_legacy_gemini() -> None:
-    with patch("google.genai.Client"):
-        legacy_config = ServerConfig(gemini_api_key="test-key")
-        model = create_ocr_model(legacy_config)
-        assert isinstance(model, ConcurrencyLimitedOcrModel)
-        assert model.model_id == legacy_config.gemini_ocr_model
+    legacy_config = ServerConfig(gemini_api_key="test-key")
+    model = create_ocr_model(legacy_config)
+    assert isinstance(model, ConcurrencyLimitedOcrModel)
+    assert model.model_id == legacy_config.gemini_ocr_model
 
 
 def test_create_ocr_model_gemini_provider() -> None:
-    with patch("google.genai.Client"):
-        ai_config = ServerConfig(
-            ai=AiConfig(
-                providers={"gemini": ProviderConfig(api_key="ai-key")},
-                ocr=ModelConfig(
-                    provider="gemini",
-                    model="gemini-custom-ocr",
-                    max_concurrency=3,
-                ),
-            )
+    ai_config = ServerConfig(
+        ai=AiConfig(
+            providers={"gemini": ProviderConfig(api_key="ai-key")},
+            ocr=ModelConfig(
+                provider="gemini",
+                model="gemini-custom-ocr",
+                max_concurrency=3,
+            ),
         )
-        ai_model = create_ocr_model(ai_config)
-        assert isinstance(ai_model, ConcurrencyLimitedOcrModel)
-        assert ai_model.model_id == "gemini-custom-ocr"
+    )
+    ai_model = create_ocr_model(ai_config)
+    assert isinstance(ai_model, ConcurrencyLimitedOcrModel)
+    assert ai_model.model_id == "gemini-custom-ocr"
 
 
 def test_create_ocr_model_openai_provider() -> None:

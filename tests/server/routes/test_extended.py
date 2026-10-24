@@ -1,4 +1,3 @@
-from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
 
@@ -11,9 +10,7 @@ from supernote.client.extended import ExtendedClient
 from supernote.client.summary import SummaryClient
 from supernote.models.base import ProcessingStatus
 from supernote.models.summary import AddSummaryDTO
-from supernote.server.ai.models.fake.embedding import FakeEmbeddingModel
-from supernote.server.ai.models.fake.ocr import FakeOcrModel
-from supernote.server.ai.models.fake.summary import FakeSummaryModel
+from supernote.server.config import AiConfig, ModelConfig, ServerConfig
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
@@ -28,28 +25,14 @@ def extended_client(authenticated_client: Client) -> ExtendedClient:
 
 
 @pytest.fixture
-def mock_gemini_service() -> Generator[None]:
-    """Fixture to provide fake AI models for extended route tests."""
-    with (
-        patch(
-            "supernote.server.app.create_ocr_model",
-            return_value=FakeOcrModel(),
-        ),
-        patch(
-            "supernote.server.app.create_summary_model",
-            return_value=FakeSummaryModel(),
-        ),
-        patch(
-            "supernote.server.app.create_embedding_model",
-            return_value=FakeEmbeddingModel(),
-        ),
-    ):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def patch_gemini_service(mock_gemini_service: Generator[None]) -> None:
-    """Configure fake AI models for the search service."""
+def server_config(server_config: ServerConfig) -> ServerConfig:
+    """Configure fake AI models for extended route tests."""
+    server_config.ai = AiConfig(
+        ocr=ModelConfig(provider="fake", model="fake-ocr-v1"),
+        summary=ModelConfig(provider="fake", model="fake-summary-v1"),
+        embedding=ModelConfig(provider="fake", model="fake-embedding-v1"),
+    )
+    return server_config
 
 
 async def test_extended_search(
