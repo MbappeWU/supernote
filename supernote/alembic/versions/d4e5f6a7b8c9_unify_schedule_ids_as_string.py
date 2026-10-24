@@ -18,6 +18,11 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+_NAMING_CONVENTION = {
+    "pk": "pk_%(table_name)s",
+}
+
+
 def upgrade() -> None:
     op.execute(
         """
@@ -71,23 +76,31 @@ def upgrade() -> None:
         """
     )
 
-    with op.batch_alter_table("t_schedule_task") as batch_op:
+    with op.batch_alter_table(
+        "t_schedule_task", naming_convention=_NAMING_CONVENTION
+    ) as batch_op:
         batch_op.drop_index("ix_t_schedule_task_client_task_list_id")
         batch_op.drop_index("ix_t_schedule_task_client_task_id")
         batch_op.drop_column("client_task_list_id")
         batch_op.drop_column("client_task_id")
+        batch_op.drop_constraint("pk_t_schedule_task", type_="primary")
         batch_op.create_primary_key("pk_t_schedule_task", ["task_id", "user_id"])
 
-    with op.batch_alter_table("t_schedule_task_group") as batch_op:
+    with op.batch_alter_table(
+        "t_schedule_task_group", naming_convention=_NAMING_CONVENTION
+    ) as batch_op:
         batch_op.drop_index("ix_t_schedule_task_group_client_task_list_id")
         batch_op.drop_column("client_task_list_id")
+        batch_op.drop_constraint("pk_t_schedule_task_group", type_="primary")
         batch_op.create_primary_key(
             "pk_t_schedule_task_group", ["task_list_id", "user_id"]
         )
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("t_schedule_task_group") as batch_op:
+    with op.batch_alter_table(
+        "t_schedule_task_group", naming_convention=_NAMING_CONVENTION
+    ) as batch_op:
         batch_op.add_column(
             sa.Column("client_task_list_id", sa.String(), nullable=True)
         )
@@ -100,15 +113,12 @@ def downgrade() -> None:
             type_=sa.BigInteger(),
             existing_nullable=False,
         )
-        batch_op.alter_column(
-            "user_id",
-            existing_type=sa.BigInteger(),
-            primary_key=False,
-            existing_nullable=False,
-        )
+        batch_op.drop_constraint("pk_t_schedule_task_group", type_="primary")
         batch_op.create_primary_key("pk_t_schedule_task_group", ["task_list_id"])
 
-    with op.batch_alter_table("t_schedule_task") as batch_op:
+    with op.batch_alter_table(
+        "t_schedule_task", naming_convention=_NAMING_CONVENTION
+    ) as batch_op:
         batch_op.add_column(sa.Column("client_task_id", sa.String(), nullable=True))
         batch_op.add_column(
             sa.Column("client_task_list_id", sa.String(), nullable=True)
@@ -129,10 +139,5 @@ def downgrade() -> None:
             type_=sa.BigInteger(),
             existing_nullable=False,
         )
-        batch_op.alter_column(
-            "user_id",
-            existing_type=sa.BigInteger(),
-            primary_key=False,
-            existing_nullable=False,
-        )
+        batch_op.drop_constraint("pk_t_schedule_task", type_="primary")
         batch_op.create_primary_key("pk_t_schedule_task", ["task_id"])

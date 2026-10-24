@@ -16,6 +16,8 @@ from tests.server.db.models.test_init import (
     assert_metadata_user_id_conformance,
 )
 
+pytestmark = pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning")
+
 
 @pytest.fixture
 def alembic_config() -> Config:

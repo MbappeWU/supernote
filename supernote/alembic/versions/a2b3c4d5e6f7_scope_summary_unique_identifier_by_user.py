@@ -31,6 +31,7 @@ def upgrade() -> None:
         batch_op.create_unique_constraint(
             "uq_f_summary_user_uuid", ["user_id", "unique_identifier"]
         )
+        batch_op.drop_constraint("pk_f_summary", type_="primary")
         batch_op.create_primary_key("pk_f_summary", ["id", "user_id"])
 
     with op.batch_alter_table(
@@ -40,6 +41,7 @@ def upgrade() -> None:
         batch_op.create_unique_constraint(
             "uq_f_summary_tag_user_uuid", ["user_id", "unique_identifier"]
         )
+        batch_op.drop_constraint("pk_f_summary_tag", type_="primary")
         batch_op.create_primary_key("pk_f_summary_tag", ["id", "user_id"])
 
 
@@ -52,6 +54,7 @@ def downgrade() -> None:
         batch_op.create_unique_constraint(
             "uq_f_summary_tag_unique_identifier", ["unique_identifier"]
         )
+        batch_op.drop_constraint("pk_f_summary_tag", type_="primary")
         batch_op.create_primary_key("pk_f_summary_tag", ["id"])
 
     with op.batch_alter_table(
@@ -61,4 +64,5 @@ def downgrade() -> None:
         batch_op.create_unique_constraint(
             "uq_f_summary_unique_identifier", ["unique_identifier"]
         )
+        batch_op.drop_constraint("pk_f_summary", type_="primary")
         batch_op.create_primary_key("pk_f_summary", ["id"])
