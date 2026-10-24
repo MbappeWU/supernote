@@ -544,30 +544,13 @@ class UserService:
                 session.add(DeviceDO(user_id=user.id, equipment_no=equipment_no))
             await session.commit()
 
-    async def unlink_equipment(
-        self, equipment_no: str, account: str | None = None
-    ) -> None:
-        """Unlink a device and revoke its sessions."""
-        user_id_filter: int | None = None
-        if account is not None:
-            user = await self.get_user_by_email(account)
-            if not user:
-                return
-            user_id_filter = user.id
-
+    async def unlink_equipment(self, equipment_no: str) -> None:
+        """Unlink a device."""
         async with self._session_manager.session() as session:
-            conditions = [DeviceDO.equipment_no == equipment_no]
-            if user_id_filter is not None:
-                conditions.append(DeviceDO.user_id == user_id_filter)
-            existing = await session.execute(select(DeviceDO).where(*conditions))
-            user_ids = {d.user_id for d in existing.scalars().all()}
-            await session.execute(delete(DeviceDO).where(*conditions))
+            await session.execute(
+                delete(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
+            )
             await session.commit()
-
-        if user_id_filter is not None:
-            user_ids.add(user_id_filter)
-        for uid in user_ids:
-            await self.revoke_equipment_sessions(uid, equipment_no)
 
     async def query_equipment_by_no(self, equipment_no: str) -> UserEquipmentVO:
         """Query bound device details by equipment serial number."""
