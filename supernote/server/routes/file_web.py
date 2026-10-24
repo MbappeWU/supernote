@@ -1,6 +1,5 @@
 import logging
 import urllib.parse
-import uuid
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -51,6 +50,7 @@ from supernote.server.services.file import (
     FileService,
     FolderDetail,
 )
+from supernote.server.utils.paths import generate_inner_name
 from supernote.server.utils.url_signer import UrlSigner, get_request_base_url
 
 logger = logging.getLogger(__name__)
@@ -621,23 +621,26 @@ async def handle_file_upload_apply(request: web.Request) -> web.Response:
     # Response: FileUploadApplyLocalVO
 
     req_data = FileUploadApplyDTO.from_dict(await request.json())
-    url_signer = request.app["url_signer"]
+    user_email = request["user"]
+    url_signer: UrlSigner = request.app["url_signer"]
 
     try:
-        # Generate inner_name
-        ext = "".join(Path(req_data.file_name).suffixes)
-        inner_name = f"{uuid.uuid4()}{ext}"
-
-        # Sign URL
+        inner_name = generate_inner_name(req_data.file_name, None)
         encoded_name = urllib.parse.quote(inner_name)
-        path_to_sign = f"/api/oss/upload?path={encoded_name}"
-        signed_path = await url_signer.sign(path_to_sign, user=request["user"])
+
         base_url = get_request_base_url(request)
-        full_url = f"{base_url}{signed_path}"
+        full_path = f"/api/oss/upload?path={encoded_name}"
+        full_signed_path = await url_signer.sign(full_path, user=user_email)
+        full_url = f"{base_url}{full_signed_path}"
+
+        part_path = f"/api/oss/upload/part?path={encoded_name}"
+        part_signed_path = await url_signer.sign(part_path, user=user_email)
+        part_url = f"{base_url}{part_signed_path}"
 
         return web.json_response(
             FileUploadApplyLocalVO(
                 full_upload_url=full_url,
+                part_upload_url=part_url,
                 inner_name=inner_name,
             ).to_dict()
         )
