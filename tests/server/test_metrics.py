@@ -1,10 +1,11 @@
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient
 from prometheus_client import REGISTRY
 
+from supernote.server.ai.base import AIError
 from supernote.server.ai.models.gemini.backend import GeminiBackend
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
@@ -91,15 +92,32 @@ async def test_db_session_metrics(client: TestClient) -> None:
     assert errors_after == errors_before + 1.0
 
 
-async def test_gemini_service_metrics() -> None:
+async def test_gemini_service_metrics(aiohttp_server: Any) -> None:
     """Verify that GeminiBackend tracks api call counts and durations."""
-    gemini = GeminiBackend(api_key="mock-api-key")
+    should_fail = False
 
-    # Mock model API client
-    mock_response = AsyncMock()
-    gemini._client = AsyncMock()
-    gemini._client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-    gemini._client.aio.models.embed_content = AsyncMock(return_value=mock_response)
+    async def handle_generate_content(request: web.Request) -> web.Response:
+        if should_fail:
+            return web.json_response(
+                {
+                    "error": {
+                        "code": 404,
+                        "message": "model not found",
+                        "status": "NOT_FOUND",
+                    }
+                },
+                status=404,
+            )
+        return web.json_response(
+            {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+        )
+
+    app = web.Application()
+    app.router.add_post(
+        "/v1beta/models/{model}:generateContent", handle_generate_content
+    )
+    server = await aiohttp_server(app)
+    gemini = GeminiBackend(api_key="test-api-key", base_url=str(server.make_url("/")))
 
     before_calls = (
         REGISTRY.get_sample_value(
@@ -122,7 +140,7 @@ async def test_gemini_service_metrics() -> None:
     assert after_calls == before_calls + 1.0
 
     # Test error tracking
-    gemini._client.aio.models.generate_content.side_effect = Exception("API failure")
+    should_fail = True
 
     before_fail_calls = (
         REGISTRY.get_sample_value(
@@ -132,7 +150,7 @@ async def test_gemini_service_metrics() -> None:
         or 0.0
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(AIError):
         await gemini.generate_content(model="gemini-3-flash-preview", contents="hello")
 
     after_fail_calls = (

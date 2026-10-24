@@ -39,14 +39,26 @@ _TRANSPORT_ERRORS = (
 class GeminiBackend:
     """Google Gemini client wrapper with Prometheus instrumentation."""
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, base_url: str | None = None) -> None:
         self._api_key = api_key
+        self._base_url = base_url
         self._client: genai.Client | None = None
 
     @property
     def client(self) -> genai.Client:
         if self._client is None:
-            self._client = genai.Client(api_key=self._api_key)
+            http_options = (
+                types.HttpOptions(
+                    base_url=self._base_url,
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                )
+                if self._base_url is not None
+                else None
+            )
+            self._client = genai.Client(
+                api_key=self._api_key,
+                http_options=http_options,
+            )
         return self._client
 
     @contextmanager
@@ -112,4 +124,4 @@ def create_gemini_backend(
         or not provider_cfg.api_key.strip()
     ):
         return None
-    return GeminiBackend(provider_cfg.api_key)
+    return GeminiBackend(provider_cfg.api_key, base_url=provider_cfg.base_url)

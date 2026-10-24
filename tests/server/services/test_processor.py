@@ -1,5 +1,6 @@
 import asyncio
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,7 +10,7 @@ from supernote.server.ai.models.fake.embedding import FakeEmbeddingModel
 from supernote.server.ai.models.fake.ocr import FakeOcrModel
 from supernote.server.ai.models.fake.summary import FakeSummaryModel
 from supernote.server.ai.models.ocr import ConcurrencyLimitedOcrModel
-from supernote.server.constants import CACHE_BUCKET
+from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.models.summary import SummaryDO
@@ -21,35 +22,59 @@ from supernote.server.events import (
     NoteProcessingCompletedEvent,
     NoteUpdatedEvent,
 )
+from supernote.server.services.blob import BlobStorage
 from supernote.server.services.coordination import SqliteCoordinationService
+from supernote.server.services.file import FileService
 from supernote.server.services.processor import ProcessorService
 from supernote.server.services.processor_modules import ProcessorModule
 from supernote.server.services.processor_modules.embedding import EmbeddingModule
 from supernote.server.services.processor_modules.ocr import OcrModule
 from supernote.server.services.processor_modules.page_hashing import PageHashingModule
 from supernote.server.services.processor_modules.summary import SummaryModule
+from supernote.server.services.summary import SummaryService
+from supernote.server.services.user import UserService
 from supernote.server.utils.hashing import get_md5_hash
 from supernote.server.utils.paths import get_page_png_path
 
 
 @pytest.fixture
-def mock_file_service() -> MagicMock:
-    service = MagicMock()
-    service.blob_storage = MagicMock()
-    service.blob_storage.delete = AsyncMock()
-    service.blob_storage.exists = AsyncMock()
-    return service
+def file_service(
+    storage_root: Path,
+    blob_storage: BlobStorage,
+    user_service: UserService,
+    session_manager: DatabaseSessionManager,
+) -> FileService:
+    return FileService(
+        storage_root=storage_root,
+        blob_storage=blob_storage,
+        user_service=user_service,
+        session_manager=session_manager,
+        event_bus=LocalEventBus(),
+    )
+
+
+@pytest.fixture
+def summary_service(
+    user_service: UserService,
+    session_manager: DatabaseSessionManager,
+) -> SummaryService:
+    return SummaryService(
+        user_service=user_service,
+        session_manager=session_manager,
+    )
 
 
 @pytest.fixture(name="processor_service")
 def processor_service_fixture(
-    session_manager: DatabaseSessionManager, mock_file_service: MagicMock
+    session_manager: DatabaseSessionManager,
+    file_service: FileService,
+    summary_service: SummaryService,
 ) -> ProcessorService:
     return ProcessorService(
         event_bus=LocalEventBus(),
         session_manager=session_manager,
-        file_service=mock_file_service,
-        summary_service=MagicMock(),
+        file_service=file_service,
+        summary_service=summary_service,
     )
 
 
@@ -59,6 +84,7 @@ class SlowModule(ProcessorModule):
         self.sleep_time = sleep_time
         self.active_count = 0
         self.max_active_seen = 0
+        self.calls: list[tuple[int, int | None, str | None]] = []
 
     @property
     def name(self) -> str:
@@ -71,7 +97,15 @@ class SlowModule(ProcessorModule):
     async def run_if_needed(self, *args: object, **kwargs: object) -> bool:
         return True
 
-    async def process(self, *args: object, **kwargs: object) -> None:
+    async def process(
+        self,
+        file_id: int,
+        session_manager: DatabaseSessionManager,
+        page_index: int | None = None,
+        page_id: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        self.calls.append((file_id, page_index, page_id))
         self.active_count += 1
         self.max_active_seen = max(self.max_active_seen, self.active_count)
         try:
@@ -129,25 +163,26 @@ async def test_processor_handles_event(processor_service: ProcessorService) -> N
 
 
 async def test_processor_deduplication(processor_service: ProcessorService) -> None:
-    processor_service.queue = AsyncMock()  # Mock queue to prevent actual logic
-
     event = NoteUpdatedEvent(file_id=123, user_id=1, file_path="test.note")
 
     await processor_service.handle_note_updated(event)
     assert 123 in processor_service.processing_files
-    processor_service.queue.put.assert_called_once_with(123)
+    assert processor_service.queue.qsize() == 1
 
     # Second event for same file should be ignored
     await processor_service.handle_note_updated(event)
-    assert processor_service.queue.put.call_count == 1
+    assert processor_service.queue.qsize() == 1
+    assert await processor_service.queue.get() == 123
 
 
 async def test_handle_note_deleted_cleanup(
     processor_service: ProcessorService,
     session_manager: DatabaseSessionManager,
-    mock_file_service: MagicMock,
+    blob_storage: BlobStorage,
 ) -> None:
     file_id = 999
+    await blob_storage.put(CACHE_BUCKET, get_page_png_path(file_id, "p0"), b"png0")
+    await blob_storage.put(CACHE_BUCKET, get_page_png_path(file_id, "p1"), b"png1")
 
     # Setup mock data in DB
     async with session_manager.session() as session:
@@ -222,20 +257,23 @@ async def test_handle_note_deleted_cleanup(
         assert len(summaries) == 0
 
     # Verify Blobs are deleted
-    mock_file_service.blob_storage.delete.assert_any_call(
-        CACHE_BUCKET, get_page_png_path(file_id, "p0")
-    )
-    mock_file_service.blob_storage.delete.assert_any_call(
-        CACHE_BUCKET, get_page_png_path(file_id, "p1")
-    )
+    assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "p0"))
+    assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "p1"))
 
 
 async def test_page_hashing_orphan_cleanup(
-    session_manager: DatabaseSessionManager, mock_file_service: MagicMock
+    session_manager: DatabaseSessionManager,
+    file_service: FileService,
+    blob_storage: BlobStorage,
 ) -> None:
     file_id = 888
-    hashing_module = PageHashingModule(file_service=mock_file_service)
+    hashing_module = PageHashingModule(file_service=file_service)
     current_content_hash = get_md5_hash("page_content_0")
+    await blob_storage.put(USER_DATA_BUCKET, "key", b"note-bytes")
+    for i in range(3):
+        await blob_storage.put(
+            CACHE_BUCKET, get_page_png_path(file_id, str(i)), f"png{i}".encode()
+        )
 
     async with session_manager.session() as session:
         session.add(
@@ -272,9 +310,6 @@ async def test_page_hashing_orphan_cleanup(
     mock_page.__str__.return_value = "page_content_0"  # type: ignore[attr-defined]
     mock_page.get.return_value = "0"  # Matches existing page_id "0"
     mock_metadata.pages = [mock_page]
-    mock_file_service.blob_storage.get_blob_path.return_value = MagicMock(
-        exists=lambda: True
-    )
 
     with (
         patch(
@@ -308,12 +343,9 @@ async def test_page_hashing_orphan_cleanup(
         assert len(tasks) == 1
         assert tasks[0].key == "page_0"
 
-    mock_file_service.blob_storage.delete.assert_any_call(
-        CACHE_BUCKET, get_page_png_path(file_id, "1")
-    )
-    mock_file_service.blob_storage.delete.assert_any_call(
-        CACHE_BUCKET, get_page_png_path(file_id, "2")
-    )
+    assert await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "0"))
+    assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "1"))
+    assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "2"))
 
 
 async def test_recover_tasks_enqueues_incomplete(
@@ -428,28 +460,26 @@ async def test_page_parallelism(
     processor_service.register_modules(
         hashing=hashing,
         png=png,
-        ocr=MagicMock(spec=ProcessorModule),
-        embedding=MagicMock(spec=ProcessorModule),
+        ocr=None,
+        embedding=None,
         summary=summary,
     )
     processor_service.page_modules = [png]
 
-    mock_session = AsyncMock()
-    mock_result = MagicMock()
-    # Mock return must now match (page_index, page_id) tuple structure
-    mock_result.all.return_value = [
-        (0, "p0"),
-        (1, "p1"),
-        (2, "p2"),
-        (3, "p3"),
-    ]
-    mock_session.execute.return_value = mock_result
-    # Use patch to mock the session context manager
-    with patch(
-        "supernote.server.db.session.DatabaseSessionManager.session"
-    ) as mock_session_ctx:
-        mock_session_ctx.return_value.__aenter__.return_value = mock_session
-        await processor_service.process_file(123)
+    file_id = 123
+    async with session_manager.session() as session:
+        for i in range(4):
+            session.add(
+                NotePageContentDO(
+                    file_id=file_id,
+                    page_index=i,
+                    page_id=f"p{i}",
+                    content_hash=f"h{i}",
+                )
+            )
+        await session.commit()
+
+    await processor_service.process_file(file_id)
 
     assert png.max_active_seen == 4, (
         f"Expected 4 pages in parallel, saw {png.max_active_seen}"
@@ -485,15 +515,16 @@ async def test_gemini_concurrency_limit() -> None:
 
 async def test_processor_pause_resume(
     session_manager: DatabaseSessionManager,
-    mock_file_service: MagicMock,
+    file_service: FileService,
+    summary_service: SummaryService,
 ) -> None:
     coordination_service = SqliteCoordinationService(session_manager)
 
     processor_service = ProcessorService(
         event_bus=LocalEventBus(),
         session_manager=session_manager,
-        file_service=mock_file_service,
-        summary_service=MagicMock(),
+        file_service=file_service,
+        summary_service=summary_service,
         coordination_service=coordination_service,
         concurrency=1,
     )
@@ -507,13 +538,8 @@ async def test_processor_pause_resume(
     assert await coordination_service.get_value("queue_paused") == "true"
 
     # Start service in paused state
-    processor_service.register_modules(
-        hashing=MagicMock(),
-        png=MagicMock(),
-        ocr=MagicMock(),
-        embedding=MagicMock(),
-        summary=MagicMock(),
-    )
+    hashing = SlowModule("Hashing", 0.0)
+    processor_service.register_modules(hashing=hashing, png=None)
 
     with patch(
         "supernote.server.services.processor.ProcessorService.process_file",
@@ -550,39 +576,45 @@ async def test_process_file_without_page_modules(
     processor_service: ProcessorService,
 ) -> None:
     """Verify process_file runs global pre-modules and skips page queries when no page_modules are registered."""
-    hashing = MagicMock(spec=ProcessorModule)
-    hashing.run = AsyncMock(return_value=True)
+    hashing = SlowModule("Hashing", 0.0)
 
     processor_service.register_modules(hashing=hashing, png=None)
     assert processor_service.page_modules == []
     assert processor_service.global_post_modules == []
 
     await processor_service.process_file(123)
-    hashing.run.assert_called_once_with(123, processor_service.session_manager)
+    assert hashing.calls == [(123, None, None)]
 
 
 async def test_process_file_publishes_processing_completed_event(
     processor_service: ProcessorService,
     session_manager: DatabaseSessionManager,
-    mock_file_service: MagicMock,
 ) -> None:
     """Verify process_file publishes NoteProcessingCompletedEvent when pipeline completes."""
     file_id = 777
     async with session_manager.session() as session:
         session.add(
             UserFileDO(
+                id=10,
+                user_id=7,
+                file_name="Note",
+                directory_id=0,
+                is_folder="Y",
+            )
+        )
+        session.add(
+            UserFileDO(
                 id=file_id,
                 user_id=7,
                 file_name="Daily.note",
+                directory_id=10,
                 storage_key="key",
                 md5="hash",
             )
         )
         await session.commit()
 
-    mock_file_service.get_full_path_by_node = AsyncMock(return_value="Note/Daily.note")
-    hashing = MagicMock(spec=ProcessorModule)
-    hashing.run = AsyncMock(return_value=True)
+    hashing = SlowModule("Hashing", 0.0)
     processor_service.register_modules(hashing=hashing, png=None)
 
     received_events: list[Event] = []
@@ -647,20 +679,21 @@ async def test_recover_missing_tasks_skips_inactive_files(
 async def test_recover_missing_tasks_backfills_embedding_model_and_ai_modules(
     session_manager: DatabaseSessionManager,
     processor_service: ProcessorService,
-    mock_file_service: MagicMock,
+    file_service: FileService,
+    summary_service: SummaryService,
 ) -> None:
     """Verify recover_missing_tasks enqueues files needing OCR, embedding, or summary backfill."""
     processor_service.register_modules(
-        hashing=PageHashingModule(file_service=mock_file_service),
+        hashing=PageHashingModule(file_service=file_service),
         png=None,
-        ocr=OcrModule(file_service=mock_file_service, ocr_model=FakeOcrModel()),
+        ocr=OcrModule(file_service=file_service, ocr_model=FakeOcrModel()),
         embedding=EmbeddingModule(
-            file_service=mock_file_service,
+            file_service=file_service,
             embedding_model=FakeEmbeddingModel(model_id="new-model"),
         ),
         summary=SummaryModule(
-            file_service=mock_file_service,
-            summary_service=MagicMock(),
+            file_service=file_service,
+            summary_service=summary_service,
             summary_model=FakeSummaryModel(),
         ),
     )

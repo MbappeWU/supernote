@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -30,28 +29,26 @@ def test_create_summary_model_unconfigured(tmp_path: Path) -> None:
 
 
 def test_create_summary_model_legacy_gemini() -> None:
-    with patch("google.genai.Client"):
-        legacy_config = ServerConfig(gemini_api_key="test-key")
-        model = create_summary_model(legacy_config)
-        assert isinstance(model, ConcurrencyLimitedSummaryModel)
-        assert model.model_id == legacy_config.gemini_ocr_model
+    legacy_config = ServerConfig(gemini_api_key="test-key")
+    model = create_summary_model(legacy_config)
+    assert isinstance(model, ConcurrencyLimitedSummaryModel)
+    assert model.model_id == legacy_config.gemini_ocr_model
 
 
 def test_create_summary_model_gemini_provider() -> None:
-    with patch("google.genai.Client"):
-        ai_config = ServerConfig(
-            ai=AiConfig(
-                providers={"gemini": ProviderConfig(api_key="ai-key")},
-                summary=ModelConfig(
-                    provider="gemini",
-                    model="gemini-custom-summary",
-                    max_concurrency=4,
-                ),
-            )
+    ai_config = ServerConfig(
+        ai=AiConfig(
+            providers={"gemini": ProviderConfig(api_key="ai-key")},
+            summary=ModelConfig(
+                provider="gemini",
+                model="gemini-custom-summary",
+                max_concurrency=4,
+            ),
         )
-        ai_model = create_summary_model(ai_config)
-        assert isinstance(ai_model, ConcurrencyLimitedSummaryModel)
-        assert ai_model.model_id == "gemini-custom-summary"
+    )
+    ai_model = create_summary_model(ai_config)
+    assert isinstance(ai_model, ConcurrencyLimitedSummaryModel)
+    assert ai_model.model_id == "gemini-custom-summary"
 
 
 def test_create_summary_model_openai_provider() -> None:
