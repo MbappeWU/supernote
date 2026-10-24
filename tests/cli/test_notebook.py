@@ -3,7 +3,6 @@
 import argparse
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -181,10 +180,11 @@ def test_subcommand_convert_pdf_all(test_note_path: Path, tmp_path: Path):
     assert out_file.exists()
 
 
-def test_subcommand_convert_txt_single(test_note_path: Path, tmp_path: Path):
+def test_subcommand_convert_txt_single(test_data_dir: Path, tmp_path: Path):
+    rtr_note = test_data_dir / "philips" / "rtr.note"
     out_file = tmp_path / "output.txt"
     args = argparse.Namespace(
-        input=str(test_note_path),
+        input=str(rtr_note),
         output=str(out_file),
         number=0,
         all=False,
@@ -192,18 +192,16 @@ def test_subcommand_convert_txt_single(test_note_path: Path, tmp_path: Path):
         color=None,
         policy="strict",
     )
-    with patch(
-        "supernote.cli.notebook.TextConverter.convert", return_value="Sample text"
-    ):
-        subcommand_convert(args)
-        assert out_file.exists()
-        assert out_file.read_text() == "Sample text"
+    subcommand_convert(args)
+    assert out_file.exists()
+    assert "Real paragraph test recognition time" in out_file.read_text()
 
 
-def test_subcommand_convert_txt_all(test_note_path: Path, tmp_path: Path):
+def test_subcommand_convert_txt_all(test_data_dir: Path, tmp_path: Path):
+    rtr_note = test_data_dir / "philips" / "rtr.note"
     out_file = tmp_path / "output.txt"
     args = argparse.Namespace(
-        input=str(test_note_path),
+        input=str(rtr_note),
         output=str(out_file),
         number=0,
         all=True,
@@ -212,12 +210,9 @@ def test_subcommand_convert_txt_all(test_note_path: Path, tmp_path: Path):
         text_page_separator="--PAGE--",
         policy="strict",
     )
-    with patch(
-        "supernote.cli.notebook.TextConverter.convert", return_value="Page text"
-    ):
-        subcommand_convert(args)
-        assert out_file.exists()
-        assert "Page text" in out_file.read_text()
+    subcommand_convert(args)
+    assert out_file.exists()
+    assert "Real paragraph test recognition time" in out_file.read_text()
 
 
 def test_subcommand_convert_with_color(test_note_path: Path, tmp_path: Path):

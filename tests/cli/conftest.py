@@ -1,28 +1,61 @@
-"""Shared fixtures for CLI tests backed by a real in-process Supernote server."""
+"""Shared fixtures for CLI tests backed by the shared in-process server harness."""
 
 import hashlib
 import os
-import socket
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient
-from pytest_aiohttp import AiohttpClient
 
-import supernote.server.db.models  # noqa: F401
 from supernote.client.auth import FileCacheAuth
 from supernote.models.user import UserRegisterDTO
-from supernote.server.app import create_app
 from supernote.server.config import AiConfig, AuthConfig, ModelConfig, ServerConfig
 from supernote.server.db.session import DatabaseSessionManager
-from supernote.server.services.coordination import SqliteCoordinationService
 from supernote.server.services.user import UserService
+from tests.server.conftest import (
+    TEST_PASSWORD,
+    TEST_USERNAME,
+    _session_manager_shared,
+    additional_users,
+    auth_headers_fixture,
+    client_fixture,
+    coordination_service,
+    ignore_aiossqllite_debug,
+    mcp_port,
+    patch_run_migrations,
+    server_port,
+    session_manager_fixture,
+    storage_root,
+    test_users,
+    user_service,
+)
 
-ADMIN_EMAIL = "admin@example.com"
-ADMIN_PASSWORD = "secret"
+ADMIN_EMAIL = TEST_USERNAME
+ADMIN_PASSWORD = TEST_PASSWORD
+
+__all__ = [
+    "ADMIN_EMAIL",
+    "ADMIN_PASSWORD",
+    "CliServerEnv",
+    "_session_manager_shared",
+    "additional_users",
+    "auth_headers_fixture",
+    "cli_env",
+    "client_fixture",
+    "coordination_service",
+    "create_test_user",
+    "ignore_aiossqllite_debug",
+    "isolated_cli_home",
+    "mcp_port",
+    "patch_run_migrations",
+    "server_config",
+    "server_port",
+    "session_manager_fixture",
+    "storage_root",
+    "test_users",
+    "user_service",
+]
 
 
 @dataclass
@@ -44,36 +77,19 @@ def isolated_cli_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _pick_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return int(s.getsockname()[1])
-
-
 @pytest.fixture
-async def cli_env(
-    aiohttp_client: AiohttpClient,
-    tmp_path: Path,
-) -> AsyncGenerator[CliServerEnv]:
-    """Spin up a real Supernote server and pre-populate ~/.cache/supernote.pkl with admin credentials."""
-    db_path = tmp_path / "cli_test.sqlite"
-    session_manager = DatabaseSessionManager(
-        f"sqlite+aiosqlite:///{db_path}",
-        engine_kwargs={"connect_args": {"check_same_thread": False}},
-    )
-    await session_manager.create_all_tables()
-    real_close = session_manager.close
-    session_manager.create_all_tables = AsyncMock()  # type: ignore[method-assign]
-    session_manager.close = AsyncMock()  # type: ignore[method-assign]
-
-    storage_dir = tmp_path / "storage"
-    mcp_port = _pick_port()
-    server_config = ServerConfig(
+def server_config(
+    storage_root: Path,
+    server_port: int,
+    mcp_port: int,
+) -> ServerConfig:
+    """Create a ServerConfig with fake AI models enabled for CLI tests."""
+    return ServerConfig(
         host="127.0.0.1",
-        port=_pick_port(),
+        storage_dir=str(storage_root),
+        port=server_port,
         mcp_port=mcp_port,
         _mcp_base_url=f"http://127.0.0.1:{mcp_port}",
-        storage_dir=str(storage_dir),
         auth=AuthConfig(
             enable_registration=True,
             expiration_hours=1,
@@ -85,50 +101,42 @@ async def cli_env(
             embedding=ModelConfig(provider="fake", model="fake-embedding-v1"),
         ),
     )
-    coordination_service = SqliteCoordinationService(session_manager)
-    user_service = UserService(
-        server_config.auth, coordination_service, session_manager
-    )
 
-    with (
-        patch("supernote.server.app.run_migrations"),
-        patch(
-            "supernote.server.app.create_db_session_manager",
-            return_value=session_manager,
-        ),
-        patch(
-            "supernote.server.app.create_coordination_service",
-            return_value=coordination_service,
-        ),
-        patch(
-            "supernote.server.app.create_user_service",
-            return_value=user_service,
-        ),
-    ):
-        app = create_app(server_config)
-        test_client = await aiohttp_client(app)
-        base_url = str(test_client.make_url("")).rstrip("/")
 
-        pw_md5 = hashlib.md5(ADMIN_PASSWORD.encode("utf-8")).hexdigest()
+@pytest.fixture
+async def create_test_user(
+    user_service: UserService,
+    test_users: list[str],
+) -> None:
+    """Register the default test user so the first user is bootstrapped as admin."""
+    for test_user in test_users:
         await user_service.register(
             UserRegisterDTO(
-                email=ADMIN_EMAIL,
-                password=pw_md5,
-                user_name="Admin",
+                email=test_user,
+                password=hashlib.md5(TEST_PASSWORD.encode("utf-8")).hexdigest(),
+                user_name="Test User",
             )
         )
-        admin_token = await user_service.create_session(ADMIN_EMAIL)
 
-        cache_path = os.path.expanduser("~/.cache/supernote.pkl")
-        FileCacheAuth(cache_path).save_credentials(admin_token, base_url)
 
-        yield CliServerEnv(
-            url=base_url,
-            client=test_client,
-            session_manager=session_manager,
-            user_service=user_service,
-            server_config=server_config,
-            admin_token=admin_token,
-        )
-
-    await real_close()
+@pytest.fixture
+def cli_env(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    session_manager: DatabaseSessionManager,
+    user_service: UserService,
+    server_config: ServerConfig,
+) -> CliServerEnv:
+    """Provide a running Supernote server and pre-populate ~/.cache/supernote.pkl."""
+    base_url = str(client.make_url("")).rstrip("/")
+    admin_token = auth_headers["x-access-token"]
+    cache_path = os.path.expanduser("~/.cache/supernote.pkl")
+    FileCacheAuth(cache_path).save_credentials(admin_token, base_url)
+    return CliServerEnv(
+        url=base_url,
+        client=client,
+        session_manager=session_manager,
+        user_service=user_service,
+        server_config=server_config,
+        admin_token=admin_token,
+    )
