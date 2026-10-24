@@ -227,10 +227,15 @@ async def integrity_async(
                 print("-" * 75)
                 for issue in report.issues:
                     print(
-                        f"  [{issue.issue_type}] user={issue.user_id} "
+                        f"  [{issue.issue_type.value}] user={issue.user_id} "
                         f"file={issue.file_id} ({issue.file_name}): {issue.detail}"
                     )
                 print()
+                if report.remediations:
+                    print("Suggested Remediation:")
+                    for hint in report.remediations:
+                        print(f"  - {hint}")
+                    print()
 
         has_failures = bool(
             report.issues

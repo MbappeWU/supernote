@@ -320,6 +320,8 @@ async def test_integrity_issues_detected(
     captured = capsys.readouterr()
     assert "Missing Blobs:     1" in captured.out
     assert "broken.note" in captured.out
+    assert "Suggested Remediation:" in captured.out
+    assert "Re-upload or re-sync affected files" in captured.out
     assert "Integrity issues detected." in captured.out
 
 

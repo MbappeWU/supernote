@@ -6,12 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.client.device import DeviceClient
 from supernote.models.base import ProcessingStatus, TaskType
+from supernote.models.system import IntegrityIssueType
 from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage, LocalBlobStorage
-from supernote.server.services.integrity import IntegrityService
+from supernote.server.services.integrity import _REMEDIATION_HINTS, IntegrityService
 from supernote.server.services.user import UserService
 
 
@@ -90,8 +91,12 @@ async def test_integrity_check(
     # Scanned: 8 (default folders) + Docs + good + bad_size = 11
     assert report.scanned == 11
     assert report.ok == 9  # Some default folders are ok
-    assert {i.issue_type for i in report.issues} == {"missing_blob", "size_mismatch"}
+    assert {i.issue_type for i in report.issues} == {
+        IntegrityIssueType.MISSING_BLOB,
+        IntegrityIssueType.SIZE_MISMATCH,
+    }
     assert {i.file_name for i in report.issues} == {"good.txt", "bad_size.txt"}
+    assert len(report.remediations) == 2
 
     file_report = await integrity_service.verify_user_storage(
         user_id, file_id=good_file.id
@@ -239,9 +244,9 @@ async def test_integrity_pipeline_issues(
 
     issue_types = {issue.issue_type for issue in file_report.issues}
     assert issue_types == {
-        "task_failed",
-        "missing_cache_blob",
-        "missing_page_content",
+        IntegrityIssueType.TASK_FAILED,
+        IntegrityIssueType.MISSING_CACHE_BLOB,
+        IntegrityIssueType.MISSING_PAGE_CONTENT,
     }
 
 
@@ -264,5 +269,12 @@ async def test_integrity_duplicate_root_folder(
     report = await integrity_service.verify_user_storage(test_user_id)
     assert report.folder_anomalies == 1
     assert len(report.issues) == 1
-    assert report.issues[0].issue_type == "duplicate_root_folder"
+    assert report.issues[0].issue_type == IntegrityIssueType.DUPLICATE_ROOT_FOLDER
     assert report.issues[0].file_name == "Export"
+    assert len(report.remediations) == 1
+    assert "https://github.com/allenporter/supernote/issues" in report.remediations[0]
+
+
+def test_remediation_hints_cover_all_issue_types() -> None:
+    """Ensure every IntegrityIssueType has a remediation hint on the server."""
+    assert set(_REMEDIATION_HINTS.keys()) == set(IntegrityIssueType)
