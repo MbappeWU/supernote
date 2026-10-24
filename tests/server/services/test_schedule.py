@@ -290,16 +290,20 @@ async def test_move_task_between_groups_and_inbox(
     assert back_in_inbox.task_list_id is None
 
 
-async def test_update_and_batch_update_preserve_last_modified(
+async def test_update_and_batch_update_preserve_last_modified_and_clear_nullable_fields(
     schedule_service: ScheduleService,
 ) -> None:
-    """Verify update_task and batch_update_tasks preserve client update_time."""
+    """Verify update_task and batch_update_tasks preserve client update_time and clear nullable fields."""
     user_id = 445
     group = await schedule_service.create_group(user_id, "Sync Group")
     task = await schedule_service.create_task(
         user_id,
         group.task_list_id,
         "Task with metadata",
+        detail="Initial detail",
+        importance="high",
+        recurrence="FREQ=DAILY;INTERVAL=1",
+        links="eyJhcHBOYW1lIjoiTm90ZSJ9",
         last_modified_ms=1710000001000,
     )
     assert task.update_time == 1710000001000
@@ -323,6 +327,30 @@ async def test_update_and_batch_update_preserve_last_modified(
     assert reordered.update_time == 1710000001000
     delta = await schedule_service.list_tasks(user_id, since=1710000002000)
     assert [t.task_id for t in delta] == [task.task_id]
+
+    # Batch update clearing nullable fields and setting explicit update_time
+    await schedule_service.batch_update_tasks(
+        user_id,
+        [
+            {
+                "task_id": task.task_id,
+                "detail": None,
+                "importance": None,
+                "recurrence": None,
+                "links": None,
+                "task_list_id": None,
+                "update_time": 1710000010000,
+            }
+        ],
+    )
+    cleared = await schedule_service.get_task(user_id, task.task_id)
+    assert cleared is not None
+    assert cleared.detail is None
+    assert cleared.importance is None
+    assert cleared.recurrence is None
+    assert cleared.links is None
+    assert cleared.task_list_id is None
+    assert cleared.update_time == 1710000010000
 
     # Single update_task with explicit update_time
     updated_single = await schedule_service.update_task(
