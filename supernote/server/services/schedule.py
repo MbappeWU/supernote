@@ -24,6 +24,7 @@ TASK_BASE_FIELDS: set[str] = {
     "recurrence",
     "is_reminder_on",
     "task_list_id",
+    "update_time",
 }
 
 TASK_SORT_FIELDS: set[str] = {
@@ -289,19 +290,12 @@ class ScheduleService:
             return list(result.scalars().all())
 
     async def update_task(
-        self,
-        user_id: int,
-        task_id: str,
-        last_modified_ms: int | None = None,
-        **kwargs: Any,
+        self, user_id: int, task_id: str, **kwargs: Any
     ) -> ScheduleTaskDO | None:
         """Update a task."""
         updates = {k: v for k, v in kwargs.items() if k in TASK_ALLOWED_UPDATE_FIELDS}
-        updates["update_time"] = (
-            last_modified_ms
-            if last_modified_ms is not None
-            else int(time.time() * 1000)
-        )
+        if not updates.get("update_time"):
+            updates["update_time"] = int(time.time() * 1000)
 
         async with self.session_manager.session() as session:
             if not (task := await self.get_task(user_id, task_id)):
@@ -354,12 +348,10 @@ class ScheduleService:
                     if k in TASK_ALLOWED_UPDATE_FIELDS
                     and (v is not None or k == "task_list_id")
                 }
-                last_modified_ms = item.get("last_modified_ms")
-                if not updates and last_modified_ms is None:
+                if not updates:
                     continue
-                updates["update_time"] = (
-                    last_modified_ms if last_modified_ms is not None else now_ms
-                )
+                if not updates.get("update_time"):
+                    updates["update_time"] = now_ms
 
                 stmt = (
                     update(ScheduleTaskDO)
