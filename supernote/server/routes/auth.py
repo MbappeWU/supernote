@@ -96,6 +96,11 @@ async def handle_equipment_unlink(request: web.Request) -> web.Response:
             status=400,
         )
 
+    try:
+        await _check_ip_rate_limit(request)
+    except RateLimitExceeded as e:
+        return e.to_response()
+
     user_service: UserService = request.app["user_service"]
     await user_service.unlink_equipment(unlink_req.equipment_no)
     return web.json_response(BaseResponse().to_dict())
@@ -221,6 +226,11 @@ async def handle_bind_equipment(request: web.Request) -> web.Response:
             create_error_response("Missing data").to_dict(), status=400
         )
 
+    try:
+        await _check_ip_rate_limit(request)
+    except RateLimitExceeded as e:
+        return e.to_response()
+
     user_service: UserService = request.app["user_service"]
     await user_service.bind_equipment(bind_req.account, bind_req.equipment_no)
     return web.json_response(BaseResponse().to_dict())
@@ -242,6 +252,11 @@ async def handle_query_equipment_by_no(request: web.Request) -> web.Response:
             create_error_response("Invalid request format").to_dict(),
             status=400,
         )
+
+    try:
+        await _check_ip_rate_limit(request)
+    except RateLimitExceeded as e:
+        return e.to_response()
 
     user_service: UserService = request.app["user_service"]
     result = await user_service.query_equipment_by_no(dto.equipment_no)

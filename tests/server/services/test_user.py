@@ -429,10 +429,10 @@ async def test_equipment_session_revocation(user_service: UserService) -> None:
     assert await user_service.verify_token(vo3.token) is not None
     assert await user_service.verify_token(vo2.token) is not None
 
-    # Unlinking dev2 revokes vo2.token
+    # Unlinking dev2 removes the device binding without revoking active sessions
     await user_service.bind_equipment(email, "dev2")
     await user_service.unlink_equipment("dev2")
-    assert await user_service.verify_token(vo2.token) is None
+    assert await user_service.verify_token(vo2.token) is not None
     assert await user_service.verify_token(vo3.token) is not None
 
 

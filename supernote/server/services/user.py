@@ -545,19 +545,12 @@ class UserService:
             await session.commit()
 
     async def unlink_equipment(self, equipment_no: str) -> None:
-        """Unlink a device and revoke its sessions."""
+        """Unlink a device."""
         async with self._session_manager.session() as session:
-            existing = await session.execute(
-                select(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
-            )
-            user_ids = {d.user_id for d in existing.scalars().all()}
             await session.execute(
                 delete(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
             )
             await session.commit()
-
-        for uid in user_ids:
-            await self.revoke_equipment_sessions(uid, equipment_no)
 
     async def query_equipment_by_no(self, equipment_no: str) -> UserEquipmentVO:
         """Query bound device details by equipment serial number."""

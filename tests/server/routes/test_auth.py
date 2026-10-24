@@ -503,6 +503,23 @@ async def test_public_auth_endpoints_share_ip_rate_limit(
                 {"email": "extra@example.com"},
             ),
             (
+                "/api/terminal/equipment/unlink",
+                {"equipmentNo": "EQ123"},
+            ),
+            (
+                "/api/terminal/user/bindEquipment",
+                {
+                    "account": "extra@example.com",
+                    "equipmentNo": "EQ123",
+                    "name": "Device",
+                    "totalCapacity": "1000",
+                },
+            ),
+            (
+                "/api/equipment/query/by/equipmentno",
+                {"equipmentNo": "EQ123"},
+            ),
+            (
                 "/api/user/register",
                 {
                     "email": "extra@example.com",
