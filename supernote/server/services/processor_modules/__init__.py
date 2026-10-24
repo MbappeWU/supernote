@@ -2,7 +2,7 @@ import abc
 import logging
 import time
 
-from supernote.models.base import ProcessingStatus
+from supernote.models.base import ProcessingStatus, TaskType
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.metrics import (
     PROCESSOR_TASK_DURATION_SECONDS,
@@ -30,8 +30,8 @@ class ProcessorModule(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def task_type(self) -> str:
-        """The Task Type this module handles (e.g., 'PNG', 'OCR').
+    def task_type(self) -> TaskType:
+        """The Task Type this module handles.
         Matches the `task_type` column in `f_system_task`.
         """
 

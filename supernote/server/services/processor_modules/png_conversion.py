@@ -5,6 +5,7 @@ from functools import partial
 
 from sqlalchemy import select
 
+from supernote.models.base import TaskType
 from supernote.notebook.converter import ImageConverter
 from supernote.notebook.parser import load_notebook
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
@@ -37,8 +38,8 @@ class PngConversionModule(ProcessorModule):
         return "PngConversionModule"
 
     @property
-    def task_type(self) -> str:
-        return "PNG_CONVERSION"
+    def task_type(self) -> TaskType:
+        return TaskType.PNG_CONVERSION
 
     @property
     def version(self) -> str | None:

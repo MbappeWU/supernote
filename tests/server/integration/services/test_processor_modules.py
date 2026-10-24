@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from supernote.models.base import TaskType
 from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import LocalEventBus
@@ -27,8 +28,8 @@ class FakeModule(ProcessorModule):
         return self.module_name
 
     @property
-    def task_type(self) -> str:
-        return self.module_name.upper()
+    def task_type(self) -> TaskType:
+        return TaskType.from_friendly(self.module_name)
 
     async def process(
         self,
