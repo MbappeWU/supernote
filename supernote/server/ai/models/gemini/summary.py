@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from google.genai import types
 
-from supernote.server.ai.base import AIError
 from supernote.server.ai.models.summary import SummaryModel
-from supernote.server.ai.prompts import SummaryResponse, get_summary_json_schema
+from supernote.server.ai.prompts import (
+    SummaryResponse,
+    get_summary_json_schema,
+    parse_summary_response,
+)
 
 from .backend import GeminiBackend, create_gemini_backend
 
@@ -45,15 +47,7 @@ class GeminiSummaryModel(SummaryModel):
                 response_json_schema=get_summary_json_schema(),
             ),
         )
-        if not response.text:
-            return SummaryResponse(segments=[])
-        try:
-            data = json.loads(response.text)
-            return SummaryResponse.from_dict(data)
-        except (ValueError, TypeError, KeyError) as err:
-            raise AIError(
-                f"Failed to parse Gemini summary JSON response: {err}"
-            ) from err
+        return parse_summary_response(response.text)
 
 
 def create_summary_model(config: ServerConfig) -> SummaryModel | None:

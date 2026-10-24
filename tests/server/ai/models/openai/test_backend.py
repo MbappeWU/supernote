@@ -78,11 +78,15 @@ async def test_embeddings_with_api_key(
 
 
 async def test_http_error_raises_ai_error(
-    openai_backend: OpenAIBackend, fake_openai: FakeOpenAIServer
+    openai_backend: OpenAIBackend,
+    fake_openai: FakeOpenAIServer,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     fake_openai.status = 404
-    with pytest.raises(AIError, match="HTTP 404: model not found"):
-        await openai_backend.chat_completion(model="gemma", content=[])
+    with caplog.at_level("ERROR"):
+        with pytest.raises(AIError, match="HTTP 404: model not found"):
+            await openai_backend.chat_completion(model="gemma", content=[])
+    assert "HTTP 404: model not found" in caplog.text
 
 
 async def test_malformed_response_raises_ai_error(

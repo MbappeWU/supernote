@@ -87,11 +87,22 @@ async def test_openai_summary_model_empty_response(
     )
 
 
+@pytest.mark.parametrize(
+    "invalid_payload",
+    [
+        "not valid json",
+        "{}",
+        json.dumps({"segments": [{"date_range": "2023-10-27"}]}),
+        json.dumps({"segments": "not-a-list"}),
+    ],
+)
 async def test_openai_summary_model_invalid_json(
-    summary_model: OpenAISummaryModel, fake_openai: FakeOpenAIServer
+    summary_model: OpenAISummaryModel,
+    fake_openai: FakeOpenAIServer,
+    invalid_payload: str,
 ) -> None:
-    fake_openai.chat_content = "not valid json"
-    with pytest.raises(AIError, match="Failed to parse OpenAI-compatible summary"):
+    fake_openai.chat_content = invalid_payload
+    with pytest.raises(AIError, match="Failed to parse"):
         await summary_model.summarize("Summarize this.")
 
 

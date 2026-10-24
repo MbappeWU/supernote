@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import re
 from typing import TYPE_CHECKING
 
-from supernote.server.ai.base import AIError
 from supernote.server.ai.models.summary import SummaryModel
-from supernote.server.ai.prompts import SummaryResponse, get_summary_json_schema
+from supernote.server.ai.prompts import (
+    SummaryResponse,
+    get_summary_json_schema,
+    parse_summary_response,
+)
 
 from .backend import OpenAIBackend, create_openai_backend
 
@@ -19,14 +20,6 @@ __all__ = [
     "OpenAISummaryModel",
     "create_summary_model",
 ]
-
-_CODE_FENCE = re.compile(r"^```[a-zA-Z]*\s*\n(.*?)\n?```\s*$", re.DOTALL)
-
-
-def _strip_code_fence(text: str) -> str:
-    """Remove a Markdown code fence that some local models wrap JSON output in."""
-    match = _CODE_FENCE.match(text.strip())
-    return match.group(1) if match else text
 
 
 class OpenAISummaryModel(SummaryModel):
@@ -55,15 +48,7 @@ class OpenAISummaryModel(SummaryModel):
                 },
             },
         )
-        if not text.strip():
-            return SummaryResponse(segments=[])
-        try:
-            data = json.loads(_strip_code_fence(text))
-            return SummaryResponse.from_dict(data)
-        except (ValueError, TypeError, KeyError) as err:
-            raise AIError(
-                f"Failed to parse OpenAI-compatible summary JSON response: {err}"
-            ) from err
+        return parse_summary_response(text)
 
 
 def create_summary_model(config: ServerConfig) -> SummaryModel | None:

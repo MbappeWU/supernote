@@ -54,14 +54,14 @@ class OpenAIBackend:
     @contextmanager
     def _track_api_call(self, operation: str) -> Generator[None]:
         start_time = time.monotonic()
-        status = "success"
+        status = "failure"
         try:
             yield
-        except AIError:
-            status = "failure"
+            status = "success"
+        except AIError as err:
+            logger.error(f"OpenAI-compatible API error during {operation}: {err}")
             raise
         except _RESPONSE_ERRORS as err:
-            status = "failure"
             logger.error(f"OpenAI-compatible API error during {operation}: {err!r}")
             raise AIError(
                 f"OpenAI-compatible API error during {operation}: {err!r}"

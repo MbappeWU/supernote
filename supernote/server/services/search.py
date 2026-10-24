@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 from sqlalchemy import select
 
+from supernote.server.ai.base import AIError
 from supernote.server.ai.models.embedding import EmbeddingModel, EmbeddingTaskType
 from supernote.server.db.models.file import UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO
@@ -117,7 +118,7 @@ class SearchService:
                 query, task_type=EmbeddingTaskType.RETRIEVAL_QUERY
             )
             query_embedding = np.array(embedding_values)
-        except (ValueError, RuntimeError, TypeError) as e:
+        except (AIError, ValueError, TypeError) as e:
             logger.error(f"Failed to fetch or process query embedding: {e}")
             return []
 

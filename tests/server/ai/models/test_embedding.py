@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from supernote.server.ai.base import AIError
 from supernote.server.ai.models.embedding import (
     ConcurrencyLimitedEmbeddingModel,
     EmbeddingTaskType,
@@ -110,19 +111,26 @@ async def test_concurrency_limited_embedding_model() -> None:
     assert fake.calls == [("hello", EmbeddingTaskType.RETRIEVAL_QUERY)]
 
 
-async def test_embedding_model_rejects_empty_and_zero_norm_vectors() -> None:
-    empty_model = FakeEmbeddingModel(dimensions=0)
-    with pytest.raises(ValueError, match="empty or zero-norm"):
-        await empty_model.embed("hello", task_type=EmbeddingTaskType.RETRIEVAL_DOCUMENT)
-
-    class ZeroEmbeddingModel(FakeEmbeddingModel):
+@pytest.mark.parametrize(
+    "bad_vector",
+    [
+        [],
+        [0.0, 0.0, 0.0],
+        [float("nan"), 1.0],
+        [float("inf"), 1.0],
+    ],
+)
+async def test_embedding_model_rejects_invalid_vectors(
+    bad_vector: list[float],
+) -> None:
+    class BadEmbeddingModel(FakeEmbeddingModel):
         async def _embed(
             self,
             text: str,
             task_type: EmbeddingTaskType,
         ) -> list[float]:
-            return [0.0, 0.0, 0.0]
+            return bad_vector
 
-    zero_model = ZeroEmbeddingModel()
-    with pytest.raises(ValueError, match="empty or zero-norm"):
-        await zero_model.embed("hello", task_type=EmbeddingTaskType.RETRIEVAL_DOCUMENT)
+    bad_model = BadEmbeddingModel()
+    with pytest.raises(AIError, match="empty, non-finite, or zero-norm"):
+        await bad_model.embed("hello", task_type=EmbeddingTaskType.RETRIEVAL_DOCUMENT)

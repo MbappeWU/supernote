@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from supernote.server.ai.base import AIError
 from supernote.server.ai.models.embedding import EmbeddingTaskType
 from supernote.server.ai.models.openai.backend import OpenAIBackend
 from supernote.server.ai.models.openai.embedding import (
@@ -29,6 +32,15 @@ async def test_openai_embedding_model(
             {"model": "nomic-embed-text", "input": "some text"},
         )
     ] * len(EmbeddingTaskType)
+
+
+async def test_openai_embedding_model_empty_vector_raises_ai_error(
+    openai_backend: OpenAIBackend, fake_openai: FakeOpenAIServer
+) -> None:
+    fake_openai.embedding = []
+    model = OpenAIEmbeddingModel(openai_backend, "nomic-embed-text")
+    with pytest.raises(AIError):
+        await model.embed("some text", EmbeddingTaskType.RETRIEVAL_DOCUMENT)
 
 
 def test_create_embedding_model() -> None:
