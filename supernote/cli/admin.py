@@ -191,15 +191,18 @@ def reprocess(args):
 
 
 async def integrity_async(
-    url: str | None = None,
-    user_id: int | None = None,
+    url: str | None,
+    user_id: int,
+    file_id: int | None = None,
     as_json: bool = False,
 ) -> None:
-    """Verify server storage integrity."""
+    """Verify server storage integrity for a user."""
     async with create_session(url) as session:
         admin_client = AdminClient(session.client)
         try:
-            report = await admin_client.verify_integrity(user_id=user_id)
+            report = await admin_client.verify_integrity(
+                user_id=user_id, file_id=file_id
+            )
         except Exception as e:
             print(f"Failed to verify integrity: {e}")
             sys.exit(1)
@@ -217,9 +220,19 @@ async def integrity_async(
             print(f"Size Mismatches:   {report.size_mismatch}")
             print(f"Hash Mismatches:   {report.hash_mismatch}")
             print()
+            if report.issues:
+                print(f"Issues Found ({len(report.issues)}):")
+                print("-" * 75)
+                for issue in report.issues:
+                    print(
+                        f"  [{issue.issue_type}] user={issue.user_id} "
+                        f"file={issue.file_id} ({issue.file_name}): {issue.detail}"
+                    )
+                print()
 
         has_failures = bool(
-            report.orphans
+            report.issues
+            or report.orphans
             or report.missing_blob
             or report.size_mismatch
             or report.hash_mismatch
@@ -238,6 +251,7 @@ def integrity(args) -> None:
         integrity_async(
             url=args.url,
             user_id=args.user_id,
+            file_id=args.file_id,
             as_json=args.json,
         )
     )
@@ -403,8 +417,14 @@ def add_parser(subparsers):
     parser_integrity.add_argument(
         "--user-id",
         type=int,
+        required=True,
+        help="User ID to check",
+    )
+    parser_integrity.add_argument(
+        "--file-id",
+        type=int,
         default=None,
-        help="Check only a specific user ID (default: all users)",
+        help="Check only a specific file ID belonging to the user (default: all files)",
     )
     parser_integrity.add_argument(
         "--json",
