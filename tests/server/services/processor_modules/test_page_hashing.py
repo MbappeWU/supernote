@@ -217,3 +217,47 @@ async def test_process_with_real_file(
             .all()
         )
         assert len(current_pages) == len(pages)
+
+
+async def test_page_hashing_marks_task_failed_on_missing_or_corrupt_file(
+    page_hashing_module: PageHashingModule,
+    session_manager: DatabaseSessionManager,
+    blob_storage: BlobStorage,
+) -> None:
+    missing_file_id = 1001
+    corrupt_file_id = 1002
+    await blob_storage.put(USER_DATA_BUCKET, "corrupt_key", b"not a valid .note file")
+
+    async with session_manager.session() as session:
+        session.add_all(
+            [
+                UserFileDO(
+                    id=missing_file_id,
+                    user_id=1,
+                    storage_key="missing_key",
+                    file_name="missing.note",
+                    directory_id=0,
+                ),
+                UserFileDO(
+                    id=corrupt_file_id,
+                    user_id=1,
+                    storage_key="corrupt_key",
+                    file_name="corrupt.note",
+                    directory_id=0,
+                ),
+            ]
+        )
+        await session.commit()
+
+    for fid in (missing_file_id, corrupt_file_id):
+        assert await page_hashing_module.run(fid, session_manager) is False
+        async with session_manager.session() as session:
+            task = (
+                await session.execute(
+                    select(SystemTaskDO)
+                    .where(SystemTaskDO.file_id == fid)
+                    .where(SystemTaskDO.task_type == "HASHING")
+                )
+            ).scalar_one()
+            assert task.status == "FAILED"
+            assert task.last_error is not None

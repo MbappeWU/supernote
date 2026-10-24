@@ -87,31 +87,21 @@ class PageHashingModule(ProcessorModule):
                 return
 
         # Construct real OS path via BlobStorage (No DB access needed here)
-        try:
-            # This assumes LocalBlobStorage. For S3, we'd need to stream,
-            # but SupernoteParser currently expects a file path.
-            abs_path = self.file_service.blob_storage.get_blob_path(
-                USER_DATA_BUCKET, storage_key
-            )
-        except Exception as e:
-            logger.error(f"Failed to resolve blob path for {file_id}: {e}")
-            return
+        # This assumes LocalBlobStorage. For S3, we'd need to stream,
+        # but SupernoteParser currently expects a file path.
+        abs_path = self.file_service.blob_storage.get_blob_path(
+            USER_DATA_BUCKET, storage_key
+        )
 
         if not abs_path.exists():
             logger.error(f"File {abs_path} does not exist on disk")
-            return
+            raise FileNotFoundError(f"File {abs_path} does not exist on disk")
 
-        # Parse .note file
-        try:
-            # Run parser in thread pool
-            loop = asyncio.get_running_loop()
-            metadata = await loop.run_in_executor(
-                None, partial(_parse_helper, str(abs_path))
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to parse .note file {file_id}: {e}")
-            return
+        # Parse .note file in thread pool
+        loop = asyncio.get_running_loop()
+        metadata = await loop.run_in_executor(
+            None, partial(_parse_helper, str(abs_path))
+        )
 
         # Iterate pages and update DB
         total_pages = metadata.get_total_pages()
@@ -209,7 +199,7 @@ class PageHashingModule(ProcessorModule):
                         await self.file_service.blob_storage.delete(
                             CACHE_BUCKET, png_path
                         )
-                    except Exception as e:
+                    except (FileNotFoundError, OSError) as e:
                         logger.warning(f"Failed to delete orphan PNG {pid}: {e}")
 
                     # Cleanup Tasks
