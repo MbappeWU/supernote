@@ -88,7 +88,7 @@ class PromptLoader:
 
             logger.info(f"Loaded prompts from {self.resources_dir}")
 
-        except Exception as e:
+        except (OSError, UnicodeDecodeError) as e:
             logger.error(f"Failed to load prompts from {self.resources_dir}: {e}")
 
     def _read_prompts_from_dir(self, directory: Path | Traversable) -> str:

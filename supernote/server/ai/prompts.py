@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,7 @@ from typing import Any
 from mashumaro.jsonschema import build_json_schema
 from mashumaro.mixins.json import DataClassJSONMixin
 
+from supernote.server.ai.base import AIError
 from supernote.server.utils.note_content import format_page_metadata
 from supernote.server.utils.prompt_loader import PROMPT_LOADER, PromptId, PromptLoader
 
@@ -19,7 +22,16 @@ __all__ = [
     "format_ocr_prompt",
     "format_summary_prompt",
     "get_summary_json_schema",
+    "parse_summary_response",
 ]
+
+_CODE_FENCE = re.compile(r"^```[a-zA-Z]*\s*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _strip_code_fence(text: str) -> str:
+    """Remove a Markdown code fence that some models wrap JSON output in."""
+    match = _CODE_FENCE.match(text.strip())
+    return match.group(1) if match else text
 
 
 @dataclass
@@ -114,3 +126,14 @@ def format_summary_prompt(
 def get_summary_json_schema() -> dict[str, Any]:
     """Return the JSON schema dictionary for `SummaryResponse`."""
     return build_json_schema(SummaryResponse).to_dict()
+
+
+def parse_summary_response(text: str | None) -> SummaryResponse:
+    """Parse raw model JSON text into a `SummaryResponse`, raising `AIError` on invalid output."""
+    if not text or not text.strip():
+        return SummaryResponse(segments=[])
+    try:
+        data = json.loads(_strip_code_fence(text))
+        return SummaryResponse.from_dict(data)
+    except (ValueError, TypeError, LookupError) as err:
+        raise AIError(f"Failed to parse summary JSON response: {err}") from err

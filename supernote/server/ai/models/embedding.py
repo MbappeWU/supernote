@@ -14,6 +14,8 @@ from abc import ABC, abstractmethod
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from supernote.server.ai.base import AIError
+
 if TYPE_CHECKING:
     from supernote.server.config import ServerConfig
 
@@ -48,9 +50,13 @@ class EmbeddingModel(ABC):
         """Generate a validated, non-zero embedding vector for `text`."""
         values = await self._embed(text, task_type=task_type)
         norm_sq = sum(float(v) * float(v) for v in values)
-        if not values or math.isclose(norm_sq, 0.0, abs_tol=1e-12):
-            raise ValueError(
-                f"Embedding model {self.model_id!r} returned an empty or zero-norm vector"
+        if (
+            not values
+            or not math.isfinite(norm_sq)
+            or math.isclose(norm_sq, 0.0, abs_tol=1e-12)
+        ):
+            raise AIError(
+                f"Embedding model {self.model_id!r} returned an empty, non-finite, or zero-norm vector"
             )
         return [float(v) for v in values]
 

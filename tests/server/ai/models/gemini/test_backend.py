@@ -29,13 +29,27 @@ async def test_gemini_backend_translates_client_errors_to_ai_error() -> None:
         backend._client = mock_client
 
         mock_client.aio.models.generate_content = AsyncMock(
-            side_effect=RuntimeError("network timeout")
+            side_effect=TimeoutError("network timeout")
         )
-        with pytest.raises(AIError, match="Unexpected error calling Gemini API"):
+        with pytest.raises(AIError, match="network timeout"):
             await backend.generate_content(model="gemini-2.0-flash", contents="hello")
 
         mock_client.aio.models.embed_content = AsyncMock(
-            side_effect=RuntimeError("network timeout")
+            side_effect=TimeoutError("network timeout")
         )
-        with pytest.raises(AIError, match="Unexpected error calling Gemini API"):
+        with pytest.raises(AIError, match="network timeout"):
             await backend.embed_content(model="text-embedding-004", contents="hello")
+
+        # Existing AIError should not be double-wrapped
+        mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=AIError("already wrapped")
+        )
+        with pytest.raises(AIError, match=r"^already wrapped$"):
+            await backend.generate_content(model="gemini-2.0-flash", contents="hello")
+
+        # Programming bugs (e.g. AttributeError) should not be masked as AIError
+        mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=AttributeError("unexpected bug")
+        )
+        with pytest.raises(AttributeError, match="unexpected bug"):
+            await backend.generate_content(model="gemini-2.0-flash", contents="hello")

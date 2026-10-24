@@ -8,6 +8,8 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+import aiohttp
+import httpx
 from google import genai
 from google.genai import errors, types
 
@@ -23,6 +25,15 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_TRANSPORT_ERRORS = (
+    httpx.HTTPError,
+    aiohttp.ClientError,
+    OSError,
+    TimeoutError,
+    ValueError,
+    TypeError,
+)
 
 
 class GeminiBackend:
@@ -41,15 +52,17 @@ class GeminiBackend:
     @contextmanager
     def _track_api_call(self, operation: str) -> Generator[None]:
         start_time = time.monotonic()
-        status = "success"
+        status = "failure"
         try:
             yield
+            status = "success"
+        except AIError as err:
+            logger.error(f"Gemini API error during {operation}: {err}")
+            raise
         except errors.APIError as err:
-            status = "failure"
             logger.error(f"Gemini API error during {operation}: {err}")
             raise AIError(f"Gemini API error during {operation}: {err}") from err
-        except Exception as err:
-            status = "failure"
+        except _TRANSPORT_ERRORS as err:
             logger.error(f"Unexpected error calling Gemini API ({operation}): {err}")
             raise AIError(
                 f"Unexpected error calling Gemini API ({operation}): {err}"

@@ -42,6 +42,14 @@ async def test_gemini_summary_model() -> None:
         assert sum_result.segments[0].summary == "AI Summary Output"
         assert sum_result.segments[0].page_refs == [1, 2]
 
+        mock_fenced_resp = MagicMock()
+        mock_fenced_resp.text = f"```json\n{mock_sum_resp.text}\n```"
+        mock_client.aio.models.generate_content = AsyncMock(
+            return_value=mock_fenced_resp
+        )
+        fenced_result = await summary_model.summarize(summary_prompt)
+        assert len(fenced_result.segments) == 1
+
         mock_empty_resp = MagicMock()
         mock_empty_resp.text = ""
         mock_client.aio.models.generate_content = AsyncMock(
@@ -50,8 +58,15 @@ async def test_gemini_summary_model() -> None:
         empty_result = await summary_model.summarize("Page 1 text")
         assert empty_result.segments == []
 
-        mock_bad_resp = MagicMock()
-        mock_bad_resp.text = "not valid json"
-        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_bad_resp)
-        with pytest.raises(AIError, match="Failed to parse Gemini summary JSON"):
-            await summary_model.summarize("Page 1 text")
+        for bad_text in (
+            "not valid json",
+            "{}",
+            json.dumps({"segments": [{"date_range": "2023-10-27"}]}),
+        ):
+            mock_bad_resp = MagicMock()
+            mock_bad_resp.text = bad_text
+            mock_client.aio.models.generate_content = AsyncMock(
+                return_value=mock_bad_resp
+            )
+            with pytest.raises(AIError, match="Failed to parse"):
+                await summary_model.summarize("Page 1 text")
