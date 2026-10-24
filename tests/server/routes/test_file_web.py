@@ -6,8 +6,6 @@ from supernote.client.client import Client
 from supernote.client.exceptions import BadRequestException
 from supernote.client.web import WebClient
 from supernote.models.extended import WebSummaryListRequestDTO, WebSummaryListVO
-from supernote.models.file_common import FileUploadApplyLocalVO
-from supernote.models.file_web import FileUploadApplyDTO
 from supernote.models.summary import AddSummaryVO
 
 
@@ -76,15 +74,13 @@ async def test_web_upload_apply_returns_part_upload_url_and_standard_inner_name(
     authenticated_client: Client,
 ) -> None:
     """Verify /api/file/upload/apply returns partUploadUrl and standard innerName."""
+    web_client = WebClient(authenticated_client)
     file_name = "2025.01.15.Report (Draft).pdf"
-    dto = FileUploadApplyDTO(
+    apply_vo = await web_client.upload_apply(
         directory_id=0,
         file_name=file_name,
         size=1024,
         md5=hashlib.md5(b"test").hexdigest(),
-    )
-    apply_vo = await authenticated_client.post_json(
-        "/api/file/upload/apply", FileUploadApplyLocalVO, json=dto.to_dict()
     )
     assert apply_vo.inner_name is not None
     assert apply_vo.inner_name.endswith("-000.pdf")

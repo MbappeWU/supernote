@@ -184,20 +184,57 @@ class WebClient:
             "/api/file/folder/list/query", FolderListQueryVO, json=dto.to_dict()
         )
 
+    async def upload_apply(
+        self,
+        directory_id: int,
+        file_name: str,
+        size: int,
+        md5: str,
+    ) -> FileUploadApplyLocalVO:
+        """Apply for a file upload (Web API)."""
+        dto = FileUploadApplyDTO(
+            directory_id=directory_id,
+            file_name=file_name,
+            size=size,
+            md5=md5,
+        )
+        return await self._client.post_json(
+            "/api/file/upload/apply", FileUploadApplyLocalVO, json=dto.to_dict()
+        )
+
+    async def upload_finish(
+        self,
+        directory_id: int,
+        file_name: str,
+        file_size: int,
+        md5: str,
+        inner_name: str,
+        upload_type: UploadType = UploadType.CLOUD,
+    ) -> BaseResponse:
+        """Finish a file upload (Web API)."""
+        finish_dto = FileUploadFinishDTO(
+            directory_id=directory_id,
+            file_size=file_size,
+            file_name=file_name,
+            md5=md5,
+            inner_name=inner_name,
+            type=upload_type,
+        )
+        return await self._client.post_json(
+            "/api/file/upload/finish", BaseResponse, json=finish_dto.to_dict()
+        )
+
     async def upload_file(self, parent_id: int, name: str, content: bytes) -> None:
         """Upload a file (Web API)."""
         md5 = hashlib.md5(content).hexdigest()
         size = len(content)
 
         # Apply to get an upload endpoint
-        dto = FileUploadApplyDTO(
+        apply_vo = await self.upload_apply(
             directory_id=parent_id,
             file_name=name,
             size=size,
             md5=md5,
-        )
-        apply_vo = await self._client.post_json(
-            "/api/file/upload/apply", FileUploadApplyLocalVO, json=dto.to_dict()
         )
 
         # Upload to OSS (using signed URL)
@@ -209,14 +246,11 @@ class WebClient:
         )
 
         # Finish upload
-        finish_dto = FileUploadFinishDTO(
+        await self.upload_finish(
             directory_id=parent_id,
-            file_size=size,
             file_name=name,
+            file_size=size,
             md5=md5,
             inner_name=apply_vo.inner_name or "",
-            type=UploadType.CLOUD,
-        )
-        await self._client.post_json(
-            "/api/file/upload/finish", BaseResponse, json=finish_dto.to_dict()
+            upload_type=UploadType.CLOUD,
         )
