@@ -58,23 +58,6 @@ async def list_users_async(url: str | None = None):
     async with create_session(url) as session:
         client = session.client
         try:
-            users = await client.get_json("/api/admin/users", list)
-
-            print(f"\nTotal Users: {len(users)}\n")
-            print(f"{'Username':<30} {'Email':<30} {'Capacity':<10}")
-            print("-" * 75)
-            for u in users:
-                # users is a list of dicts if we passed list to get_json, or we need a VO
-                # client.get_json returns data_cls.from_json(result)
-                # But list doesn't have from_json.
-                # We should probably use raw get or define a List[UserVO] type if we can.
-                # For now let's just use raw request to get json list safely.
-                pass
-        except Exception:
-            pass
-
-        # Re-doing list fetch with raw request because of typing limitation in client.get_json for list[dict]
-        try:
             resp = await client.get("/api/admin/users")
             users = await resp.json()
 

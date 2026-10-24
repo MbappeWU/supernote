@@ -1,13 +1,23 @@
-"""Tests for supernote.cli.client."""
+"""Tests for supernote.cli.client against a real in-process Supernote server."""
 
 import argparse
-from unittest.mock import AsyncMock, MagicMock, patch
+import os
+from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from supernote.cli.client import (
     add_parser,
+    async_cloud_download,
+    async_cloud_insights,
+    async_cloud_login,
+    async_cloud_ls,
+    async_cloud_mkdir,
+    async_cloud_rm,
+    async_cloud_search,
     async_cloud_socket,
+    async_cloud_upload,
     load_cached_auth,
     setup_logging,
     subcommand_cloud_download,
@@ -20,11 +30,16 @@ from supernote.cli.client import (
     subcommand_cloud_socket,
     subcommand_cloud_upload,
 )
-from supernote.client.exceptions import SmsVerificationRequired, SupernoteException
-from supernote.models.socket import SocketMessageData
+from supernote.client.auth import FileCacheAuth
+from supernote.models.summary import AddSummaryDTO
+from supernote.server.db.models.file import UserFileDO
+from supernote.server.db.models.note_processing import NotePageContentDO
+from supernote.server.services.summary import SummaryService
+
+from .conftest import ADMIN_EMAIL, ADMIN_PASSWORD, CliServerEnv
 
 
-def test_add_parser():
+def test_add_parser() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
     add_parser(subparsers)
@@ -70,429 +85,7 @@ def test_add_parser():
     assert parsed.func == subcommand_cloud_search
 
 
-def test_load_cached_auth_no_cache_no_url(tmp_path, capsys):
-    fake_cache = tmp_path / "nonexistent.pkl"
-    with (
-        patch("os.path.exists", return_value=False),
-        patch("os.path.expanduser", return_value=str(fake_cache)),
-    ):
-        with pytest.raises(SystemExit) as exc_info:
-            load_cached_auth(url=None)
-        assert exc_info.value.code == 1
-    captured = capsys.readouterr()
-    assert "No cached credentials found" in captured.out
-
-
-def test_load_cached_auth_no_host_in_cache(tmp_path, capsys):
-    fake_cache = tmp_path / "cache.pkl"
-    mock_auth = MagicMock()
-    mock_auth.get_host.return_value = None
-
-    with (
-        patch("os.path.exists", return_value=True),
-        patch("os.path.expanduser", return_value=str(fake_cache)),
-        patch("supernote.cli.client.FileCacheAuth", return_value=mock_auth),
-    ):
-        with pytest.raises(SystemExit) as exc_info:
-            load_cached_auth(url=None)
-        assert exc_info.value.code == 1
-    captured = capsys.readouterr()
-    assert "No server URL found in cached credentials" in captured.out
-
-
-def test_load_cached_auth_success(tmp_path):
-    fake_cache = tmp_path / "cache.pkl"
-    mock_auth = MagicMock()
-    mock_auth.get_host.return_value = "http://cached-server:8080"
-
-    with (
-        patch("os.path.exists", return_value=True),
-        patch("os.path.expanduser", return_value=str(fake_cache)),
-        patch("supernote.cli.client.FileCacheAuth", return_value=mock_auth),
-    ):
-        auth, url = load_cached_auth(url=None)
-        assert url == "http://cached-server:8080"
-        assert auth == mock_auth
-
-
-def test_setup_logging():
-    setup_logging(verbose=True)
-    setup_logging(verbose=False)
-
-
-def test_subcommand_cloud_login_success(capsys):
-    args = argparse.Namespace(
-        email="user@example.com",
-        password="secret",
-        url="http://localhost:8080",
-        verbose=False,
-    )
-    mock_sn = MagicMock()
-    mock_sn.token = "test-token-12345678901234567890"
-    mock_sn.web = AsyncMock()
-    mock_sn.web.query_user.return_value = MagicMock(user=None)
-    mock_sn.device = AsyncMock()
-    mock_sn.device.list_folder.return_value = MagicMock(entries=[])
-    mock_sn.__aenter__ = AsyncMock(return_value=mock_sn)
-    mock_sn.__aexit__ = AsyncMock(return_value=None)
-
-    with (
-        patch(
-            "supernote.cli.client.Supernote.login",
-            new_callable=AsyncMock,
-            return_value=mock_sn,
-        ),
-        patch("supernote.cli.client.FileCacheAuth"),
-    ):
-        subcommand_cloud_login(args)
-
-    captured = capsys.readouterr()
-    assert "✓ Login successful!" in captured.out
-
-
-def test_subcommand_cloud_login_prompt_password(capsys):
-    args = argparse.Namespace(
-        email="user@example.com",
-        password=None,
-        url="http://localhost:8080",
-        verbose=False,
-    )
-    mock_sn = MagicMock()
-    mock_sn.token = "test-token-12345678901234567890"
-    mock_sn.web = AsyncMock()
-    mock_sn.web.query_user.return_value = MagicMock(user=None)
-    mock_sn.device = AsyncMock()
-    mock_sn.device.list_folder.return_value = MagicMock(entries=[])
-    mock_sn.__aenter__ = AsyncMock(return_value=mock_sn)
-    mock_sn.__aexit__ = AsyncMock(return_value=None)
-
-    with (
-        patch("getpass.getpass", return_value="prompted_pass"),
-        patch(
-            "supernote.cli.client.Supernote.login",
-            new_callable=AsyncMock,
-            return_value=mock_sn,
-        ),
-        patch("supernote.cli.client.FileCacheAuth"),
-    ):
-        subcommand_cloud_login(args)
-
-    captured = capsys.readouterr()
-    assert "✓ Login successful!" in captured.out
-
-
-def test_subcommand_cloud_login_sms_verification(capsys):
-    args = argparse.Namespace(
-        email="user@example.com",
-        password="secret",
-        url="http://localhost:8080",
-        verbose=False,
-    )
-    mock_sn = MagicMock()
-    mock_sn.token = "test-token-12345678901234567890"
-    mock_sn.web = AsyncMock()
-    mock_sn.web.query_user.return_value = MagicMock(user=None)
-    mock_sn.device = AsyncMock()
-    mock_sn.device.list_folder.return_value = MagicMock(entries=[])
-    mock_sn.__aenter__ = AsyncMock(return_value=mock_sn)
-    mock_sn.__aexit__ = AsyncMock(return_value=None)
-
-    sms_err = SmsVerificationRequired("SMS code sent", "123456")
-
-    temp_sn = MagicMock()
-    temp_sn.login_client = AsyncMock()
-    temp_sn.login_client.sms_login.return_value = "sms-token-12345678901234567890"
-    temp_sn.with_auth.return_value = mock_sn
-    temp_sn.__aenter__ = AsyncMock(return_value=temp_sn)
-    temp_sn.__aexit__ = AsyncMock(return_value=None)
-
-    mock_supernote_cls = MagicMock(return_value=temp_sn)
-    mock_supernote_cls.login = AsyncMock(side_effect=sms_err)
-
-    with (
-        patch("supernote.cli.client.Supernote", mock_supernote_cls),
-        patch("builtins.input", return_value="123456"),
-        patch("supernote.cli.client.FileCacheAuth"),
-    ):
-        subcommand_cloud_login(args)
-
-    captured = capsys.readouterr()
-    assert "SMS Verification Required" in captured.out
-    assert "✓ Login successful!" in captured.out
-
-
-def test_subcommand_cloud_login_supernote_exception(capsys):
-    args = argparse.Namespace(
-        email="user@example.com",
-        password="wrong",
-        url="http://localhost:8080",
-        verbose=False,
-    )
-    with patch(
-        "supernote.cli.client.Supernote.login",
-        new_callable=AsyncMock,
-        side_effect=SupernoteException("Auth error"),
-    ):
-        with pytest.raises(SystemExit) as exc_info:
-            subcommand_cloud_login(args)
-        assert exc_info.value.code == 1
-
-    captured = capsys.readouterr()
-    assert "Error during login flow: Auth error" in captured.out
-
-
-def test_subcommand_cloud_ls_success(capsys):
-    args = argparse.Namespace(path="/", verbose=False)
-
-    file_entry = MagicMock()
-    file_entry.name = "Document.note"
-    file_entry.id = "1001"
-    file_entry.tag = "file"
-
-    mock_sn = MagicMock()
-    mock_sn.client = MagicMock(host="http://localhost:8080")
-    mock_sn.device = AsyncMock()
-    mock_sn.device.list_folder.return_value = MagicMock(entries=[file_entry])
-
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_ls(args)
-
-    captured = capsys.readouterr()
-    assert "Total files: 1" in captured.out
-    assert "Document.note" in captured.out
-
-
-def test_subcommand_cloud_ls_error(capsys):
-    args = argparse.Namespace(path="/", verbose=False)
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.side_effect = SupernoteException("Connection refused")
-        with pytest.raises(SystemExit) as exc_info:
-            subcommand_cloud_ls(args)
-        assert exc_info.value.code == 1
-
-    captured = capsys.readouterr()
-    assert "Error: Connection refused" in captured.out
-
-
-def test_subcommand_cloud_upload_file_not_found(capsys):
-    args = argparse.Namespace(
-        local_path="nonexistent_file.note", remote_path=None, verbose=False
-    )
-    with pytest.raises(SystemExit) as exc_info:
-        subcommand_cloud_upload(args)
-    assert exc_info.value.code == 1
-
-    captured = capsys.readouterr()
-    assert "Local file not found" in captured.out
-
-
-def test_subcommand_cloud_upload_success(tmp_path, capsys):
-    local_file = tmp_path / "test.note"
-    local_file.write_bytes(b"content")
-
-    args = argparse.Namespace(
-        local_path=str(local_file), remote_path="/folder/", verbose=False
-    )
-
-    mock_sn = MagicMock()
-    mock_sn.device = AsyncMock()
-
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_upload(args)
-
-    captured = capsys.readouterr()
-    assert "✓ Upload successful!" in captured.out
-    mock_sn.device.upload_content.assert_called_once_with(
-        "/folder/test.note", b"content"
-    )
-
-
-def test_subcommand_cloud_download_success(tmp_path, capsys):
-    out_file = tmp_path / "downloaded.note"
-    args = argparse.Namespace(
-        remote_path="/remote.note", local_path=str(out_file), verbose=False
-    )
-
-    mock_sn = MagicMock()
-    mock_sn.device = AsyncMock()
-    mock_sn.device.download_content.return_value = b"remote_content"
-
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_download(args)
-
-    captured = capsys.readouterr()
-    assert f"✓ Downloaded to {out_file}" in captured.out
-    assert out_file.read_bytes() == b"remote_content"
-
-
-def test_subcommand_cloud_download_directory_local_path(tmp_path, capsys):
-    args = argparse.Namespace(
-        remote_path="/folder/remote.note", local_path=str(tmp_path), verbose=False
-    )
-
-    mock_sn = MagicMock()
-    mock_sn.device = AsyncMock()
-    mock_sn.device.download_content.return_value = b"data"
-
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_download(args)
-
-    expected_file = tmp_path / "remote.note"
-    assert expected_file.exists()
-
-
-def test_subcommand_cloud_mkdir_success(capsys):
-    args = argparse.Namespace(path="/NewDir", verbose=False)
-    mock_sn = MagicMock()
-    mock_sn.device = AsyncMock()
-
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_mkdir(args)
-
-    captured = capsys.readouterr()
-    assert "✓ Folder created successfully!" in captured.out
-    mock_sn.device.create_folder.assert_called_once_with("/NewDir", equipment_no="WEB")
-
-
-def test_subcommand_cloud_rm_success(capsys):
-    args = argparse.Namespace(path="/OldDir", verbose=False)
-    mock_sn = MagicMock()
-    mock_sn.device = AsyncMock()
-
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_rm(args)
-
-    captured = capsys.readouterr()
-    assert "✓ Removed successfully!" in captured.out
-    mock_sn.device.delete_by_path.assert_called_once_with("/OldDir")
-
-
-def test_subcommand_cloud_insights_not_found(capsys):
-    args = argparse.Namespace(path="/nonexistent.note", verbose=False)
-    mock_sn = MagicMock()
-    mock_sn.device = AsyncMock()
-    mock_sn.device.query_by_path.return_value = MagicMock(entries_vo=None)
-
-    with patch("supernote.cli.client.create_session") as mock_create_session:
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        with pytest.raises(SystemExit) as exc_info:
-            subcommand_cloud_insights(args)
-        assert exc_info.value.code == 1
-
-    captured = capsys.readouterr()
-    assert "Error: File not found" in captured.out
-
-
-def test_subcommand_cloud_insights_success(capsys):
-    args = argparse.Namespace(path="/my_note.note", verbose=False)
-
-    entry_vo = MagicMock()
-    entry_vo.id = "123"
-    entry_vo.name = "my_note.note"
-
-    mock_sn = MagicMock()
-    mock_sn.device = AsyncMock()
-    mock_sn.device.query_by_path.return_value = MagicMock(entries_vo=entry_vo)
-    mock_sn.client = MagicMock()
-
-    summary_item = MagicMock()
-    summary_item.data_source = "AI Synthesis"
-    summary_item.creation_time = 1700000000000
-    summary_item.content = "Key take-aways from meeting."
-
-    mock_summaries_vo = MagicMock()
-    mock_summaries_vo.summary_do_list = [summary_item]
-
-    with (
-        patch("supernote.cli.client.create_session") as mock_create_session,
-        patch(
-            "supernote.client.extended.ExtendedClient.list_summaries",
-            new_callable=AsyncMock,
-            return_value=mock_summaries_vo,
-        ),
-    ):
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_insights(args)
-
-    captured = capsys.readouterr()
-    assert "AI INSIGHTS & SYNCHRONIZED SYNTHESIS" in captured.out
-    assert "Key take-aways from meeting." in captured.out
-
-
-def test_subcommand_cloud_search_no_results(capsys):
-    args = argparse.Namespace(
-        query="project deadline",
-        top_n=5,
-        name_filter=None,
-        after=None,
-        before=None,
-        verbose=False,
-    )
-    mock_sn = MagicMock()
-    mock_sn.client = MagicMock()
-    mock_resp = MagicMock(results=[])
-
-    with (
-        patch("supernote.cli.client.create_session") as mock_create_session,
-        patch(
-            "supernote.client.extended.ExtendedClient.search",
-            new_callable=AsyncMock,
-            return_value=mock_resp,
-        ),
-    ):
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_search(args)
-
-    captured = capsys.readouterr()
-    assert "No results found." in captured.out
-
-
-def test_subcommand_cloud_search_with_results(capsys):
-    args = argparse.Namespace(
-        query="project deadline",
-        top_n=5,
-        name_filter="project",
-        after="2025-01-01",
-        before="2025-12-31",
-        verbose=False,
-    )
-    mock_sn = MagicMock()
-    mock_sn.client = MagicMock()
-
-    result_item = MagicMock()
-    result_item.file_name = "Project_Notes.note"
-    result_item.page_index = 0
-    result_item.score = 0.95
-    result_item.date = "2025-06-15"
-    result_item.text_preview = "Deadline is end of month."
-
-    mock_resp = MagicMock(results=[result_item])
-
-    with (
-        patch("supernote.cli.client.create_session") as mock_create_session,
-        patch(
-            "supernote.client.extended.ExtendedClient.search",
-            new_callable=AsyncMock,
-            return_value=mock_resp,
-        ),
-    ):
-        mock_create_session.return_value.__aenter__.return_value = mock_sn
-        subcommand_cloud_search(args)
-
-    captured = capsys.readouterr()
-    assert "Semantic Search Results for: 'project deadline'" in captured.out
-    assert "Project_Notes.note" in captured.out
-    assert "95.0%" in captured.out
-    assert "Deadline is end of month." in captured.out
-
-
-def test_add_parser_socket():
+def test_add_parser_socket() -> None:
     """Verify that 'cloud socket' parser registers options correctly."""
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -508,49 +101,219 @@ def test_add_parser_socket():
     assert parsed.func == subcommand_cloud_socket
 
 
-@pytest.mark.asyncio
-async def test_async_cloud_socket_success():
-    """Test successful execution of async_cloud_socket CLI handler."""
-    mock_auth = AsyncMock()
-    mock_auth.async_get_access_token.return_value = "mock_jwt_token"
+def test_load_cached_auth_no_cache_no_url(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        load_cached_auth(url=None)
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "No cached credentials found" in captured.out
 
-    mock_socket_client = AsyncMock()
-    mock_socket_client.connect = AsyncMock()
-    mock_socket_client.ping = AsyncMock()
-    mock_socket_client.check_status = AsyncMock()
-    mock_socket_client.disconnect = AsyncMock()
 
-    sample_msg = SocketMessageData(code="0", msg="Success", msg_type="DIGEST-SYN")
+def test_load_cached_auth_no_host_in_cache(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cache_path = os.path.expanduser("~/.cache/supernote.pkl")
+    FileCacheAuth(cache_path).save_credentials("token-123", "")
 
-    async def mock_messages():
-        yield sample_msg
+    with pytest.raises(SystemExit) as exc_info:
+        load_cached_auth(url=None)
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "No server URL found in cached credentials" in captured.out
 
-    mock_socket_client.messages = mock_messages
 
-    with (
-        patch(
-            "supernote.cli.client.load_cached_auth",
-            return_value=(mock_auth, "http://localhost:8080"),
+def test_load_cached_auth_success() -> None:
+    cache_path = os.path.expanduser("~/.cache/supernote.pkl")
+    FileCacheAuth(cache_path).save_credentials("token-123", "http://cached-server:8080")
+
+    auth, url = load_cached_auth(url=None)
+    assert url == "http://cached-server:8080"
+    assert auth.token == "token-123"
+
+
+def test_setup_logging() -> None:
+    setup_logging(verbose=True)
+    setup_logging(verbose=False)
+
+
+async def test_async_cloud_login_success(
+    cli_env: CliServerEnv, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await async_cloud_login(ADMIN_EMAIL, ADMIN_PASSWORD, cli_env.url)
+
+    captured = capsys.readouterr()
+    assert "✓ Login successful!" in captured.out
+    assert "✓ User query successful!" in captured.out
+    assert "✓ File list successful!" in captured.out
+
+
+async def test_async_cloud_login_invalid_credentials(
+    cli_env: CliServerEnv, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        await async_cloud_login(ADMIN_EMAIL, "wrong-password", cli_env.url)
+    assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "Error during login flow:" in captured.out
+
+
+async def test_async_cloud_mkdir_upload_ls_download_rm(
+    cli_env: CliServerEnv,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await async_cloud_mkdir("/NOTE/Note/Projects")
+    captured = capsys.readouterr()
+    assert "✓ Folder created successfully!" in captured.out
+
+    local_file = tmp_path / "test.txt"
+    local_file.write_bytes(b"note binary content")
+
+    await async_cloud_upload(str(local_file), "/NOTE/Note/Projects/test.txt")
+    captured = capsys.readouterr()
+    assert "✓ Upload successful!" in captured.out
+
+    await async_cloud_ls("/NOTE/Note/Projects")
+    captured = capsys.readouterr()
+    assert "Total files: 1" in captured.out
+    assert "test.txt" in captured.out
+
+    downloaded_file = tmp_path / "downloaded.txt"
+    await async_cloud_download("/NOTE/Note/Projects/test.txt", str(downloaded_file))
+    captured = capsys.readouterr()
+    assert f"✓ Downloaded to {downloaded_file}" in captured.out
+    assert downloaded_file.read_bytes() == b"note binary content"
+
+    await async_cloud_rm("/NOTE/Note/Projects/test.txt")
+    captured = capsys.readouterr()
+    assert "✓ Removed successfully!" in captured.out
+
+
+async def test_async_cloud_ls_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cache_path = os.path.expanduser("~/.cache/supernote.pkl")
+    FileCacheAuth(cache_path).save_credentials("token", "http://127.0.0.1:1")
+
+    with pytest.raises(SystemExit) as exc_info:
+        await async_cloud_ls("/")
+    assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "Error:" in captured.out
+
+
+def test_subcommand_cloud_upload_file_not_found(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = argparse.Namespace(
+        local_path="nonexistent_file.note", remote_path=None, verbose=False
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        subcommand_cloud_upload(args)
+    assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "Local file not found" in captured.out
+
+
+async def test_async_cloud_insights_not_found(
+    cli_env: CliServerEnv, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        await async_cloud_insights("/NOTE/Note/nonexistent.note")
+    assert exc_info.value.code == 1
+
+    captured = capsys.readouterr()
+    assert "Error: File not found" in captured.out
+
+
+async def test_async_cloud_insights_success(
+    cli_env: CliServerEnv,
+    test_note_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await async_cloud_upload(str(test_note_path), "/NOTE/Note/my_note.note")
+    capsys.readouterr()
+
+    assert cli_env.client.app is not None
+    summary_service: SummaryService = cli_env.client.app["summary_service"]
+    async with cli_env.session_manager.session() as session:
+        user_file = (
+            await session.execute(
+                select(UserFileDO).where(UserFileDO.file_name == "my_note.note")
+            )
+        ).scalar_one()
+
+    await summary_service.add_summary(
+        ADMIN_EMAIL,
+        AddSummaryDTO(
+            file_id=user_file.id,
+            unique_identifier="summary-insight-1",
+            content="Key take-aways from meeting.",
+            data_source="AI Synthesis",
+            creation_time=1700000000000,
         ),
-        patch(
-            "supernote.cli.client.SupernoteSocketClient",
-            return_value=mock_socket_client,
-        ),
-    ):
-        await async_cloud_socket(duration=0.1, conn_type="ANDROID", verbose=True)
+    )
 
-        mock_socket_client.connect.assert_called_once()
-        mock_socket_client.ping.assert_called_once()
-        mock_socket_client.check_status.assert_called_once()
-        mock_socket_client.disconnect.assert_called_once()
+    await async_cloud_insights("/NOTE/Note/my_note.note")
+    captured = capsys.readouterr()
+    assert "AI INSIGHTS & SYNCHRONIZED SYNTHESIS" in captured.out
+    assert "Key take-aways from meeting." in captured.out
 
 
-def test_subcommand_cloud_socket():
-    """Test subcommand_cloud_socket entry point."""
-    args = argparse.Namespace(duration=5.0, type="ANDROID", verbose=False)
-    with (
-        patch("supernote.cli.client.async_cloud_socket"),
-        patch("asyncio.run") as mock_run,
-    ):
-        subcommand_cloud_socket(args)
-        mock_run.assert_called_once()
+async def test_async_cloud_search_no_results_and_with_results(
+    cli_env: CliServerEnv, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await async_cloud_search("project deadline")
+    captured = capsys.readouterr()
+    assert "No results found." in captured.out
+
+    admin_id = await cli_env.user_service.get_user_id(ADMIN_EMAIL)
+    async with cli_env.session_manager.session() as session:
+        session.add(
+            UserFileDO(
+                id=501,
+                user_id=admin_id,
+                file_name="20250615_Project_Notes.note",
+                directory_id=0,
+            )
+        )
+        session.add(
+            NotePageContentDO(
+                file_id=501,
+                page_index=0,
+                page_id="P2025061500000000000000000",
+                text_content="Deadline is end of month.",
+                embedding="[1.0, 0.0, 0.0]",
+                embedding_model="fake-embedding-v1",
+            )
+        )
+        await session.commit()
+
+    await async_cloud_search(
+        "project deadline",
+        top_n=5,
+        name_filter="Project",
+        after="2025-01-01",
+        before="2025-12-31",
+    )
+    captured = capsys.readouterr()
+    assert "Semantic Search Results for: 'project deadline'" in captured.out
+    assert "20250615_Project_Notes.note" in captured.out
+    assert "Deadline is end of month." in captured.out
+
+
+async def test_async_cloud_socket_success(
+    cli_env: CliServerEnv, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await async_cloud_socket(duration=0.1, conn_type="ANDROID", verbose=True)
+
+    captured = capsys.readouterr()
+    assert "[SUCCESS] Connected to Socket.IO real-time server!" in captured.out
+    assert "Ping:" in captured.out
+    assert "Status check:" in captured.out
+    assert "Disconnected cleanly from Socket.IO server." in captured.out
