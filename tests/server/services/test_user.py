@@ -597,14 +597,6 @@ async def test_check_user_server_and_registration(user_service: UserService) -> 
     )
 
     assert await user_service.check_user_registration(
-        UserCheckDTO(telephone="5551234")
-    ) == BaseResponse(
-        success=False,
-        error_code="E0110",
-        error_msg="Country code is required",
-    )
-
-    assert await user_service.check_user_registration(
         UserCheckDTO(email="check@example.com")
     ) == BaseResponse(
         success=False,
@@ -622,12 +614,7 @@ async def test_check_user_server_and_registration(user_service: UserService) -> 
 
     assert (
         await user_service.check_user_registration(
-            UserCheckDTO(
-                email="free@example.com",
-                user_name="FreeName",
-                telephone="5551234",
-                country_code="1",
-            )
+            UserCheckDTO(email="free@example.com", user_name="FreeName")
         )
         == BaseResponse()
     )

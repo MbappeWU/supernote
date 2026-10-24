@@ -168,8 +168,7 @@ class UserService:
 
     async def check_user_server(self, dto: UserCheckDTO) -> UserCheckVO:
         """Check if a user exists on this server and return routing/machine metadata."""
-        account = dto.email or dto.telephone or ""
-        user = await self.get_user_by_email(account) if account else None
+        user = await self.get_user_by_email(dto.email) if dto.email else None
         if not user:
             return UserCheckVO(
                 success=False,
@@ -184,13 +183,7 @@ class UserService:
         )
 
     async def check_user_registration(self, dto: UserCheckDTO) -> BaseResponse:
-        """Check whether account fields are available for registration."""
-        if dto.telephone and not dto.country_code:
-            return BaseResponse(
-                success=False,
-                error_code="E0110",
-                error_msg="Country code is required",
-            )
+        """Check whether email or username is available for registration."""
         if dto.email:
             if await self.get_user_by_email(dto.email) is not None:
                 return BaseResponse(

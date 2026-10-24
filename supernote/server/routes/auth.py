@@ -109,8 +109,8 @@ async def handle_check_user_exists(request: web.Request) -> web.Response:
     req_data = await request.json()
     try:
         user_check_req = UserCheckDTO.from_dict(req_data)
-        if not user_check_req.email and not user_check_req.telephone:
-            raise ValueError("Missing account identifier")
+        if not user_check_req.email:
+            raise ValueError("Missing email")
     except (MissingField, ValueError):
         return web.json_response(
             create_error_response("Invalid request format").to_dict(),
@@ -129,15 +129,11 @@ async def handle_check_user_exists(request: web.Request) -> web.Response:
 @public_route
 async def handle_check_user_registration(request: web.Request) -> web.Response:
     # Endpoint: POST /api/user/check/exists
-    # Purpose: Check whether user email, phone, or username is available for registration.
+    # Purpose: Check whether user email or username is available for registration.
     req_data = await request.json()
     try:
         user_check_req = UserCheckDTO.from_dict(req_data)
-        if (
-            not user_check_req.email
-            and not user_check_req.telephone
-            and not user_check_req.user_name
-        ):
+        if not user_check_req.email and not user_check_req.user_name:
             raise ValueError("Missing user check field")
     except (MissingField, ValueError):
         return web.json_response(

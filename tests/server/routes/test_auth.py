@@ -135,16 +135,6 @@ async def test_check_user_registration(
     assert bad_resp.status == 400
     assert (await bad_resp.json())["errorMsg"] == "Invalid request format"
 
-    missing_cc_resp = await client.post(
-        "/api/user/check/exists", json={"telephone": "5551234"}
-    )
-    assert missing_cc_resp.status == 200
-    assert await missing_cc_resp.json() == {
-        "success": False,
-        "errorCode": "E0110",
-        "errorMsg": "Country code is required",
-    }
-
     dup_email_resp = await client.post(
         "/api/user/check/exists", json={"email": "test@example.com"}
     )
@@ -167,7 +157,7 @@ async def test_check_user_registration(
 
     avail_resp = await client.post(
         "/api/user/check/exists",
-        json={"email": "available@example.com", "countryCode": "1", "telephone": ""},
+        json={"email": "available@example.com"},
     )
     assert avail_resp.status == 200
     assert await avail_resp.json() == {"success": True}
