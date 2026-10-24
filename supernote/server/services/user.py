@@ -15,7 +15,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.auth import Equipment, LoginVO, UserVO
-from supernote.models.base import BaseResponse
 from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import (
     LoginRecordVO,
@@ -181,28 +180,6 @@ class UserService:
             unique_machine_id=machine_id,
             dms="ALL",
         )
-
-    async def check_user_registration(self, dto: UserCheckDTO) -> BaseResponse:
-        """Check whether email or username is available for registration."""
-        if dto.email:
-            if await self.get_user_by_email(dto.email) is not None:
-                return BaseResponse(
-                    success=False,
-                    error_code="E0105",
-                    error_msg="Email already registered",
-                )
-        elif dto.user_name:
-            async with self._session_manager.session() as session:
-                result = await session.execute(
-                    select(UserDO).where(UserDO.display_name == dto.user_name)
-                )
-                if result.scalar_one_or_none() is not None:
-                    return BaseResponse(
-                        success=False,
-                        error_code="E0107",
-                        error_msg="Username already exists",
-                    )
-        return BaseResponse()
 
     async def _create_user_entry(
         self, session: AsyncSession, dto: UserRegisterDTO, is_admin: bool = False

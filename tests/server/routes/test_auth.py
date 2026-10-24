@@ -10,7 +10,6 @@ from supernote.client.client import Client
 from supernote.client.exceptions import ApiException, UnauthorizedException
 from supernote.client.login_client import LoginClient
 from supernote.client.web import WebClient
-from supernote.models.base import BaseResponse
 from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import UserCheckVO
 from supernote.server.config import ServerConfig
@@ -103,25 +102,6 @@ async def test_check_user_exists(
 
     with pytest.raises(ApiException, match="User not found"):
         await login_client.check_user_exists("unknown@example.com")
-
-
-async def test_check_user_registration(
-    login_client: LoginClient,
-    create_test_user: None,
-) -> None:
-    with pytest.raises(ApiException, match="Invalid request format"):
-        await login_client.check_user_registration()
-
-    with pytest.raises(ApiException, match="Email already registered"):
-        await login_client.check_user_registration(email="test@example.com")
-
-    with pytest.raises(ApiException, match="Username already exists"):
-        await login_client.check_user_registration(user_name="Test User")
-
-    assert (
-        await login_client.check_user_registration(email="available@example.com")
-        == BaseResponse()
-    )
 
 
 async def test_login_invalid_credentials(login_client: LoginClient) -> None:

@@ -172,15 +172,6 @@ class LoginClient:
             "/api/official/user/check/exists/server", UserCheckVO, json=payload
         )
 
-    async def check_user_registration(
-        self, email: str | None = None, user_name: str | None = None
-    ) -> BaseResponse:
-        """Check whether email or username is available for registration."""
-        payload = UserCheckDTO(email=email, user_name=user_name).to_dict()
-        return await self._client.post_json(
-            "/api/user/check/exists", BaseResponse, json=payload
-        )
-
     async def bind_equipment(
         self,
         account: str,

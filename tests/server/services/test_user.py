@@ -5,7 +5,6 @@ import pytest
 from sqlalchemy import select
 
 from supernote.models.auth import Equipment
-from supernote.models.base import BaseResponse
 from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import (
     UpdateEmailDTO,
@@ -594,27 +593,4 @@ async def test_check_user_server_and_registration(user_service: UserService) -> 
         success=False,
         error_code="E0018",
         error_msg="User not found",
-    )
-
-    assert await user_service.check_user_registration(
-        UserCheckDTO(email="check@example.com")
-    ) == BaseResponse(
-        success=False,
-        error_code="E0105",
-        error_msg="Email already registered",
-    )
-
-    assert await user_service.check_user_registration(
-        UserCheckDTO(user_name="CheckName")
-    ) == BaseResponse(
-        success=False,
-        error_code="E0107",
-        error_msg="Username already exists",
-    )
-
-    assert (
-        await user_service.check_user_registration(
-            UserCheckDTO(email="free@example.com", user_name="FreeName")
-        )
-        == BaseResponse()
     )
