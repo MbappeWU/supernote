@@ -5,6 +5,7 @@ import re
 import secrets
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass, field
 
 import jwt
@@ -14,11 +15,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.auth import Equipment, LoginVO, UserVO
+from supernote.models.base import BaseResponse
 from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import (
     LoginRecordVO,
     UpdateEmailDTO,
     UpdatePasswordDTO,
+    UserCheckDTO,
+    UserCheckVO,
     UserRegisterDTO,
 )
 from supernote.server.utils.hashing import hash_with_salt
@@ -32,6 +36,8 @@ from .coordination import CoordinationService
 from .vfs import VirtualFileSystem
 
 RANDOM_CODE_TTL = datetime.timedelta(minutes=5)
+UNIQUE_MACHINE_ID_KEY = "system:unique_machine_id"
+UNIQUE_MACHINE_ID_TTL = 100 * 365 * 24 * 3600
 
 # Validate email format
 # 1. No consecutive dots: (?!.*\.\.)
@@ -146,6 +152,64 @@ class UserService:
 
     async def check_user_exists(self, account: str) -> bool:
         return (await self.get_user_by_email(account)) is not None
+
+    async def get_unique_machine_id(self) -> str:
+        """Return the persistent unique machine identifier for this server instance."""
+        machine_id = await self._coordination_service.get_value(UNIQUE_MACHINE_ID_KEY)
+        if machine_id:
+            return machine_id
+        machine_id = str(uuid.uuid4())
+        await self._coordination_service.set_value(
+            UNIQUE_MACHINE_ID_KEY,
+            machine_id,
+            ttl=UNIQUE_MACHINE_ID_TTL,
+        )
+        return machine_id
+
+    async def check_user_server(self, dto: UserCheckDTO) -> UserCheckVO:
+        """Check if a user exists on this server and return routing/machine metadata."""
+        account = dto.email or dto.telephone or ""
+        user = await self.get_user_by_email(account) if account else None
+        if not user:
+            return UserCheckVO(
+                success=False,
+                error_code="E0018",
+                error_msg="User not found",
+            )
+        machine_id = await self.get_unique_machine_id()
+        return UserCheckVO(
+            user_id=user.id,
+            unique_machine_id=machine_id,
+            dms="ALL",
+        )
+
+    async def check_user_registration(self, dto: UserCheckDTO) -> BaseResponse:
+        """Check whether account fields are available for registration."""
+        if dto.telephone and not dto.country_code:
+            return BaseResponse(
+                success=False,
+                error_code="E0110",
+                error_msg="Country code is required",
+            )
+        if dto.email:
+            if await self.get_user_by_email(dto.email) is not None:
+                return BaseResponse(
+                    success=False,
+                    error_code="E0105",
+                    error_msg="Email already registered",
+                )
+        elif dto.user_name:
+            async with self._session_manager.session() as session:
+                result = await session.execute(
+                    select(UserDO).where(UserDO.display_name == dto.user_name)
+                )
+                if result.scalar_one_or_none() is not None:
+                    return BaseResponse(
+                        success=False,
+                        error_code="E0107",
+                        error_msg="Username already exists",
+                    )
+        return BaseResponse()
 
     async def _create_user_entry(
         self, session: AsyncSession, dto: UserRegisterDTO, is_admin: bool = False
@@ -275,10 +339,16 @@ class UserService:
         timestamp = str(ts_ms)
 
         # Store in coordination service with short TTL (e.g. 5 mins), scoped by account and timestamp
+        ttl_seconds = int(RANDOM_CODE_TTL.total_seconds())
         await self._coordination_service.set_value(
             f"challenge:{account}:{timestamp}",
             random_code,
-            ttl=int(RANDOM_CODE_TTL.total_seconds()),
+            ttl=ttl_seconds,
+        )
+        await self._coordination_service.set_value(
+            f"challenge:{account}:latest",
+            timestamp,
+            ttl=ttl_seconds,
         )
 
         return random_code, timestamp
@@ -309,11 +379,19 @@ class UserService:
         client_hash: str,
         timestamp: str,
     ) -> bool:
-        if not timestamp:
+        resolved_timestamp = timestamp
+        if not resolved_timestamp:
+            resolved_timestamp = (
+                await self._coordination_service.pop_value(
+                    f"challenge:{account}:latest"
+                )
+                or ""
+            )
+        if not resolved_timestamp:
             return False
 
         random_code = await self._coordination_service.pop_value(
-            f"challenge:{account}:{timestamp}"
+            f"challenge:{account}:{resolved_timestamp}"
         )
         if not random_code:
             return False

@@ -5,8 +5,15 @@ import pytest
 from sqlalchemy import select
 
 from supernote.models.auth import Equipment
+from supernote.models.base import BaseResponse
 from supernote.models.equipment import UserEquipmentVO
-from supernote.models.user import UpdateEmailDTO, UpdatePasswordDTO, UserRegisterDTO
+from supernote.models.user import (
+    UpdateEmailDTO,
+    UpdatePasswordDTO,
+    UserCheckDTO,
+    UserCheckVO,
+    UserRegisterDTO,
+)
 from supernote.server.config import AuthConfig, ServerConfig
 from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
@@ -555,4 +562,79 @@ async def test_query_equipment_by_no(user_service: UserService) -> None:
     )
 
     await user_service.unlink_equipment("SN-999", account="eq2@example.com")
+    assert await user_service.unlink_equipment("SN-999") is None
     assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO()
+
+
+async def test_check_user_server_and_registration(user_service: UserService) -> None:
+    """Verify check_user_server, get_unique_machine_id,check_user_registration, and legacy challenge fallback."""
+    pw_md5 = hashlib.md5(b"password123").hexdigest()
+    user = await user_service.register(
+        UserRegisterDTO(
+            email="check@example.com", password=pw_md5, user_name="CheckName"
+        )
+    )
+
+    machine_id_1 = await user_service.get_unique_machine_id()
+    machine_id_2 = await user_service.get_unique_machine_id()
+    assert machine_id_1 == machine_id_2
+    assert len(machine_id_1) > 0
+
+    assert await user_service.check_user_server(
+        UserCheckDTO(email="check@example.com")
+    ) == UserCheckVO(
+        user_id=user.id,
+        unique_machine_id=machine_id_1,
+        dms="ALL",
+    )
+
+    assert await user_service.check_user_server(
+        UserCheckDTO(email="missing@example.com")
+    ) == UserCheckVO(
+        success=False,
+        error_code="E0018",
+        error_msg="User not found",
+    )
+
+    assert await user_service.check_user_registration(
+        UserCheckDTO(telephone="5551234")
+    ) == BaseResponse(
+        success=False,
+        error_code="E0110",
+        error_msg="Country code is required",
+    )
+
+    assert await user_service.check_user_registration(
+        UserCheckDTO(email="check@example.com")
+    ) == BaseResponse(
+        success=False,
+        error_code="E0105",
+        error_msg="Email already registered",
+    )
+
+    assert await user_service.check_user_registration(
+        UserCheckDTO(user_name="CheckName")
+    ) == BaseResponse(
+        success=False,
+        error_code="E0107",
+        error_msg="Username already exists",
+    )
+
+    assert (
+        await user_service.check_user_registration(
+            UserCheckDTO(
+                email="free@example.com",
+                user_name="FreeName",
+                telephone="5551234",
+                country_code="1",
+            )
+        )
+        == BaseResponse()
+    )
+
+    # Legacy login challenge fallback when timestamp is empty (single-use)
+    code, _ = await user_service.generate_random_code("check@example.com")
+    client_hash = hash_with_salt(pw_md5, code)
+    vo = await user_service.login("check@example.com", client_hash, "")
+    assert vo is not None
+    assert await user_service.login("check@example.com", client_hash, "") is None

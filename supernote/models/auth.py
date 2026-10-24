@@ -18,6 +18,33 @@ from mashumaro.config import BaseConfig
 from mashumaro.mixins.json import DataClassJSONMixin
 
 from .base import BaseEnum, BaseResponse
+from .user import UserCheckDTO, UserCheckVO
+
+__all__ = [
+    "COUNTRY_CODE",
+    "BROWSER",
+    "LANGUAGE",
+    "Equipment",
+    "UserCheckDTO",
+    "UserCheckVO",
+    "LoginMethod",
+    "LoginDTO",
+    "LoginVO",
+    "RandomCodeDTO",
+    "RandomCodeVO",
+    "QueryTokenDTO",
+    "QueryTokenVO",
+    "OSType",
+    "UserVO",
+    "SmsLoginDTO",
+    "SmsLoginVO",
+    "UserPreAuthRequest",
+    "UserPreAuthResponse",
+    "SendSmsDTO",
+    "SendSmsVO",
+    "EmailDTO",
+    "ValidCodeDTO",
+]
 
 COUNTRY_CODE = 1
 BROWSER = "Chrome142"
@@ -33,22 +60,14 @@ class Equipment(BaseEnum):
     USER_PLATFORM = 4
 
 
-def _deserialize_int_equipment(value: str) -> Equipment:
+def _deserialize_int_equipment(value: str | int) -> Equipment:
     return Equipment(int(value))
 
 
-@dataclass
-class UserCheckDTO(DataClassJSONMixin):
-    """Request to check user existence."""
-
-    email: str
-    country_code: str = field(metadata=field_options(alias="countryCode"), default="")
-    telephone: str = ""
-    user_name: str = field(metadata=field_options(alias="userName"), default="")
-    domain: str = ""
-
-    class Config(BaseConfig):
-        serialize_by_alias = True
+def _deserialize_str(value: str | int | None) -> str:
+    if value is None:
+        return ""
+    return str(value)
 
 
 class LoginMethod(str, BaseEnum):
@@ -66,6 +85,7 @@ class LoginDTO(DataClassJSONMixin):
     This is used by the following POST endpoints:
         /api/official/user/account/login/equipment
         /api/official/user/account/login/new
+        /api/user/account/login
     """
 
     account: str
@@ -74,16 +94,22 @@ class LoginDTO(DataClassJSONMixin):
     password: str
     """Hashed password. Schema: SHA256(MD5(pwd) + randomCode)) or MD5(pwd + randomCode)."""
 
-    timestamp: str
+    timestamp: str = field(
+        metadata=field_options(deserialize=_deserialize_str),
+        default="",
+    )
     """Client timestamp in milliseconds."""
 
-    login_method: LoginMethod = field(metadata=field_options(alias="loginMethod"))
+    login_method: LoginMethod = field(
+        metadata=field_options(alias="loginMethod"),
+        default=LoginMethod.EMAIL,
+    )
     """Login method."""
 
     language: str = LANGUAGE
     """Language code."""
 
-    country_code: int | None = field(
+    country_code: int | str | None = field(
         metadata=field_options(alias="countryCode"), default=None
     )
     """Country code."""
@@ -154,7 +180,7 @@ class RandomCodeDTO(DataClassJSONMixin):
     account: str
     """User account (must be an email address)."""
 
-    country_code: int | None = field(
+    country_code: int | str | None = field(
         metadata=field_options(alias="countryCode"), default=None
     )
     """Country code."""

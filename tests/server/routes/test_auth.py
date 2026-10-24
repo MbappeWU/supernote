@@ -11,11 +11,13 @@ from supernote.client.exceptions import ApiException, UnauthorizedException
 from supernote.client.login_client import LoginClient
 from supernote.client.web import WebClient
 from supernote.models.equipment import UserEquipmentVO
+from supernote.models.user import UserCheckVO
 from supernote.server.config import ServerConfig
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.coordination import CoordinationService
 from supernote.server.services.user import UserService
+from supernote.server.utils.hashing import hash_with_salt
 from supernote.server.utils.rate_limit import LIMIT_LOGIN_IP_MAX, LIMIT_PW_RESET_MAX
 
 
@@ -82,22 +84,146 @@ async def test_equipment_unlink(
     assert await user_service.verify_token(victim_session.token) is None
 
 
-async def test_check_user_exists(client: TestClient, create_test_user: None) -> None:
+async def test_check_user_exists(
+    client: TestClient,
+    login_client: LoginClient,
+    user_service: UserService,
+    create_test_user: None,
+) -> None:
+    bad_resp = await client.post("/api/official/user/check/exists/server", json={})
+    assert bad_resp.status == 400
+    assert (await bad_resp.json())["errorMsg"] == "Invalid request format"
+
+    user_id = await user_service.get_user_id("test@example.com")
     resp = await client.post(
         "/api/official/user/check/exists/server", json={"email": "test@example.com"}
     )
     assert resp.status == 200
     data = await resp.json()
-    assert data["success"] is True
+    machine_id = data.get("uniqueMachineId")
+    assert isinstance(machine_id, str) and len(machine_id) > 0
+    assert data == {
+        "success": True,
+        "userId": user_id,
+        "uniqueMachineId": machine_id,
+        "dms": "ALL",
+    }
+
+    assert await login_client.check_user_exists("test@example.com") == UserCheckVO(
+        user_id=user_id,
+        unique_machine_id=machine_id,
+        dms="ALL",
+    )
 
     resp = await client.post(
         "/api/official/user/check/exists/server",
         json={"email": "unknown@example.com"},
     )
     assert resp.status == 200
-    data = await resp.json()
-    assert data["success"] is False
-    assert data["errorMsg"] == "User not found"
+    assert await resp.json() == {
+        "success": False,
+        "errorCode": "E0018",
+        "errorMsg": "User not found",
+    }
+
+
+async def test_check_user_registration_and_login_aliases(
+    client: TestClient,
+    user_service: UserService,
+    create_test_user: None,
+) -> None:
+    bad_resp = await client.post("/api/user/check/exists", json={})
+    assert bad_resp.status == 400
+    assert (await bad_resp.json())["errorMsg"] == "Invalid request format"
+
+    missing_cc_resp = await client.post(
+        "/api/user/check/exists", json={"telephone": "5551234"}
+    )
+    assert missing_cc_resp.status == 200
+    assert await missing_cc_resp.json() == {
+        "success": False,
+        "errorCode": "E0110",
+        "errorMsg": "Country code is required",
+    }
+
+    dup_email_resp = await client.post(
+        "/api/user/check/exists", json={"email": "test@example.com"}
+    )
+    assert dup_email_resp.status == 200
+    assert await dup_email_resp.json() == {
+        "success": False,
+        "errorCode": "E0105",
+        "errorMsg": "Email already registered",
+    }
+
+    dup_name_resp = await client.post(
+        "/api/user/check/exists", json={"userName": "Test User"}
+    )
+    assert dup_name_resp.status == 200
+    assert await dup_name_resp.json() == {
+        "success": False,
+        "errorCode": "E0107",
+        "errorMsg": "Username already exists",
+    }
+
+    avail_resp = await client.post(
+        "/api/user/check/exists",
+        json={"email": "available@example.com", "countryCode": "1", "telephone": ""},
+    )
+    assert avail_resp.status == 200
+    assert await avail_resp.json() == {"success": True}
+
+    get_login_resp = await client.get("/api/user/account/login")
+    assert get_login_resp.status == 200
+    assert await get_login_resp.json() == {"success": True}
+
+    pw_md5 = hashlib.md5(b"testpassword").hexdigest()
+
+    rc_resp = await client.post(
+        "/api/user/query/random/code",
+        json={"account": "test@example.com", "countryCode": "1"},
+    )
+    assert rc_resp.status == 200
+    rc_data = await rc_resp.json()
+
+    legacy_login_resp = await client.post(
+        "/api/user/account/login",
+        json={
+            "account": "test@example.com",
+            "password": hash_with_salt(pw_md5, rc_data["randomCode"]),
+            "equipment": 3,
+            "equipmentNo": "SN123",
+            "loginMethod": "2",
+        },
+    )
+    assert legacy_login_resp.status == 200
+    legacy_login_data = await legacy_login_resp.json()
+    assert legacy_login_data["success"] is True
+    assert await user_service.verify_token(legacy_login_data["token"]) is not None
+
+    rc_new_resp = await client.post(
+        "/api/official/user/query/random/code",
+        json={"account": "test@example.com", "countryCode": ""},
+    )
+    assert rc_new_resp.status == 200
+    rc_new_data = await rc_new_resp.json()
+
+    equip_login_resp = await client.post(
+        "/api/official/user/account/login/equipment",
+        json={
+            "account": "test@example.com",
+            "countryCode": "",
+            "password": hash_with_salt(pw_md5, rc_new_data["randomCode"]),
+            "timestamp": int(rc_new_data["timestamp"]),
+            "equipment": 3,
+            "equipmentNo": "SN123",
+            "loginMethod": "2",
+        },
+    )
+    assert equip_login_resp.status == 200
+    equip_login_data = await equip_login_resp.json()
+    assert equip_login_data["success"] is True
+    assert await user_service.verify_token(equip_login_data["token"]) is not None
 
 
 async def test_login_invalid_credentials(login_client: LoginClient) -> None:
@@ -537,6 +663,10 @@ async def test_public_auth_endpoints_share_ip_rate_limit(
             ),
             (
                 "/api/official/user/check/exists/server",
+                {"email": "extra@example.com"},
+            ),
+            (
+                "/api/user/check/exists",
                 {"email": "extra@example.com"},
             ),
             (

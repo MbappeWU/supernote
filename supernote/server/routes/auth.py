@@ -105,10 +105,12 @@ async def handle_equipment_unlink(request: web.Request) -> web.Response:
 @public_route
 async def handle_check_user_exists(request: web.Request) -> web.Response:
     # Endpoint: POST /api/official/user/check/exists/server
-    # Purpose: Check if the user exists on this server.
+    # Purpose: Check if the user exists on this server and return server/user routing metadata.
     req_data = await request.json()
     try:
         user_check_req = UserCheckDTO.from_dict(req_data)
+        if not user_check_req.email and not user_check_req.telephone:
+            raise ValueError("Missing account identifier")
     except (MissingField, ValueError):
         return web.json_response(
             create_error_response("Invalid request format").to_dict(),
@@ -119,10 +121,36 @@ async def handle_check_user_exists(request: web.Request) -> web.Response:
     except RateLimitExceeded as e:
         return e.to_response()
     user_service: UserService = request.app["user_service"]
-    if await user_service.check_user_exists(user_check_req.email or ""):
-        return web.json_response(BaseResponse().to_dict())
-    else:
-        return web.json_response(create_error_response("User not found").to_dict())
+    result = await user_service.check_user_server(user_check_req)
+    return web.json_response(result.to_dict())
+
+
+@routes.post("/api/user/check/exists")
+@public_route
+async def handle_check_user_registration(request: web.Request) -> web.Response:
+    # Endpoint: POST /api/user/check/exists
+    # Purpose: Check whether user email, phone, or username is available for registration.
+    req_data = await request.json()
+    try:
+        user_check_req = UserCheckDTO.from_dict(req_data)
+        if (
+            not user_check_req.email
+            and not user_check_req.telephone
+            and not user_check_req.user_name
+        ):
+            raise ValueError("Missing user check field")
+    except (MissingField, ValueError):
+        return web.json_response(
+            create_error_response("Invalid request format").to_dict(),
+            status=400,
+        )
+    try:
+        await _check_ip_rate_limit(request)
+    except RateLimitExceeded as e:
+        return e.to_response()
+    user_service: UserService = request.app["user_service"]
+    result = await user_service.check_user_registration(user_check_req)
+    return web.json_response(result.to_dict())
 
 
 @routes.post("/api/user/query/token")
@@ -135,6 +163,7 @@ async def handle_query_token(request: web.Request) -> web.Response:
 
 
 @routes.post("/api/official/user/query/random/code")
+@routes.post("/api/user/query/random/code")
 @public_route
 async def handle_random_code(request: web.Request) -> web.Response:
     # Endpoint: POST /api/official/user/query/random/code
@@ -160,8 +189,10 @@ async def handle_random_code(request: web.Request) -> web.Response:
 
 @routes.post("/api/official/user/account/login/new")
 @routes.post("/api/official/user/account/login/equipment")
+@routes.post("/api/user/account/login")
 @routes.get("/api/official/user/account/login/new")
 @routes.get("/api/official/user/account/login/equipment")
+@routes.get("/api/user/account/login")
 @public_route
 async def handle_login(request: web.Request) -> web.Response:
     # Endpoint: POST / GET /api/official/user/account/login/new
