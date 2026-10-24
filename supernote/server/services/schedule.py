@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Any, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 
 from supernote.server.db.models.schedule import ScheduleTaskDO, ScheduleTaskGroupDO
@@ -276,18 +276,32 @@ class ScheduleService:
                 query = query.where(ScheduleTaskDO.task_list_id == group_id)
 
             if since is not None:
-                query = query.where(ScheduleTaskDO.update_time > since)
+                query = query.where(
+                    or_(
+                        ScheduleTaskDO.update_time > since,
+                        ScheduleTaskDO.sort_time > since,
+                        ScheduleTaskDO.planer_sort_time > since,
+                    )
+                )
 
             query = query.order_by(ScheduleTaskDO.create_time.desc())
             result = await session.execute(query)
             return list(result.scalars().all())
 
     async def update_task(
-        self, user_id: int, task_id: str, **kwargs: Any
+        self,
+        user_id: int,
+        task_id: str,
+        last_modified_ms: int | None = None,
+        **kwargs: Any,
     ) -> ScheduleTaskDO | None:
         """Update a task."""
         updates = {k: v for k, v in kwargs.items() if k in TASK_ALLOWED_UPDATE_FIELDS}
-        updates["update_time"] = int(time.time() * 1000)
+        updates["update_time"] = (
+            last_modified_ms
+            if last_modified_ms is not None
+            else int(time.time() * 1000)
+        )
 
         async with self.session_manager.session() as session:
             if not (task := await self.get_task(user_id, task_id)):
@@ -340,9 +354,12 @@ class ScheduleService:
                     if k in TASK_ALLOWED_UPDATE_FIELDS
                     and (v is not None or k == "task_list_id")
                 }
-                if not updates:
+                last_modified_ms = item.get("last_modified_ms")
+                if not updates and last_modified_ms is None:
                     continue
-                updates["update_time"] = now_ms
+                updates["update_time"] = (
+                    last_modified_ms if last_modified_ms is not None else now_ms
+                )
 
                 stmt = (
                     update(ScheduleTaskDO)

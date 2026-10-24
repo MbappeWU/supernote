@@ -846,6 +846,34 @@ async def test_batch_move_task_between_group_and_inbox(
     back_detail = await schedule.get_task(inbox_vo.task_id)
     assert back_detail.task_list_id is None
     assert back_detail.title == "Inbox Item B Back in Inbox"
+    assert back_detail.last_modified == 1710000200000
 
     await schedule.delete_task(inbox_vo.task_id)
     await schedule.delete_group(group_vo.task_list_id)
+
+
+async def test_task_update_preserves_last_modified(
+    authenticated_client: Client,
+) -> None:
+    """Verify PUT /api/file/schedule/task and /task/list preserve client lastModified."""
+    schedule = ScheduleClient(authenticated_client)
+
+    group_vo = await schedule.create_group("LastModified Group")
+    assert group_vo.task_list_id is not None
+    group_id = group_vo.task_list_id
+
+    task_vo = await schedule.create_task(group_id, "Task With Timestamp")
+    assert task_vo.task_id is not None
+    task_id = task_vo.task_id
+
+    await schedule.update_task(
+        task_id,
+        title="Task Updated Single",
+        last_modified_ms=1710000600000,
+    )
+    detail = await schedule.get_task(task_id)
+    assert detail.title == "Task Updated Single"
+    assert detail.last_modified == 1710000600000
+
+    await schedule.delete_task(task_id)
+    await schedule.delete_group(group_id)
