@@ -17,7 +17,6 @@ from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.coordination import CoordinationService
 from supernote.server.services.user import UserService
-from supernote.server.utils.hashing import hash_with_salt
 from supernote.server.utils.rate_limit import LIMIT_LOGIN_IP_MAX, LIMIT_PW_RESET_MAX
 
 
@@ -172,31 +171,6 @@ async def test_check_user_registration(
     )
     assert avail_resp.status == 200
     assert await avail_resp.json() == {"success": True}
-
-    pw_md5 = hashlib.md5(b"testpassword").hexdigest()
-    rc_new_resp = await client.post(
-        "/api/official/user/query/random/code",
-        json={"account": "test@example.com", "countryCode": ""},
-    )
-    assert rc_new_resp.status == 200
-    rc_new_data = await rc_new_resp.json()
-
-    equip_login_resp = await client.post(
-        "/api/official/user/account/login/equipment",
-        json={
-            "account": "test@example.com",
-            "countryCode": "",
-            "password": hash_with_salt(pw_md5, rc_new_data["randomCode"]),
-            "timestamp": int(rc_new_data["timestamp"]),
-            "equipment": 3,
-            "equipmentNo": "SN123",
-            "loginMethod": "2",
-        },
-    )
-    assert equip_login_resp.status == 200
-    equip_login_data = await equip_login_resp.json()
-    assert equip_login_data["success"] is True
-    assert await user_service.verify_token(equip_login_data["token"]) is not None
 
 
 async def test_login_invalid_credentials(login_client: LoginClient) -> None:

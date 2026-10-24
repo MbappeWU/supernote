@@ -69,7 +69,7 @@ class LoginDTO(DataClassJSONMixin):
     language: str = LANGUAGE
     """Language code."""
 
-    country_code: str | None = field(
+    country_code: int | None = field(
         metadata=field_options(alias="countryCode"), default=None
     )
     """Country code."""
@@ -140,7 +140,7 @@ class RandomCodeDTO(DataClassJSONMixin):
     account: str
     """User account (must be an email address)."""
 
-    country_code: str | None = field(
+    country_code: int | None = field(
         metadata=field_options(alias="countryCode"), default=None
     )
     """Country code."""
