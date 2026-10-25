@@ -212,7 +212,7 @@ def create_app(config: ServerConfig) -> web.Application:
     app["file_service"] = file_service
     app["integrity_service"] = IntegrityService(session_manager, blob_storage)
     app["url_signer"] = UrlSigner(config.auth.secret_key, coordination_service)
-    app["schedule_service"] = ScheduleService(session_manager)
+    app["schedule_service"] = ScheduleService(session_manager, event_bus)
     ocr_model = create_ocr_model(config)
     summary_model = create_summary_model(config)
     embedding_model = create_embedding_model(config)
@@ -223,7 +223,7 @@ def create_app(config: ServerConfig) -> web.Application:
     if config.prompts_dir:
         PROMPT_LOADER.configure(Path(config.prompts_dir))
 
-    summary_service = SummaryService(user_service, session_manager)
+    summary_service = SummaryService(user_service, session_manager, event_bus)
     app["summary_service"] = summary_service
 
     search_service = SearchService(session_manager, embedding_model)

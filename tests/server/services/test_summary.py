@@ -1,5 +1,6 @@
 """Unit tests for SummaryService."""
 
+import asyncio
 import hashlib
 import math
 from dataclasses import replace
@@ -16,6 +17,14 @@ from supernote.models.summary import (
 )
 from supernote.models.user import UserRegisterDTO
 from supernote.server.db.session import DatabaseSessionManager
+from supernote.server.events import (
+    Event,
+    LocalEventBus,
+    SummaryDeletedEvent,
+    SummaryTagDeletedEvent,
+    SummaryTagUpsertedEvent,
+    SummaryUpsertedEvent,
+)
 from supernote.server.exceptions import SummaryNotFound
 from supernote.server.services.summary import SummaryService
 from supernote.server.services.user import UserService
@@ -372,3 +381,150 @@ async def test_delete_group_cascades_to_child_summaries(
     assert [s.id for s in await summary_service.list_summaries(USER_EMAIL)] == [
         other_child.id
     ]
+
+
+async def test_summary_service_publishes_domain_events_on_mutations(
+    user_service: UserService,
+    session_manager: DatabaseSessionManager,
+) -> None:
+    """Verify SummaryService emits domain events on tag, group, and summary mutations and skips failed mutations."""
+    await user_service.register(UserRegisterDTO(email=USER_EMAIL, password="a" * 32))
+    user_id = await user_service.get_user_id(USER_EMAIL)
+    event_bus = LocalEventBus()
+    published: list[Event] = []
+
+    async def on_event(event: Event) -> None:
+        published.append(event)
+
+    event_bus.subscribe(SummaryTagUpsertedEvent, on_event)
+    event_bus.subscribe(SummaryTagDeletedEvent, on_event)
+    event_bus.subscribe(SummaryUpsertedEvent, on_event)
+    event_bus.subscribe(SummaryDeletedEvent, on_event)
+
+    service = SummaryService(
+        user_service=user_service,
+        session_manager=session_manager,
+        event_bus=event_bus,
+    )
+
+    tag = await service.add_tag(USER_EMAIL, "Tag A")
+    assert tag.id is not None
+    await asyncio.sleep(0)
+    assert published == [
+        SummaryTagUpsertedEvent(user_id=user_id, tag=tag, is_new=True),
+    ]
+    published.clear()
+
+    await service.update_tag(USER_EMAIL, tag.id, "Tag B")
+    await asyncio.sleep(0)
+    updated_tags = await service.list_tags(USER_EMAIL)
+    assert published == [
+        SummaryTagUpsertedEvent(
+            user_id=user_id,
+            tag=updated_tags[0],
+            is_new=False,
+        ),
+    ]
+    published.clear()
+
+    await service.delete_tag(USER_EMAIL, tag.id)
+    await asyncio.sleep(0)
+    assert published == [
+        SummaryTagDeletedEvent(user_id=user_id, tag_id=tag.id),
+    ]
+    published.clear()
+
+    group = await service.add_group(
+        USER_EMAIL,
+        AddSummaryGroupDTO(
+            unique_identifier="grp-ev-1",
+            name="Group Event 1",
+            md5_hash="gh-ev-1",
+        ),
+    )
+    assert group.id is not None
+    await asyncio.sleep(0)
+    assert published == [
+        SummaryUpsertedEvent(user_id=user_id, summary=group, is_new=True),
+    ]
+    published.clear()
+
+    await service.update_group(
+        USER_EMAIL,
+        UpdateSummaryGroupDTO(
+            id=group.id,
+            unique_identifier="grp-ev-1",
+            name="Group Event Updated",
+            md5_hash="gh-ev-2",
+        ),
+    )
+    await asyncio.sleep(0)
+    updated_group = await service.get_summary(USER_EMAIL, group.id)
+    assert published == [
+        SummaryUpsertedEvent(user_id=user_id, summary=updated_group, is_new=False),
+    ]
+    published.clear()
+
+    summary = await service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="sum-ev-1",
+            parent_unique_identifier="grp-ev-1",
+            content="Summary event content",
+        ),
+    )
+    assert summary.id is not None
+    await asyncio.sleep(0)
+    assert published == [
+        SummaryUpsertedEvent(user_id=user_id, summary=summary, is_new=True),
+    ]
+    published.clear()
+
+    await service.update_summary(
+        USER_EMAIL,
+        UpdateSummaryDTO(id=summary.id, content="Updated summary event content"),
+    )
+    await asyncio.sleep(0)
+    updated_summary = await service.get_summary(USER_EMAIL, summary.id)
+    assert published == [
+        SummaryUpsertedEvent(user_id=user_id, summary=updated_summary, is_new=False),
+    ]
+    published.clear()
+
+    await service.delete_summary(USER_EMAIL, summary.id)
+    await asyncio.sleep(0)
+    assert published == [
+        SummaryDeletedEvent(
+            user_id=user_id,
+            summary_id=summary.id,
+            is_summary_group=False,
+        ),
+    ]
+    published.clear()
+
+    await service.delete_group(USER_EMAIL, group.id)
+    await asyncio.sleep(0)
+    assert published == [
+        SummaryDeletedEvent(
+            user_id=user_id,
+            summary_id=group.id,
+            is_summary_group=True,
+        ),
+    ]
+    published.clear()
+
+    with pytest.raises(SummaryNotFound):
+        await service.update_tag(USER_EMAIL, 99999, "Missing")
+    with pytest.raises(SummaryNotFound):
+        await service.delete_tag(USER_EMAIL, 99999)
+    with pytest.raises(SummaryNotFound):
+        await service.update_group(
+            USER_EMAIL,
+            UpdateSummaryGroupDTO(id=99999, unique_identifier="missing", md5_hash="h"),
+        )
+    with pytest.raises(SummaryNotFound):
+        await service.update_summary(USER_EMAIL, UpdateSummaryDTO(id=99999))
+    with pytest.raises(SummaryNotFound):
+        await service.delete_summary(USER_EMAIL, 99999)
+    await asyncio.sleep(0)
+    assert published == []

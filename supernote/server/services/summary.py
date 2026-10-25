@@ -21,6 +21,13 @@ from supernote.models.summary import (
 )
 from supernote.server.db.models.summary import SummaryDO, SummaryTagDO
 from supernote.server.db.session import DatabaseSessionManager
+from supernote.server.events import (
+    LocalEventBus,
+    SummaryDeletedEvent,
+    SummaryTagDeletedEvent,
+    SummaryTagUpsertedEvent,
+    SummaryUpsertedEvent,
+)
 from supernote.server.exceptions import SummaryNotFound
 from supernote.server.services.user import UserService
 
@@ -90,10 +97,12 @@ class SummaryService:
         self,
         user_service: UserService,
         session_manager: DatabaseSessionManager,
+        event_bus: LocalEventBus | None = None,
     ) -> None:
         """Initialize the summary service."""
         self.user_service = user_service
         self.session_manager = session_manager
+        self.event_bus = event_bus
 
     async def add_tag(self, user_email: str, name: str) -> SummaryTagItem:
         """Add a new summary tag."""
@@ -107,7 +116,16 @@ class SummaryService:
             session.add(tag_do)
             await session.commit()
             await session.refresh(tag_do)
-            return _to_tag_item(tag_do)
+            tag_item = _to_tag_item(tag_do)
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryTagUpsertedEvent(
+                    user_id=user_id,
+                    tag=tag_item,
+                    is_new=True,
+                )
+            )
+        return tag_item
 
     async def update_tag(self, user_email: str, tag_id: int, name: str) -> bool:
         """Update an existing summary tag."""
@@ -118,7 +136,17 @@ class SummaryService:
                 raise SummaryNotFound(f"Tag with ID {tag_id} not found")
             tag_do.name = name
             await session.commit()
-            return True
+            await session.refresh(tag_do)
+            tag_item = _to_tag_item(tag_do)
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryTagUpsertedEvent(
+                    user_id=user_id,
+                    tag=tag_item,
+                    is_new=False,
+                )
+            )
+        return True
 
     async def delete_tag(self, user_email: str, tag_id: int) -> bool:
         """Delete a summary tag."""
@@ -129,7 +157,14 @@ class SummaryService:
                 raise SummaryNotFound(f"Tag with ID {tag_id} not found")
             await session.delete(tag_do)
             await session.commit()
-            return True
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryTagDeletedEvent(
+                    user_id=user_id,
+                    tag_id=tag_id,
+                )
+            )
+        return True
 
     async def list_tags(self, user_email: str) -> list[SummaryTagItem]:
         """List all summary tags for a user."""
@@ -176,7 +211,16 @@ class SummaryService:
             session.add(summary_do)
             await session.commit()
             await session.refresh(summary_do)
-            return _to_summary_item(summary_do)
+            summary_item = _to_summary_item(summary_do)
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryUpsertedEvent(
+                    user_id=user_id,
+                    summary=summary_item,
+                    is_new=True,
+                )
+            )
+        return summary_item
 
     async def update_summary(self, user_email: str, dto: UpdateSummaryDTO) -> bool:
         """Update an existing summary."""
@@ -220,7 +264,17 @@ class SummaryService:
                 summary_do.author = dto.author
 
             await session.commit()
-            return True
+            await session.refresh(summary_do)
+            summary_item = _to_summary_item(summary_do)
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryUpsertedEvent(
+                    user_id=user_id,
+                    summary=summary_item,
+                    is_new=False,
+                )
+            )
+        return True
 
     async def delete_summary(self, user_email: str, summary_id: int) -> bool:
         """Soft delete a summary (and child summaries when deleting a group)."""
@@ -230,9 +284,10 @@ class SummaryService:
             if not summary_do:
                 raise SummaryNotFound(f"Summary with ID {summary_id} not found")
 
+            is_summary_group = bool(summary_do.is_summary_group)
             summary_do.is_deleted = True
 
-            if summary_do.is_summary_group:
+            if is_summary_group:
                 child_stmt = select(SummaryDO).where(
                     SummaryDO.user_id == user_id,
                     SummaryDO.parent_unique_identifier == summary_do.unique_identifier,
@@ -243,7 +298,15 @@ class SummaryService:
                     child.is_deleted = True
 
             await session.commit()
-            return True
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryDeletedEvent(
+                    user_id=user_id,
+                    summary_id=summary_id,
+                    is_summary_group=is_summary_group,
+                )
+            )
+        return True
 
     @staticmethod
     def _build_summary_filters(
@@ -330,7 +393,16 @@ class SummaryService:
             session.add(summary_do)
             await session.commit()
             await session.refresh(summary_do)
-            return _to_summary_item(summary_do)
+            summary_item = _to_summary_item(summary_do)
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryUpsertedEvent(
+                    user_id=user_id,
+                    summary=summary_item,
+                    is_new=True,
+                )
+            )
+        return summary_item
 
     async def update_group(self, user_email: str, dto: UpdateSummaryGroupDTO) -> bool:
         """Update an existing summary group."""
@@ -362,7 +434,17 @@ class SummaryService:
                 group_do.last_modified_time = dto.last_modified_time
 
             await session.commit()
-            return True
+            await session.refresh(group_do)
+            summary_item = _to_summary_item(group_do)
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                SummaryUpsertedEvent(
+                    user_id=user_id,
+                    summary=summary_item,
+                    is_new=False,
+                )
+            )
+        return True
 
     async def delete_group(self, user_email: str, group_id: int) -> bool:
         """Delete a summary group and its child summaries (soft delete)."""

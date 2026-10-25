@@ -7,6 +7,7 @@ from sqlalchemy.engine import CursorResult
 
 from supernote.server.db.models.schedule import ScheduleTaskDO, ScheduleTaskGroupDO
 from supernote.server.db.session import DatabaseSessionManager
+from supernote.server.events import LocalEventBus, ScheduleUpdatedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +53,29 @@ TASK_NULLABLE_FIELDS: set[str] = {
 class ScheduleService:
     """Schedule service."""
 
-    def __init__(self, session_manager: DatabaseSessionManager) -> None:
+    def __init__(
+        self,
+        session_manager: DatabaseSessionManager,
+        event_bus: LocalEventBus | None = None,
+    ) -> None:
         """Initialize the schedule service."""
         self.session_manager = session_manager
+        self.event_bus = event_bus
+
+    async def _publish_schedule_updated(
+        self,
+        user_id: int,
+        task_list_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        if self.event_bus is not None:
+            await self.event_bus.publish(
+                ScheduleUpdatedEvent(
+                    user_id=user_id,
+                    task_list_id=task_list_id,
+                    task_id=task_id,
+                )
+            )
 
     # Task Group Operations
 
@@ -92,7 +113,11 @@ class ScheduleService:
             await session.flush()
             await session.commit()
             await session.refresh(group)
-            return group
+
+        await self._publish_schedule_updated(
+            user_id=user_id, task_list_id=group.task_list_id
+        )
+        return group
 
     async def list_groups(self, user_id: int) -> list[ScheduleTaskGroupDO]:
         """List all task groups for a user."""
@@ -156,7 +181,13 @@ class ScheduleService:
                 ScheduleTaskGroupDO.task_list_id == group.task_list_id,
             )
             result = await session.execute(stmt_get)
-            return result.scalar_one_or_none()
+            updated_group = result.scalar_one_or_none()
+
+        if updated_group is not None:
+            await self._publish_schedule_updated(
+                user_id=user_id, task_list_id=updated_group.task_list_id
+            )
+        return updated_group
 
     async def delete_group(self, user_id: int, group_id: str) -> bool:
         """Delete a task group and cascade delete all contained tasks."""
@@ -164,22 +195,28 @@ class ScheduleService:
             if not (group := await self.get_group(user_id, group_id)):
                 return False
 
+            target_group_id = group.task_list_id
             # First cascade delete all tasks in the group
             stmt_tasks = delete(ScheduleTaskDO).where(
                 ScheduleTaskDO.user_id == user_id,
-                ScheduleTaskDO.task_list_id == group.task_list_id,
+                ScheduleTaskDO.task_list_id == target_group_id,
             )
             await session.execute(stmt_tasks)
 
             # Then delete the group itself
             stmt_group = delete(ScheduleTaskGroupDO).where(
                 ScheduleTaskGroupDO.user_id == user_id,
-                ScheduleTaskGroupDO.task_list_id == group.task_list_id,
+                ScheduleTaskGroupDO.task_list_id == target_group_id,
             )
             result = await session.execute(stmt_group)
             await session.commit()
+            deleted = bool(getattr(result, "rowcount", 0) > 0)
 
-            return bool(getattr(result, "rowcount", 0) > 0)
+        if deleted:
+            await self._publish_schedule_updated(
+                user_id=user_id, task_list_id=target_group_id
+            )
+        return deleted
 
     async def clear_group_tasks(self, user_id: int, group_id: str) -> bool:
         """Clear all tasks from a task group without deleting the group."""
@@ -187,14 +224,21 @@ class ScheduleService:
             if not (group := await self.get_group(user_id, group_id)):
                 return False
 
+            target_group_id = group.task_list_id
             # Clear all tasks from the group without deleting the group
             stmt = delete(ScheduleTaskDO).where(
                 ScheduleTaskDO.user_id == user_id,
-                ScheduleTaskDO.task_list_id == group.task_list_id,
+                ScheduleTaskDO.task_list_id == target_group_id,
             )
             result = await session.execute(stmt)
             await session.commit()
-            return bool(getattr(result, "rowcount", 0) > 0)
+            cleared = bool(getattr(result, "rowcount", 0) > 0)
+
+        if cleared:
+            await self._publish_schedule_updated(
+                user_id=user_id, task_list_id=target_group_id
+            )
+        return cleared
 
     # Task Operations
 
@@ -260,7 +304,13 @@ class ScheduleService:
             await session.flush()
             await session.commit()
             await session.refresh(task)
-            return task
+
+        await self._publish_schedule_updated(
+            user_id=user_id,
+            task_list_id=task.task_list_id,
+            task_id=task.task_id,
+        )
+        return task
 
     async def get_task(self, user_id: int, task_id: str) -> ScheduleTaskDO | None:
         """Get a task by ID."""
@@ -327,13 +377,26 @@ class ScheduleService:
                 ScheduleTaskDO.task_id == task.task_id,
             )
             result = await session.execute(stmt_get)
-            return result.scalar_one_or_none()
+            updated_task = result.scalar_one_or_none()
+
+        if updated_task is not None:
+            await self._publish_schedule_updated(
+                user_id=user_id,
+                task_list_id=updated_task.task_list_id,
+                task_id=updated_task.task_id,
+            )
+        return updated_task
 
     async def batch_update_tasks(
-        self, user_id: int, updates_list: list[dict[str, Any]]
+        self,
+        user_id: int,
+        updates_list: list[dict[str, Any]],
+        task_list_id: str | None = None,
     ) -> bool:
         """Batch update tasks atomically in a single transaction."""
         now_ms = int(time.time() * 1000)
+        resolved_group_id = task_list_id
+        updated_any = False
         async with self.session_manager.session() as session:
             for item in updates_list:
                 if not (task_id := item.get("task_id")):
@@ -349,6 +412,9 @@ class ScheduleService:
 
                 if not (task := await self.get_task(user_id, str(task_id))):
                     raise ValueError(f"Task {task_id} not found")
+
+                if resolved_group_id is None and task.task_list_id is not None:
+                    resolved_group_id = task.task_list_id
 
                 updates = {
                     k: v
@@ -370,8 +436,14 @@ class ScheduleService:
                     .values(**updates)
                 )
                 await session.execute(stmt)
+                updated_any = True
             await session.commit()
-            return True
+
+        if updated_any:
+            await self._publish_schedule_updated(
+                user_id=user_id, task_list_id=resolved_group_id
+            )
+        return True
 
     async def delete_task(self, user_id: int, task_id: str) -> bool:
         """Delete a task."""
@@ -379,10 +451,20 @@ class ScheduleService:
             if not (task := await self.get_task(user_id, task_id)):
                 return False
 
+            target_group_id = task.task_list_id
+            target_task_id = task.task_id
             stmt = delete(ScheduleTaskDO).where(
                 ScheduleTaskDO.user_id == user_id,
-                ScheduleTaskDO.task_id == task.task_id,
+                ScheduleTaskDO.task_id == target_task_id,
             )
             result = cast(CursorResult[Any], await session.execute(stmt))
             await session.commit()
-            return bool(result.rowcount > 0)
+            deleted = bool(result.rowcount > 0)
+
+        if deleted:
+            await self._publish_schedule_updated(
+                user_id=user_id,
+                task_list_id=target_group_id,
+                task_id=target_task_id,
+            )
+        return deleted

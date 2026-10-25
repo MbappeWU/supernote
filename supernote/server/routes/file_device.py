@@ -178,7 +178,6 @@ async def handle_sync_end(request: web.Request) -> web.Response:
             await event_bus.publish(
                 SyncCompletedEvent(
                     user_id=user_id,
-                    user_email=user_email,
                     equipment_no=req_data.equipment_no,
                 )
             )

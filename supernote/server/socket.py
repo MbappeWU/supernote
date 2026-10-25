@@ -9,19 +9,38 @@ import engineio.packet
 import socketio
 from aiohttp import web
 
+from supernote.models.base import BooleanEnum
 from supernote.models.socket import (
     BaseSocketMessageData,
+    DigestMessageTemplate,
+    ScheduleMessageTemplate,
+    SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoAction,
     SocketIoClientMessage,
     SocketIoCode,
+    SocketIoDigestDataType,
     SocketIoEvent,
+    SocketIoFileType,
     SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
+    SocketTaskMessageData,
 )
 from supernote.server.config import ServerConfig
-from supernote.server.events import Event, LocalEventBus, SyncCompletedEvent
+from supernote.server.events import (
+    LocalEventBus,
+    ScheduleUpdatedEvent,
+    SummaryDeletedEvent,
+    SummaryTagDeletedEvent,
+    SummaryTagUpsertedEvent,
+    SummaryUpsertedEvent,
+    SyncCompletedEvent,
+    VfsItemCopiedEvent,
+    VfsItemCreatedEvent,
+    VfsItemDeletedEvent,
+    VfsItemMovedEvent,
+)
 from supernote.server.services.user import UserService
 from supernote.server.socket_auth import verify_handshake_signature
 
@@ -32,6 +51,15 @@ _MSG_TYPE_TO_EVENT: dict[str, SocketIoEvent] = {
     SocketIoMessageType.TASK_SYN.value: SocketIoEvent.TODO,
     SocketIoMessageType.DIGEST_SYN.value: SocketIoEvent.DIGEST,
 }
+
+
+def _parent_dir_path(full_path: str) -> str:
+    """Format the parent directory path with a trailing slash (or empty string at root)."""
+    cleaned = full_path.strip("/")
+    if "/" not in cleaned:
+        return ""
+    parent, _ = cleaned.rsplit("/", 1)
+    return f"{parent}/"
 
 
 def _extract_handshake_params(environ: dict) -> SocketHandshakeParams:
@@ -70,22 +98,21 @@ class _CompatAsyncServer(socketio.AsyncServer):
     async def _handle_eio_connect(self, eio_sid: str, environ: dict) -> None:
         await super()._handle_eio_connect(eio_sid, environ)
 
-        eio_sock = self.eio.sockets.get(eio_sid)
-        if eio_sock is not None:
-            original_receive = eio_sock.receive
+        eio_sock = self.eio.sockets[eio_sid]
+        original_receive = eio_sock.receive
 
-            async def _receive_with_eio3_ping(
-                pkt: engineio.packet.Packet,
-            ) -> None:
-                if pkt.packet_type == engineio.packet.PING:
-                    eio_sock.schedule_ping()
-                    await eio_sock.send(
-                        engineio.packet.Packet(engineio.packet.PONG, pkt.data)
-                    )
-                    return
-                await original_receive(pkt)
+        async def _receive_with_eio3_ping(
+            pkt: engineio.packet.Packet,
+        ) -> None:
+            if pkt.packet_type == engineio.packet.PING:
+                eio_sock.schedule_ping()
+                await eio_sock.send(
+                    engineio.packet.Packet(engineio.packet.PONG, pkt.data)
+                )
+                return
+            await original_receive(pkt)
 
-            setattr(eio_sock, "receive", _receive_with_eio3_ping)
+        setattr(eio_sock, "receive", _receive_with_eio3_ping)
 
         await self._handle_connect(eio_sid, "/", None)
 
@@ -109,7 +136,7 @@ class SocketIOServerManager:
             logger=False,
             engineio_logger=False,
         )
-        self._sid_to_user: dict[str, str] = {}
+        self._sid_to_user: dict[str, int] = {}
         self._sid_to_token: dict[str, str] = {}
         self._setup_handlers()
         self._setup_event_bus_subscriptions()
@@ -149,7 +176,7 @@ class SocketIOServerManager:
             user_id,
             sid,
         )
-        if user_id:
+        if user_id is not None:
             await self._sio.leave_room(sid, f"user_{user_id}")
         await self._send_error(sid, HTTPStatus.FORBIDDEN, "token verification failed")
         await self._sio.disconnect(sid)
@@ -179,8 +206,8 @@ class SocketIOServerManager:
                 )
                 return False
 
-            # Associate session ID with user_id and join user room
-            user_id = session.email
+            # Associate session ID with user room
+            user_id = session.user_id
             self._sid_to_user[sid] = user_id
             self._sid_to_token[sid] = params.token
             user_room = f"user_{user_id}"
@@ -200,7 +227,9 @@ class SocketIOServerManager:
             logger.info("Socket.IO disconnected for user=%s (sid=%s)", user_id, sid)
 
         @self._sio.on(SocketIoEvent.CLIENT_MESSAGE.value)
-        async def on_client_message(sid: str, data: str) -> None:
+        async def on_client_message(
+            sid: str, data: object = None, *_args: object
+        ) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -221,7 +250,7 @@ class SocketIOServerManager:
                 logger.debug("Client ACK received for user=%s (sid=%s)", user_id, sid)
 
         @self._sio.on(SocketIoEvent.TODO.value)
-        async def on_todo_ack(sid: str, data: str) -> None:
+        async def on_todo_ack(sid: str, data: object = None, *_args: object) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -232,7 +261,7 @@ class SocketIOServerManager:
                 )
 
         @self._sio.on(SocketIoEvent.DIGEST.value)
-        async def on_digest_ack(sid: str, data: str) -> None:
+        async def on_digest_ack(sid: str, data: object = None, *_args: object) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -243,7 +272,7 @@ class SocketIOServerManager:
                 )
 
         @self._sio.on(SocketIoEvent.RATTA_PING.value)
-        async def on_ratta_ping(sid: str, data: str) -> None:
+        async def on_ratta_ping(sid: str, data: object = None, *_args: object) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -262,20 +291,25 @@ class SocketIOServerManager:
         if self.event_bus is None:
             return
         self.event_bus.subscribe(SyncCompletedEvent, self._handle_sync_completed)
-        # TODO: Subscribe to future LocalEventBus domain events for:
-        # - File/folder mutations (ADDFOLDER, DOWNLOADFILE, MODIFYFOLDER, MODIFYFILE, MOVEFOLDER,
-        #   MOVEFILE, COPYFOLDER, COPYFILE, DELETEFOLDER, DELETEFILE) -> SocketMessageData (FILE-SYN)
-        # - Schedule/task mutations (QUERY) -> SocketTaskMessageData (TASK-SYN)
-        # - Summary/digest/tag mutations (ADD_DIGEST, UPDATE_DIGEST, DELETE_DIGEST, QUERY)
-        #   -> SocketDigestMessageData (DIGEST-SYN)
+        self.event_bus.subscribe(ScheduleUpdatedEvent, self._handle_schedule_updated)
+        self.event_bus.subscribe(
+            SummaryTagUpsertedEvent, self._handle_summary_tag_upserted
+        )
+        self.event_bus.subscribe(
+            SummaryTagDeletedEvent, self._handle_summary_tag_deleted
+        )
+        self.event_bus.subscribe(SummaryUpsertedEvent, self._handle_summary_upserted)
+        self.event_bus.subscribe(SummaryDeletedEvent, self._handle_summary_deleted)
+        self.event_bus.subscribe(VfsItemCreatedEvent, self._handle_vfs_item_created)
+        self.event_bus.subscribe(VfsItemMovedEvent, self._handle_vfs_item_moved)
+        self.event_bus.subscribe(VfsItemCopiedEvent, self._handle_vfs_item_copied)
+        self.event_bus.subscribe(VfsItemDeletedEvent, self._handle_vfs_item_deleted)
 
-    async def _handle_sync_completed(self, event: Event) -> None:
+    async def _handle_sync_completed(self, event: SyncCompletedEvent) -> None:
         """Emit a STARTSYNC FILE-SYN notification when a device completes a sync session."""
-        if not isinstance(event, SyncCompletedEvent) or not event.user_email:
-            return
         now_ms = int(time.time() * 1000)
         await self.send_message(
-            event.user_email,
+            event.user_id,
             SocketMessageData(
                 code=str(SocketIoCode.SUCCESS.value),
                 msg="Success",
@@ -291,20 +325,360 @@ class SocketIOServerManager:
             ),
         )
 
+    async def _handle_schedule_updated(self, event: ScheduleUpdatedEvent) -> None:
+        """Emit a QUERY TASK-SYN notification when a schedule task group or task is mutated."""
+        now_ms = int(time.time() * 1000)
+        await self.send_message(
+            event.user_id,
+            SocketTaskMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.TASK_SYN,
+                data=[
+                    ScheduleMessageTemplate(
+                        message_type=SocketIoAction.QUERY,
+                        equipment_no=event.equipment_no,
+                        task_list_id=event.task_list_id,
+                        task_id=event.task_id,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_tag_upserted(
+        self, event: SummaryTagUpsertedEvent
+    ) -> None:
+        """Emit an ADD_DIGEST or UPDATE_DIGEST DIGEST-SYN notification when a summary tag is upserted."""
+        now_ms = int(time.time() * 1000)
+        action = (
+            SocketIoAction.ADD_DIGEST if event.is_new else SocketIoAction.UPDATE_DIGEST
+        )
+        tag = event.tag
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=action,
+                        data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                        equipment_no=event.equipment_no,
+                        id=tag.id,
+                        name=tag.name,
+                        unique_identifier=tag.unique_identifier,
+                        create_time=(
+                            str(tag.created_at) if tag.created_at is not None else None
+                        ),
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_tag_deleted(self, event: SummaryTagDeletedEvent) -> None:
+        """Emit a DELETE_DIGEST DIGEST-SYN notification when a summary tag is deleted."""
+        now_ms = int(time.time() * 1000)
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=SocketIoAction.DELETE_DIGEST,
+                        data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                        equipment_no=event.equipment_no,
+                        id=event.tag_id,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_upserted(self, event: SummaryUpsertedEvent) -> None:
+        """Emit an ADD_DIGEST or UPDATE_DIGEST DIGEST-SYN notification when a summary group or item is upserted."""
+        now_ms = int(time.time() * 1000)
+        action = (
+            SocketIoAction.ADD_DIGEST if event.is_new else SocketIoAction.UPDATE_DIGEST
+        )
+        summary = event.summary
+        is_group = summary.is_summary_group == BooleanEnum.YES
+        data_type = (
+            SocketIoDigestDataType.SUMMARY_GROUP
+            if is_group
+            else SocketIoDigestDataType.SUMMARY
+        )
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=action,
+                        data_type=data_type,
+                        equipment_no=event.equipment_no,
+                        id=summary.id,
+                        file_id=summary.file_id,
+                        name=summary.name,
+                        user_id=summary.user_id,
+                        unique_identifier=summary.unique_identifier,
+                        parent_unique_identifier=summary.parent_unique_identifier,
+                        content=summary.content,
+                        source_path=summary.source_path,
+                        data_source=summary.data_source,
+                        source_type=summary.source_type,
+                        is_summary_group=(
+                            summary.is_summary_group.value
+                            if summary.is_summary_group is not None
+                            else None
+                        ),
+                        description=summary.description,
+                        tags=summary.tags,
+                        md5_hash=summary.md5_hash,
+                        metadata=summary.metadata,
+                        comment_str=summary.comment_str,
+                        comment_handwrite_name=summary.comment_handwrite_name,
+                        handwrite_inner_name=summary.handwrite_inner_name,
+                        handwrite_md5=summary.handwrite_md5,
+                        creation_time=summary.creation_time,
+                        last_modified_time=summary.last_modified_time,
+                        is_deleted=(
+                            summary.is_deleted.value
+                            if summary.is_deleted is not None
+                            else None
+                        ),
+                        create_time=(
+                            str(summary.create_time)
+                            if summary.create_time is not None
+                            else None
+                        ),
+                        update_time=(
+                            str(summary.update_time)
+                            if summary.update_time is not None
+                            else None
+                        ),
+                        timestamp=now_ms,
+                        author=summary.author,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_deleted(self, event: SummaryDeletedEvent) -> None:
+        """Emit a DELETE_DIGEST DIGEST-SYN notification when a summary group or item is deleted."""
+        now_ms = int(time.time() * 1000)
+        data_type = (
+            SocketIoDigestDataType.SUMMARY_GROUP
+            if event.is_summary_group
+            else SocketIoDigestDataType.SUMMARY
+        )
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=SocketIoAction.DELETE_DIGEST,
+                        data_type=data_type,
+                        equipment_no=event.equipment_no,
+                        id=event.summary_id,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_created(self, event: VfsItemCreatedEvent) -> None:
+        """Emit an ADDFOLDER or DOWNLOADFILE FILE-SYN notification when a VFS item is created or restored."""
+        now_ms = int(time.time() * 1000)
+        parent_path = _parent_dir_path(event.full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        action = SocketIoAction.ADDFOLDER if event.is_folder else SocketIoAction.ADDFILE
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.item_id,
+                        original_name=event.name,
+                        new_name=event.name,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.parent_id,
+                        go_directory_id=None,
+                        original_path=parent_path,
+                        new_path=parent_path,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_moved(self, event: VfsItemMovedEvent) -> None:
+        """Emit a MODIFYFOLDER/MODIFYFILE or MOVEFOLDER/MOVEFILE FILE-SYN notification."""
+        now_ms = int(time.time() * 1000)
+        original_path = _parent_dir_path(event.original_full_path)
+        new_path = _parent_dir_path(event.new_full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        is_same_dir = event.original_parent_id == event.new_parent_id
+        if is_same_dir:
+            action = (
+                SocketIoAction.MODIFYFOLDER
+                if event.is_folder
+                else SocketIoAction.MODIFYFILE
+            )
+            go_dir_id = None
+        else:
+            action = (
+                SocketIoAction.MOVEFOLDER
+                if event.is_folder
+                else SocketIoAction.MOVEFILE
+            )
+            go_dir_id = None if event.is_folder else event.new_parent_id
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.item_id,
+                        original_name=event.original_name,
+                        new_name=event.new_name,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.new_parent_id,
+                        go_directory_id=go_dir_id,
+                        original_path=original_path,
+                        new_path=new_path,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_copied(self, event: VfsItemCopiedEvent) -> None:
+        """Emit a COPYFOLDER or COPYFILE FILE-SYN notification when a VFS item is copied."""
+        now_ms = int(time.time() * 1000)
+        original_path = _parent_dir_path(event.original_full_path)
+        new_path = _parent_dir_path(event.new_full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        action = (
+            SocketIoAction.COPYFOLDER if event.is_folder else SocketIoAction.COPYFILE
+        )
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.source_id,
+                        new_id=event.new_id,
+                        original_name=event.original_name,
+                        new_name=event.new_name,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.source_parent_id,
+                        go_directory_id=event.new_parent_id,
+                        original_path=original_path,
+                        new_path=new_path,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_deleted(self, event: VfsItemDeletedEvent) -> None:
+        """Emit a DELETEFOLDER or DELETEFILE FILE-SYN notification when a VFS item is soft-deleted."""
+        now_ms = int(time.time() * 1000)
+        original_path = _parent_dir_path(event.full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        action = (
+            SocketIoAction.DELETEFOLDER
+            if event.is_folder
+            else SocketIoAction.DELETEFILE
+        )
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.item_id,
+                        original_name=event.name,
+                        new_name=None,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.parent_id,
+                        go_directory_id=None,
+                        original_path=original_path,
+                        new_path=None,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
     async def send_message(
         self,
-        user_id: str,
+        user_id: int,
         message: BaseSocketMessageData,
     ) -> None:
         """Send a Socket.IO message envelope to all connected sessions for a given user.
 
         Args:
-            user_id: Target user email or identifier.
+            user_id: Target numeric user ID.
             message: Socket.IO envelope payload to deliver.
         """
         sids = [sid for sid, uid in list(self._sid_to_user.items()) if uid == user_id]
         for sid in sids:
             await self._verify_active_session(sid)
+        user_room = f"user_{user_id}"
 
         if message.code is None:
             message.code = str(SocketIoCode.SUCCESS.value)
@@ -318,7 +692,6 @@ class SocketIOServerManager:
             msg_type_str, SocketIoEvent.SERVER_MESSAGE
         ).value
 
-        user_room = f"user_{user_id}"
         payload_str = message.to_json()
         logger.debug(
             "Emitting %s to room=%s: %s", resolved_event, user_room, payload_str

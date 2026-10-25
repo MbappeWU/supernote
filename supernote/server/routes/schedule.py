@@ -339,7 +339,9 @@ async def batch_update_task_list(request: web.Request) -> web.Response:
                 item_updates["task_id"] = item.task_id
                 updates_list.append(item_updates)
 
-        await schedule_service.batch_update_tasks(user_id, updates_list)
+        await schedule_service.batch_update_tasks(
+            user_id, updates_list, task_list_id=dto.task_list_id
+        )
         return web.json_response(BaseResponse(success=True).to_dict())
     except SupernoteError as err:
         return err.to_response()
