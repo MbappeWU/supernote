@@ -11,7 +11,15 @@ from sqlalchemy import update
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import RecycleFileDO
 from supernote.server.db.session import DatabaseSessionManager
-from supernote.server.events import Event, LocalEventBus, NoteDeletedEvent
+from supernote.server.events import (
+    Event,
+    LocalEventBus,
+    NoteDeletedEvent,
+    VfsItemCopiedEvent,
+    VfsItemCreatedEvent,
+    VfsItemDeletedEvent,
+    VfsItemMovedEvent,
+)
 from supernote.server.services.blob import BlobStorage
 from supernote.server.services.file import RECYCLE_RETENTION_MS, FileService
 from supernote.server.services.user import UserService
@@ -497,7 +505,7 @@ async def test_query_file_list_and_get_folders_by_ids_resolve_parent_path_once(
 
     monkeypatch.setattr(VirtualFileSystem, "get_full_path", tracking_get_full_path)
 
-    # 1. query_file_list resolves parent_dir.id once for all 5 children (2 folders + 3 files)
+    # query_file_list resolves parent_dir.id once for all 5 children (2 folders + 3 files)
     items = await file_service.query_file_list(user, parent_dir.id)
     assert len(items) == 5
     assert get_full_path_calls == [parent_dir.id]
@@ -509,7 +517,7 @@ async def test_query_file_list_and_get_folders_by_ids_resolve_parent_path_once(
         "NOTE/Note/Projects/doc_2.note",
     }
 
-    # 2. get_folders_by_ids resolves parent_dir.id once for all non-excluded folders
+    # get_folders_by_ids resolves parent_dir.id once for all non-excluded folders
     get_full_path_calls.clear()
     folder_details = await file_service.get_folders_by_ids(
         user, parent_id=parent_dir.id, id_list=[]
@@ -568,3 +576,262 @@ async def test_search_files_caches_parent_paths(
         "NOTE/Note/Archive/match_1.note",
         "NOTE/Note/Archive/match_2.note",
     }
+
+
+async def test_file_service_publishes_vfs_domain_events(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    event_bus: LocalEventBus,
+    test_user_id: int,
+    test_users: list[str],
+) -> None:
+    """Verify FileService emits VfsItemCreatedEvent, VfsItemMovedEvent, VfsItemCopiedEvent, and VfsItemDeletedEvent."""
+    user = test_users[0]
+    vfs_events: list[Event] = []
+
+    async def on_vfs_event(event: Event) -> None:
+        vfs_events.append(event)
+
+    event_bus.subscribe(VfsItemCreatedEvent, on_vfs_event)
+    event_bus.subscribe(VfsItemMovedEvent, on_vfs_event)
+    event_bus.subscribe(VfsItemCopiedEvent, on_vfs_event)
+    event_bus.subscribe(VfsItemDeletedEvent, on_vfs_event)
+
+    dir_a = await file_service.create_directory(user, "/WorkDir")
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemCreatedEvent(
+            user_id=test_user_id,
+            item_id=dir_a.id,
+            parent_id=0,
+            name="WorkDir",
+            is_folder=True,
+            full_path="WorkDir",
+        )
+    ]
+    vfs_events.clear()
+
+    # Calling create_directory or create_directory_by_id on an existing directory is a no-op
+    await file_service.create_directory(user, "/WorkDir")
+    await file_service.create_directory_by_id(user, 0, "WorkDir")
+    await asyncio.sleep(0)
+    assert vfs_events == []
+
+    dir_b = await file_service.create_directory_by_id(user, dir_a.id, "SubDir")
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemCreatedEvent(
+            user_id=test_user_id,
+            item_id=dir_b.id,
+            parent_id=dir_a.id,
+            name="SubDir",
+            is_folder=True,
+            full_path="WorkDir/SubDir",
+        )
+    ]
+    vfs_events.clear()
+
+    content = b"vfs event payload"
+    md5 = hashlib.md5(content).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "vfs_blob_1", content)
+    file_1 = await file_service.finish_upload(
+        user, "doc1.pdf", "/WorkDir", md5, "vfs_blob_1"
+    )
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemCreatedEvent(
+            user_id=test_user_id,
+            item_id=file_1.id,
+            parent_id=dir_a.id,
+            name="doc1.pdf",
+            is_folder=False,
+            full_path="WorkDir/doc1.pdf",
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    await blob_storage.put(USER_DATA_BUCKET, "vfs_blob_2", content)
+    await file_service.upload_finish_web(
+        user=user,
+        directory_id=dir_a.id,
+        file_name="web_doc.pdf",
+        md5=md5,
+        inner_name="vfs_blob_2",
+    )
+    web_file = await file_service.get_file_info(user, "/WorkDir/web_doc.pdf")
+    assert web_file is not None
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemCreatedEvent(
+            user_id=test_user_id,
+            item_id=web_file.id,
+            parent_id=dir_a.id,
+            name="web_doc.pdf",
+            is_folder=False,
+            full_path="WorkDir/web_doc.pdf",
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    await file_service.rename_item(user, file_1.id, "doc1_renamed.pdf")
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemMovedEvent(
+            user_id=test_user_id,
+            item_id=file_1.id,
+            original_parent_id=dir_a.id,
+            new_parent_id=dir_a.id,
+            original_name="doc1.pdf",
+            new_name="doc1_renamed.pdf",
+            original_full_path="WorkDir/doc1.pdf",
+            new_full_path="WorkDir/doc1_renamed.pdf",
+            is_folder=False,
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    # Identity move to same path is a no-op and emits no event
+    await file_service.move_item(
+        user, file_1.id, "/WorkDir/doc1_renamed.pdf", autorename=False
+    )
+    await asyncio.sleep(0)
+    assert vfs_events == []
+
+    await file_service.move_item(
+        user, file_1.id, "/WorkDir/SubDir/doc1_moved.pdf", autorename=False
+    )
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemMovedEvent(
+            user_id=test_user_id,
+            item_id=file_1.id,
+            original_parent_id=dir_a.id,
+            new_parent_id=dir_b.id,
+            original_name="doc1_renamed.pdf",
+            new_name="doc1_moved.pdf",
+            original_full_path="WorkDir/doc1_renamed.pdf",
+            new_full_path="WorkDir/SubDir/doc1_moved.pdf",
+            is_folder=False,
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    await file_service.move_items(user, [web_file.id], target_parent_id=dir_b.id)
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemMovedEvent(
+            user_id=test_user_id,
+            item_id=web_file.id,
+            original_parent_id=dir_a.id,
+            new_parent_id=dir_b.id,
+            original_name="web_doc.pdf",
+            new_name="web_doc.pdf",
+            original_full_path="WorkDir/web_doc.pdf",
+            new_full_path="WorkDir/SubDir/web_doc.pdf",
+            is_folder=False,
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    copied = await file_service.copy_item(
+        user, file_1.id, to_path="/WorkDir/doc1_copy.pdf", autorename=True
+    )
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemCopiedEvent(
+            user_id=test_user_id,
+            source_id=file_1.id,
+            new_id=copied.id,
+            source_parent_id=dir_b.id,
+            new_parent_id=dir_a.id,
+            original_name="doc1_moved.pdf",
+            new_name="doc1_copy.pdf",
+            original_full_path="WorkDir/SubDir/doc1_moved.pdf",
+            new_full_path="WorkDir/doc1_copy.pdf",
+            is_folder=False,
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    await file_service.copy_items(user, [web_file.id], target_parent_id=dir_a.id)
+    web_copied = await file_service.get_file_info(user, "/WorkDir/web_doc.pdf")
+    assert web_copied is not None
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemCopiedEvent(
+            user_id=test_user_id,
+            source_id=web_file.id,
+            new_id=web_copied.id,
+            source_parent_id=dir_b.id,
+            new_parent_id=dir_a.id,
+            original_name="web_doc.pdf",
+            new_name="web_doc.pdf",
+            original_full_path="WorkDir/SubDir/web_doc.pdf",
+            new_full_path="WorkDir/web_doc.pdf",
+            is_folder=False,
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    await file_service.delete_item(user, copied.id)
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemDeletedEvent(
+            user_id=test_user_id,
+            item_id=copied.id,
+            parent_id=dir_a.id,
+            name="doc1_copy.pdf",
+            full_path="WorkDir/doc1_copy.pdf",
+            is_folder=False,
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    await file_service.delete_items(user, [web_copied.id], parent_id=dir_a.id)
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemDeletedEvent(
+            user_id=test_user_id,
+            item_id=web_copied.id,
+            parent_id=dir_a.id,
+            name="web_doc.pdf",
+            full_path="WorkDir/web_doc.pdf",
+            is_folder=False,
+            size=len(content),
+            md5=md5,
+        )
+    ]
+    vfs_events.clear()
+
+    recycle_entries = await file_service.list_recycle(user)
+    copied_recycle = next(r for r in recycle_entries if r.name == "doc1_copy.pdf")
+    await file_service.revert_from_recycle(user, [copied_recycle.id])
+    await asyncio.sleep(0)
+    assert vfs_events == [
+        VfsItemCreatedEvent(
+            user_id=test_user_id,
+            item_id=copied.id,
+            parent_id=dir_a.id,
+            name="doc1_copy.pdf",
+            is_folder=False,
+            full_path="WorkDir/doc1_copy.pdf",
+            size=len(content),
+            md5=md5,
+        )
+    ]

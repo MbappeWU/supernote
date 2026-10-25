@@ -21,7 +21,15 @@ from supernote.server.utils.paths import get_conversion_pdf_path
 
 from ..db.models.file import RecycleFileDO, UserFileDO
 from ..db.session import DatabaseSessionManager
-from ..events import LocalEventBus, NoteDeletedEvent, NoteUpdatedEvent
+from ..events import (
+    LocalEventBus,
+    NoteDeletedEvent,
+    NoteUpdatedEvent,
+    VfsItemCopiedEvent,
+    VfsItemCreatedEvent,
+    VfsItemDeletedEvent,
+    VfsItemMovedEvent,
+)
 from .blob import BlobStorage
 from .user import UserService
 from .vfs import VirtualFileSystem
@@ -350,7 +358,7 @@ class FileService:
 
         blob_size = metadata.size
 
-        # 3. Create Metadata in VFS
+        # Create metadata in VFS
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
             clean_path = path_str.strip("/")
@@ -368,25 +376,40 @@ class FileService:
                 storage_key=inner_name,
             )
             new_file = upsert_result.node
+            canonical_full_path = await vfs.get_full_path(user_id, new_file.id)
 
         await self._cleanup_superseded_artifacts(upsert_result)
 
-        # 4. Construct response
+        # Construct response
         clean_path = path_str.strip("/")
         full_path = f"{clean_path}/{filename}" if clean_path else filename
+        entity = _to_file_entity(new_file, full_path)
 
-        # 5. Emit Event (Fire and Forget)
-        if self.event_bus and filename.endswith(".note"):
+        # Emit domain events (fire and forget)
+        if self.event_bus:
+            if filename.endswith(".note"):
+                await self.event_bus.publish(
+                    NoteUpdatedEvent(
+                        file_id=new_file.id,
+                        user_id=user_id,
+                        file_path=full_path,
+                        defer_processing=True,
+                    )
+                )
             await self.event_bus.publish(
-                NoteUpdatedEvent(
-                    file_id=new_file.id,
+                VfsItemCreatedEvent(
                     user_id=user_id,
-                    file_path=full_path,
-                    defer_processing=True,
+                    item_id=entity.id,
+                    parent_id=entity.parent_id,
+                    name=entity.name,
+                    is_folder=False,
+                    full_path=canonical_full_path,
+                    size=entity.size,
+                    md5=entity.md5,
                 )
             )
 
-        return _to_file_entity(new_file, full_path)
+        return entity
 
     async def upload_finish_web(
         self,
@@ -399,7 +422,7 @@ class FileService:
         """Finish upload (Web API)."""
         user_id = await self.user_service.get_user_id(user)
 
-        # 1. Check/Promote Blob & Verify Integrity
+        # Check/promote blob and verify integrity
         try:
             metadata = await self.blob_storage.get_metadata(
                 USER_DATA_BUCKET, inner_name, include_md5=True
@@ -416,7 +439,7 @@ class FileService:
 
         blob_size = metadata.size
 
-        # 2. Create VFS Node
+        # Create VFS node
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
 
@@ -433,13 +456,25 @@ class FileService:
 
         await self._cleanup_superseded_artifacts(upsert_result)
 
-        # 3. Emit Event (Fire and Forget)
-        if self.event_bus and file_name.endswith(".note"):
-            # We need the full path for the event
+        # Emit domain events (fire and forget)
+        if self.event_bus:
             full_path = await self.get_full_path_by_node(user_id, new_file.id)
+            if file_name.endswith(".note"):
+                await self.event_bus.publish(
+                    NoteUpdatedEvent(
+                        file_id=new_file.id, user_id=user_id, file_path=full_path
+                    )
+                )
             await self.event_bus.publish(
-                NoteUpdatedEvent(
-                    file_id=new_file.id, user_id=user_id, file_path=full_path
+                VfsItemCreatedEvent(
+                    user_id=user_id,
+                    item_id=new_file.id,
+                    parent_id=new_file.directory_id,
+                    name=new_file.file_name,
+                    is_folder=False,
+                    full_path=full_path,
+                    size=new_file.size,
+                    md5=new_file.md5,
                 )
             )
 
@@ -525,12 +560,26 @@ class FileService:
 
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
+            existing = await vfs.resolve_path(user_id, rel_path)
             node_id = await vfs.ensure_directory_path(user_id, rel_path)
             node = await vfs.get_node_by_id(user_id, node_id)
             if not node:
                 raise FileError(f"Failed to create directory: {rel_path}")
+            canonical_full_path = await vfs.get_full_path(user_id, node.id)
+            entity = _to_file_entity(node, rel_path)
 
-            return _to_file_entity(node, rel_path)
+        if self.event_bus and existing is None:
+            await self.event_bus.publish(
+                VfsItemCreatedEvent(
+                    user_id=user_id,
+                    item_id=entity.id,
+                    parent_id=entity.parent_id,
+                    name=entity.name,
+                    is_folder=True,
+                    full_path=canonical_full_path,
+                )
+            )
+        return entity
 
     # TODO: We should be able to share code between the version that creates by path
     # and the version that creates by ID.
@@ -541,10 +590,23 @@ class FileService:
         user_id = await self.user_service.get_user_id(user)
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
+            already_existed = await vfs._check_exists(user_id, parent_id, name, "Y")
             new_dir = await vfs.create_directory(user_id, parent_id, name)
             full_path = await vfs.get_full_path(user_id, new_dir.id)
+            entity = _to_file_entity(new_dir, full_path)
 
-            return _to_file_entity(new_dir, full_path)
+        if self.event_bus and not already_existed:
+            await self.event_bus.publish(
+                VfsItemCreatedEvent(
+                    user_id=user_id,
+                    item_id=entity.id,
+                    parent_id=entity.parent_id,
+                    name=entity.name,
+                    is_folder=True,
+                    full_path=entity.full_path,
+                )
+            )
+        return entity
 
     async def delete_item(self, email: str, id: int) -> FileEntity:
         """Delete a file or directory for a specific user using VFS."""
@@ -567,11 +629,25 @@ class FileService:
             if not success:
                 raise FileNotFound(f"Node {id} not found for user {email}")
         await self.prune_expired_recycle(user_id)
+        if self.event_bus:
+            await self.event_bus.publish(
+                VfsItemDeletedEvent(
+                    user_id=user_id,
+                    item_id=entity.id,
+                    parent_id=entity.parent_id,
+                    name=entity.name,
+                    full_path=entity.full_path,
+                    is_folder=entity.is_folder,
+                    size=entity.size,
+                    md5=entity.md5,
+                )
+            )
         return entity
 
     async def delete_items(self, user: str, id_list: list[int], parent_id: int) -> None:
         """Delete files or directories for a specific user using VFS (Web API)."""
         user_id = await self.user_service.get_user_id(user)
+        deleted_entities: list[FileEntity] = []
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
             for file_id in id_list:
@@ -603,8 +679,25 @@ class FileService:
                         f"Cannot delete system directory: {node.file_name}"
                     )
 
-                await vfs.delete_node(user_id, file_id)
+                full_path = await vfs.get_full_path(user_id, node.id)
+                entity = _to_file_entity(node, full_path)
+                if await vfs.delete_node(user_id, file_id):
+                    deleted_entities.append(entity)
         await self.prune_expired_recycle(user_id)
+        if self.event_bus:
+            for entity in deleted_entities:
+                await self.event_bus.publish(
+                    VfsItemDeletedEvent(
+                        user_id=user_id,
+                        item_id=entity.id,
+                        parent_id=entity.parent_id,
+                        name=entity.name,
+                        full_path=entity.full_path,
+                        is_folder=entity.is_folder,
+                        size=entity.size,
+                        md5=entity.md5,
+                    )
+                )
 
     async def get_storage_usage(self, user: str) -> int:
         """Get total storage usage for a specific user using VFS."""
@@ -628,6 +721,7 @@ class FileService:
     ) -> None:
         """Batch move items for a specific user."""
         user_id = await self.user_service.get_user_id(user)
+        moved_events: list[VfsItemMovedEvent] = []
 
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
@@ -642,13 +736,41 @@ class FileService:
                         f"Cannot move system directory: {node.file_name}"
                     )
 
-                await vfs.move_node(
+                original_parent_id = node.directory_id
+                original_name = node.file_name
+                original_full_path = await vfs.get_full_path(user_id, node.id)
+
+                moved_node = await vfs.move_node(
                     user_id,
                     item_id,
                     target_parent_id,
                     node.file_name,
                     autorename=True,
                 )
+                if moved_node and (
+                    original_parent_id != moved_node.directory_id
+                    or original_name != moved_node.file_name
+                ):
+                    new_full_path = await vfs.get_full_path(user_id, moved_node.id)
+                    moved_events.append(
+                        VfsItemMovedEvent(
+                            user_id=user_id,
+                            item_id=moved_node.id,
+                            original_parent_id=original_parent_id,
+                            new_parent_id=moved_node.directory_id,
+                            original_name=original_name,
+                            new_name=moved_node.file_name,
+                            original_full_path=original_full_path,
+                            new_full_path=new_full_path,
+                            is_folder=moved_node.is_folder == "Y",
+                            size=moved_node.size,
+                            md5=moved_node.md5,
+                        )
+                    )
+
+        if self.event_bus:
+            for ev in moved_events:
+                await self.event_bus.publish(ev)
 
     async def move_item(
         self, user: str, item_id: int, to_path: str, autorename: bool = False
@@ -665,6 +787,10 @@ class FileService:
             # Immutability check
             if await vfs.is_system_directory(user_id, node):
                 raise AccessDenied(f"Cannot move system directory: {node.file_name}")
+
+            original_parent_id = node.directory_id
+            original_name = node.file_name
+            original_full_path = await vfs.get_full_path(user_id, node.id)
 
             # Resolve destination parent
             clean_to_path = to_path.strip("/")
@@ -697,7 +823,27 @@ class FileService:
             # Re-fetch the new full path for simplicity rather than trying to
             # rebuild it.
             full_path = await vfs.get_full_path(user_id, new_node.id)
-            return _to_file_entity(new_node, full_path)
+            entity = _to_file_entity(new_node, full_path)
+
+        if self.event_bus and (
+            original_parent_id != entity.parent_id or original_name != entity.name
+        ):
+            await self.event_bus.publish(
+                VfsItemMovedEvent(
+                    user_id=user_id,
+                    item_id=entity.id,
+                    original_parent_id=original_parent_id,
+                    new_parent_id=entity.parent_id,
+                    original_name=original_name,
+                    new_name=entity.name,
+                    original_full_path=original_full_path,
+                    new_full_path=entity.full_path,
+                    is_folder=entity.is_folder,
+                    size=entity.size,
+                    md5=entity.md5,
+                )
+            )
+        return entity
 
     async def copy_items(
         self,
@@ -707,6 +853,7 @@ class FileService:
     ) -> None:
         """Batch copy items for a specific user."""
         user_id = await self.user_service.get_user_id(user)
+        copied_events: list[VfsItemCopiedEvent] = []
 
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
@@ -722,14 +869,40 @@ class FileService:
                         f"Cannot copy system directory: {node.file_name}"
                     )
 
+                source_parent_id = node.directory_id
+                original_name = node.file_name
+                original_full_path = await vfs.get_full_path(user_id, node.id)
+
                 # Copy logic (no source parent check usually required for copy but we can add it for completeness)
-                await vfs.copy_node(
+                new_node = await vfs.copy_node(
                     user_id,
                     item_id,
                     target_parent_id,
                     autorename=True,
                     new_name=node.file_name,
                 )
+                if new_node:
+                    new_full_path = await vfs.get_full_path(user_id, new_node.id)
+                    copied_events.append(
+                        VfsItemCopiedEvent(
+                            user_id=user_id,
+                            source_id=item_id,
+                            new_id=new_node.id,
+                            source_parent_id=source_parent_id,
+                            new_parent_id=new_node.directory_id,
+                            original_name=original_name,
+                            new_name=new_node.file_name,
+                            original_full_path=original_full_path,
+                            new_full_path=new_full_path,
+                            is_folder=new_node.is_folder == "Y",
+                            size=new_node.size,
+                            md5=new_node.md5,
+                        )
+                    )
+
+        if self.event_bus:
+            for ev in copied_events:
+                await self.event_bus.publish(ev)
 
     async def copy_item(
         self, email: str, id: int, to_path: str, autorename: bool
@@ -746,6 +919,10 @@ class FileService:
             # Immutability check
             if await vfs.is_system_directory(user_id, node):
                 raise AccessDenied(f"Cannot copy system directory: {node.file_name}")
+
+            source_parent_id = node.directory_id
+            original_name = node.file_name
+            original_full_path = await vfs.get_full_path(user_id, node.id)
 
             # Resolve destination parent
             clean_to_path = to_path.strip("/")
@@ -779,7 +956,26 @@ class FileService:
             # Re-fetch the new full path for simplicity rather than trying to
             # rebuild it.
             full_path = await vfs.get_full_path(user_id, new_node.id)
-            return _to_file_entity(new_node, full_path)
+            entity = _to_file_entity(new_node, full_path)
+
+        if self.event_bus:
+            await self.event_bus.publish(
+                VfsItemCopiedEvent(
+                    user_id=user_id,
+                    source_id=id,
+                    new_id=entity.id,
+                    source_parent_id=source_parent_id,
+                    new_parent_id=entity.parent_id,
+                    original_name=original_name,
+                    new_name=entity.name,
+                    original_full_path=original_full_path,
+                    new_full_path=entity.full_path,
+                    is_folder=entity.is_folder,
+                    size=entity.size,
+                    md5=entity.md5,
+                )
+            )
+        return entity
 
     async def rename_item(self, user: str, id: int, new_name: str) -> None:
         """Rename a file or directory for a specific user using VFS."""
@@ -802,10 +998,33 @@ class FileService:
             if exists:
                 raise FileAlreadyExists("File already exists")
 
+            original_parent_id = node.directory_id
+            original_name = node.file_name
+            original_full_path = await vfs.get_full_path(user_id, node.id)
+
             # Perform rename by updating name in same directory
             # TODO: Verify auto rename behavior here.
             await vfs.move_node(
                 user_id, id, node.directory_id, new_name, autorename=False
+            )
+            new_full_path = await vfs.get_full_path(user_id, node.id)
+            entity = _to_file_entity(node, new_full_path)
+
+        if self.event_bus and original_name != entity.name:
+            await self.event_bus.publish(
+                VfsItemMovedEvent(
+                    user_id=user_id,
+                    item_id=entity.id,
+                    original_parent_id=original_parent_id,
+                    new_parent_id=entity.parent_id,
+                    original_name=original_name,
+                    new_name=entity.name,
+                    original_full_path=original_full_path,
+                    new_full_path=entity.full_path,
+                    is_folder=entity.is_folder,
+                    size=entity.size,
+                    md5=entity.md5,
+                )
             )
 
     async def get_folders_by_ids(
@@ -945,10 +1164,32 @@ class FileService:
     async def revert_from_recycle(self, user: str, id_list: list[int]) -> None:
         """Restore items from recycle bin for a specific user using VFS."""
         user_id = await self.user_service.get_user_id(user)
+        restored_events: list[VfsItemCreatedEvent] = []
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
+            recycle_map = {r.id: r.file_id for r in await vfs.list_recycle(user_id)}
             for recycle_id in id_list:
-                await vfs.restore_node(user_id, recycle_id)
+                restored = await vfs.restore_node(user_id, recycle_id)
+                file_id = recycle_map.get(recycle_id)
+                if restored and file_id is not None:
+                    node = await vfs.get_node_by_id(user_id, file_id)
+                    if node is not None:
+                        full_path = await vfs.get_full_path(user_id, node.id)
+                        restored_events.append(
+                            VfsItemCreatedEvent(
+                                user_id=user_id,
+                                item_id=node.id,
+                                parent_id=node.directory_id,
+                                name=node.file_name,
+                                is_folder=node.is_folder == "Y",
+                                full_path=full_path,
+                                size=node.size,
+                                md5=node.md5,
+                            )
+                        )
+        if self.event_bus:
+            for ev in restored_events:
+                await self.event_bus.publish(ev)
 
     async def clear_recycle(self, user: str) -> None:
         """Empty the recycle bin for a specific user using VFS."""

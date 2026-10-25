@@ -1,6 +1,7 @@
 """Integration tests for Socket.IO server handler and client interaction."""
 
 import asyncio
+import hashlib
 from collections.abc import AsyncGenerator, Callable
 
 import aiohttp
@@ -34,10 +35,13 @@ from supernote.models.summary import (
 )
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
+from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.events import (
     LocalEventBus,
     SyncCompletedEvent,
 )
+from supernote.server.services.blob import BlobStorage
+from supernote.server.services.file import FileService
 from supernote.server.services.schedule import ScheduleService
 from supernote.server.services.summary import SummaryService
 from supernote.server.services.user import JWT_ALGORITHM, UserService
@@ -911,6 +915,407 @@ async def test_socketio_summary_service_events_publish_digest_syn(
                 equipment_no=None,
                 id=group.id,
                 timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    await socket_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_socketio_file_service_events_publish_file_syn(
+    socketio_server: TestServer,
+    socket_client: SupernoteSocketClient,
+) -> None:
+    """Verify FileService folder and file mutations publish FILE-SYN Socket.IO notifications."""
+    user_service: UserService = socketio_server.app["user_service"]
+    file_service: FileService = socketio_server.app["file_service"]
+    blob_storage: BlobStorage = socketio_server.app["blob_storage"]
+    user_email = "test@example.com"
+
+    token = await user_service.create_session(user_email)
+    await socket_client.connect(_make_handshake_params(token))
+
+    async def _next_file_msg() -> SocketMessageData:
+        msg = await asyncio.wait_for(anext(socket_client.messages()), timeout=2.0)
+        assert isinstance(msg, SocketMessageData)
+        return msg
+
+    # Folder create at root -> ADDFOLDER ('FOLDE', original_path='')
+    folder_a = await file_service.create_directory_by_id(user_email, 0, "FolderA")
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.ADDFOLDER,
+                equipment_no=None,
+                file_type=SocketIoFileType.FOLDER,
+                id=folder_a.id,
+                original_name="FolderA",
+                new_name="FolderA",
+                md5=None,
+                size=0,
+                directory_id=0,
+                go_directory_id=None,
+                original_path="",
+                new_path="",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Nested folder create -> ADDFOLDER ('FOLDE', original_path='FolderA/')
+    folder_b = await file_service.create_directory_by_id(
+        user_email, folder_a.id, "SubB"
+    )
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.ADDFOLDER,
+                equipment_no=None,
+                file_type=SocketIoFileType.FOLDER,
+                id=folder_b.id,
+                original_name="SubB",
+                new_name="SubB",
+                md5=None,
+                size=0,
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path="FolderA/",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # File upload finish -> DOWNLOADFILE ('FILE', original_path='FolderA/')
+    payload = b"hello supernote socket"
+    md5 = hashlib.md5(payload).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "sock_blob_1", payload)
+    file_item = await file_service.finish_upload(
+        user_email, "notes.pdf", "/FolderA", md5, "sock_blob_1"
+    )
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.ADDFILE,
+                equipment_no=None,
+                file_type=SocketIoFileType.FILE,
+                id=file_item.id,
+                original_name="notes.pdf",
+                new_name="notes.pdf",
+                md5=md5,
+                size=len(payload),
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path="FolderA/",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Rename file in-place -> MODIFYFILE ('FILE')
+    await file_service.rename_item(user_email, file_item.id, "notes_v2.pdf")
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.MODIFYFILE,
+                equipment_no=None,
+                file_type=SocketIoFileType.FILE,
+                id=file_item.id,
+                original_name="notes.pdf",
+                new_name="notes_v2.pdf",
+                md5=md5,
+                size=len(payload),
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path="FolderA/",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Rename folder in-place -> MODIFYFOLDER ('FOLDE')
+    await file_service.rename_item(user_email, folder_b.id, "SubB_Renamed")
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.MODIFYFOLDER,
+                equipment_no=None,
+                file_type=SocketIoFileType.FOLDER,
+                id=folder_b.id,
+                original_name="SubB",
+                new_name="SubB_Renamed",
+                md5=None,
+                size=0,
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path="FolderA/",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Move file across directories -> MOVEFILE ('FILE')
+    await file_service.move_item(
+        user_email,
+        file_item.id,
+        "/FolderA/SubB_Renamed/notes_v2.pdf",
+        autorename=False,
+    )
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.MOVEFILE,
+                equipment_no=None,
+                file_type=SocketIoFileType.FILE,
+                id=file_item.id,
+                original_name="notes_v2.pdf",
+                new_name="notes_v2.pdf",
+                md5=md5,
+                size=len(payload),
+                directory_id=folder_b.id,
+                go_directory_id=folder_b.id,
+                original_path="FolderA/",
+                new_path="FolderA/SubB_Renamed/",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Move folder across directories -> MOVEFOLDER ('FOLDE')
+    await file_service.move_item(
+        user_email, folder_b.id, "/SubB_Root", autorename=False
+    )
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.MOVEFOLDER,
+                equipment_no=None,
+                file_type=SocketIoFileType.FOLDER,
+                id=folder_b.id,
+                original_name="SubB_Renamed",
+                new_name="SubB_Root",
+                md5=None,
+                size=0,
+                directory_id=0,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path="",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Copy file -> COPYFILE ('FILE')
+    copied_file = await file_service.copy_item(
+        user_email,
+        file_item.id,
+        to_path="/FolderA/notes_copy.pdf",
+        autorename=True,
+    )
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.COPYFILE,
+                equipment_no=None,
+                file_type=SocketIoFileType.FILE,
+                id=file_item.id,
+                new_id=copied_file.id,
+                original_name="notes_v2.pdf",
+                new_name="notes_copy.pdf",
+                md5=md5,
+                size=len(payload),
+                directory_id=folder_b.id,
+                go_directory_id=folder_a.id,
+                original_path="SubB_Root/",
+                new_path="FolderA/",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Copy folder -> COPYFOLDER ('FOLDE')
+    copied_folder = await file_service.copy_item(
+        user_email,
+        folder_b.id,
+        to_path="/FolderA/SubB_Copy",
+        autorename=True,
+    )
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.COPYFOLDER,
+                equipment_no=None,
+                file_type=SocketIoFileType.FOLDER,
+                id=folder_b.id,
+                new_id=copied_folder.id,
+                original_name="SubB_Root",
+                new_name="SubB_Copy",
+                md5=None,
+                size=0,
+                directory_id=0,
+                go_directory_id=folder_a.id,
+                original_path="",
+                new_path="FolderA/",
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Delete file -> DELETEFILE ('FILE')
+    await file_service.delete_item(user_email, copied_file.id)
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.DELETEFILE,
+                equipment_no=None,
+                file_type=SocketIoFileType.FILE,
+                id=copied_file.id,
+                original_name="notes_copy.pdf",
+                new_name=None,
+                md5=md5,
+                size=len(payload),
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path=None,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Delete folder -> DELETEFOLDER ('FOLDE')
+    await file_service.delete_item(user_email, copied_folder.id)
+    msg = await _next_file_msg()
+    assert msg == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.DELETEFOLDER,
+                equipment_no=None,
+                file_type=SocketIoFileType.FOLDER,
+                id=copied_folder.id,
+                original_name="SubB_Copy",
+                new_name=None,
+                md5=None,
+                size=0,
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path=None,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Restore file and folder from recycle bin -> DOWNLOADFILE and ADDFOLDER
+    recycled = await file_service.list_recycle(user_email)
+    recycle_file = next(r for r in recycled if r.name == "notes_copy.pdf")
+    recycle_folder = next(r for r in recycled if r.name == "SubB_Copy")
+    await file_service.revert_from_recycle(
+        user_email, [recycle_file.id, recycle_folder.id]
+    )
+    msg_restored_file = await _next_file_msg()
+    assert msg_restored_file == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg_restored_file.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.ADDFILE,
+                equipment_no=None,
+                file_type=SocketIoFileType.FILE,
+                id=copied_file.id,
+                original_name="notes_copy.pdf",
+                new_name="notes_copy.pdf",
+                md5=md5,
+                size=len(payload),
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path="FolderA/",
+                timestamp=msg_restored_file.data[0].timestamp,
+            )
+        ],
+    )
+    msg_restored_folder = await _next_file_msg()
+    assert msg_restored_folder == SocketMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg_restored_folder.timestamp,
+        msg_type=SocketIoMessageType.FILE_SYN,
+        data=[
+            SocketIoMessageTemplate(
+                message_type=SocketIoAction.ADDFOLDER,
+                equipment_no=None,
+                file_type=SocketIoFileType.FOLDER,
+                id=copied_folder.id,
+                original_name="SubB_Copy",
+                new_name="SubB_Copy",
+                md5=None,
+                size=0,
+                directory_id=folder_a.id,
+                go_directory_id=None,
+                original_path="FolderA/",
+                new_path="FolderA/",
+                timestamp=msg_restored_folder.data[0].timestamp,
             )
         ],
     )

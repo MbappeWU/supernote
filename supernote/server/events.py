@@ -99,8 +99,71 @@ class SummaryDeletedEvent(Event):
     equipment_no: str | None = None
 
 
-# TODO: Define and publish additional domain events on LocalEventBus for Socket.IO notification dispatch:
-# - File/folder lifecycle events (create folder, upload finish, rename, move, copy, delete, recycle restore) -> FILE-SYN
+@dataclass
+class VfsItemCreatedEvent(Event):
+    """Triggered when a VFS file or directory is created, uploaded, or restored from recycle."""
+
+    user_id: int
+    item_id: int
+    parent_id: int
+    name: str
+    is_folder: bool
+    full_path: str
+    size: int = 0
+    md5: str | None = None
+    equipment_no: str | None = None
+
+
+@dataclass
+class VfsItemMovedEvent(Event):
+    """Triggered when a VFS file or directory is renamed in-place or moved to a new directory."""
+
+    user_id: int
+    item_id: int
+    original_parent_id: int
+    new_parent_id: int
+    original_name: str
+    new_name: str
+    original_full_path: str
+    new_full_path: str
+    is_folder: bool
+    size: int = 0
+    md5: str | None = None
+    equipment_no: str | None = None
+
+
+@dataclass
+class VfsItemCopiedEvent(Event):
+    """Triggered when a VFS file or directory is copied."""
+
+    user_id: int
+    source_id: int
+    new_id: int
+    source_parent_id: int
+    new_parent_id: int
+    original_name: str
+    new_name: str
+    original_full_path: str
+    new_full_path: str
+    is_folder: bool
+    size: int = 0
+    md5: str | None = None
+    equipment_no: str | None = None
+
+
+@dataclass
+class VfsItemDeletedEvent(Event):
+    """Triggered when a VFS file or directory is soft-deleted into the recycle bin."""
+
+    user_id: int
+    item_id: int
+    parent_id: int
+    name: str
+    full_path: str
+    is_folder: bool
+    size: int = 0
+    md5: str | None = None
+    equipment_no: str | None = None
 
 
 EventHandler = Callable[[Any], Awaitable[Any]]

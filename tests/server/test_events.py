@@ -18,6 +18,10 @@ from supernote.server.events import (
     SummaryTagUpsertedEvent,
     SummaryUpsertedEvent,
     SyncCompletedEvent,
+    VfsItemCopiedEvent,
+    VfsItemCreatedEvent,
+    VfsItemDeletedEvent,
+    VfsItemMovedEvent,
 )
 
 
@@ -32,6 +36,10 @@ async def test_local_event_bus_publish_and_subscribe() -> None:
     received_tag_deleted: list[SummaryTagDeletedEvent] = []
     received_summary_upserted: list[SummaryUpsertedEvent] = []
     received_summary_deleted: list[SummaryDeletedEvent] = []
+    received_vfs_created: list[VfsItemCreatedEvent] = []
+    received_vfs_moved: list[VfsItemMovedEvent] = []
+    received_vfs_copied: list[VfsItemCopiedEvent] = []
+    received_vfs_deleted: list[VfsItemDeletedEvent] = []
 
     async def on_updated(event: NoteUpdatedEvent) -> None:
         received_updated.append(event)
@@ -60,6 +68,18 @@ async def test_local_event_bus_publish_and_subscribe() -> None:
     async def on_summary_deleted(event: SummaryDeletedEvent) -> None:
         received_summary_deleted.append(event)
 
+    async def on_vfs_created(event: VfsItemCreatedEvent) -> None:
+        received_vfs_created.append(event)
+
+    async def on_vfs_moved(event: VfsItemMovedEvent) -> None:
+        received_vfs_moved.append(event)
+
+    async def on_vfs_copied(event: VfsItemCopiedEvent) -> None:
+        received_vfs_copied.append(event)
+
+    async def on_vfs_deleted(event: VfsItemDeletedEvent) -> None:
+        received_vfs_deleted.append(event)
+
     bus.subscribe(NoteUpdatedEvent, on_updated)
     bus.subscribe(NoteDeletedEvent, on_deleted)
     bus.subscribe(NoteProcessingCompletedEvent, on_processing_completed)
@@ -69,6 +89,10 @@ async def test_local_event_bus_publish_and_subscribe() -> None:
     bus.subscribe(SummaryTagDeletedEvent, on_tag_deleted)
     bus.subscribe(SummaryUpsertedEvent, on_summary_upserted)
     bus.subscribe(SummaryDeletedEvent, on_summary_deleted)
+    bus.subscribe(VfsItemCreatedEvent, on_vfs_created)
+    bus.subscribe(VfsItemMovedEvent, on_vfs_moved)
+    bus.subscribe(VfsItemCopiedEvent, on_vfs_copied)
+    bus.subscribe(VfsItemDeletedEvent, on_vfs_deleted)
 
     ev_updated = NoteUpdatedEvent(
         file_id=10, user_id=1, file_path="/Note/a.note", defer_processing=True
@@ -102,6 +126,53 @@ async def test_local_event_bus_publish_and_subscribe() -> None:
     ev_summary_deleted = SummaryDeletedEvent(
         user_id=1, summary_id=8, is_summary_group=False
     )
+    ev_vfs_created = VfsItemCreatedEvent(
+        user_id=1,
+        item_id=11,
+        parent_id=0,
+        name="a.note",
+        is_folder=False,
+        full_path="a.note",
+        size=128,
+        md5="abc",
+    )
+    ev_vfs_moved = VfsItemMovedEvent(
+        user_id=1,
+        item_id=11,
+        original_parent_id=0,
+        new_parent_id=2,
+        original_name="a.note",
+        new_name="b.note",
+        original_full_path="a.note",
+        new_full_path="Folder/b.note",
+        is_folder=False,
+        size=128,
+        md5="abc",
+    )
+    ev_vfs_copied = VfsItemCopiedEvent(
+        user_id=1,
+        source_id=11,
+        new_id=12,
+        source_parent_id=0,
+        new_parent_id=2,
+        original_name="a.note",
+        new_name="a(1).note",
+        original_full_path="a.note",
+        new_full_path="Folder/a(1).note",
+        is_folder=False,
+        size=128,
+        md5="abc",
+    )
+    ev_vfs_deleted = VfsItemDeletedEvent(
+        user_id=1,
+        item_id=12,
+        parent_id=2,
+        name="a(1).note",
+        full_path="Folder/a(1).note",
+        is_folder=False,
+        size=128,
+        md5="abc",
+    )
 
     # Publishing an event with no subscribers is a safe no-op
     await bus.publish(Event())
@@ -115,6 +186,10 @@ async def test_local_event_bus_publish_and_subscribe() -> None:
     await bus.publish(ev_tag_deleted)
     await bus.publish(ev_summary_upserted)
     await bus.publish(ev_summary_deleted)
+    await bus.publish(ev_vfs_created)
+    await bus.publish(ev_vfs_moved)
+    await bus.publish(ev_vfs_copied)
+    await bus.publish(ev_vfs_deleted)
     await asyncio.sleep(0)
 
     assert received_updated == [ev_updated]
@@ -126,6 +201,10 @@ async def test_local_event_bus_publish_and_subscribe() -> None:
     assert received_tag_deleted == [ev_tag_deleted]
     assert received_summary_upserted == [ev_summary_upserted]
     assert received_summary_deleted == [ev_summary_deleted]
+    assert received_vfs_created == [ev_vfs_created]
+    assert received_vfs_moved == [ev_vfs_moved]
+    assert received_vfs_copied == [ev_vfs_copied]
+    assert received_vfs_deleted == [ev_vfs_deleted]
 
 
 async def test_local_event_bus_isolates_subscriber_exceptions(

@@ -21,6 +21,7 @@ from supernote.models.socket import (
     SocketIoCode,
     SocketIoDigestDataType,
     SocketIoEvent,
+    SocketIoFileType,
     SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
@@ -35,6 +36,10 @@ from supernote.server.events import (
     SummaryTagUpsertedEvent,
     SummaryUpsertedEvent,
     SyncCompletedEvent,
+    VfsItemCopiedEvent,
+    VfsItemCreatedEvent,
+    VfsItemDeletedEvent,
+    VfsItemMovedEvent,
 )
 from supernote.server.services.user import UserService
 from supernote.server.socket_auth import verify_handshake_signature
@@ -46,6 +51,15 @@ _MSG_TYPE_TO_EVENT: dict[str, SocketIoEvent] = {
     SocketIoMessageType.TASK_SYN.value: SocketIoEvent.TODO,
     SocketIoMessageType.DIGEST_SYN.value: SocketIoEvent.DIGEST,
 }
+
+
+def _parent_dir_path(full_path: str) -> str:
+    """Format the parent directory path with a trailing slash (or empty string at root)."""
+    cleaned = full_path.strip("/")
+    if "/" not in cleaned:
+        return ""
+    parent, _ = cleaned.rsplit("/", 1)
+    return f"{parent}/"
 
 
 def _extract_handshake_params(environ: dict) -> SocketHandshakeParams:
@@ -294,9 +308,10 @@ class SocketIOServerManager:
         )
         self.event_bus.subscribe(SummaryUpsertedEvent, self._handle_summary_upserted)
         self.event_bus.subscribe(SummaryDeletedEvent, self._handle_summary_deleted)
-        # TODO: Subscribe to future LocalEventBus domain events for:
-        # - File/folder mutations (ADDFOLDER, DOWNLOADFILE, MODIFYFOLDER, MODIFYFILE, MOVEFOLDER,
-        #   MOVEFILE, COPYFOLDER, COPYFILE, DELETEFOLDER, DELETEFILE) -> SocketMessageData (FILE-SYN)
+        self.event_bus.subscribe(VfsItemCreatedEvent, self._handle_vfs_item_created)
+        self.event_bus.subscribe(VfsItemMovedEvent, self._handle_vfs_item_moved)
+        self.event_bus.subscribe(VfsItemCopiedEvent, self._handle_vfs_item_copied)
+        self.event_bus.subscribe(VfsItemDeletedEvent, self._handle_vfs_item_deleted)
 
     async def _handle_sync_completed(self, event: SyncCompletedEvent) -> None:
         """Emit a STARTSYNC FILE-SYN notification when a device completes a sync session."""
@@ -491,6 +506,169 @@ class SocketIOServerManager:
                         data_type=data_type,
                         equipment_no=event.equipment_no,
                         id=event.summary_id,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_created(self, event: VfsItemCreatedEvent) -> None:
+        """Emit an ADDFOLDER or DOWNLOADFILE FILE-SYN notification when a VFS item is created or restored."""
+        now_ms = int(time.time() * 1000)
+        parent_path = _parent_dir_path(event.full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        action = SocketIoAction.ADDFOLDER if event.is_folder else SocketIoAction.ADDFILE
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.item_id,
+                        original_name=event.name,
+                        new_name=event.name,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.parent_id,
+                        go_directory_id=None,
+                        original_path=parent_path,
+                        new_path=parent_path,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_moved(self, event: VfsItemMovedEvent) -> None:
+        """Emit a MODIFYFOLDER/MODIFYFILE or MOVEFOLDER/MOVEFILE FILE-SYN notification."""
+        now_ms = int(time.time() * 1000)
+        original_path = _parent_dir_path(event.original_full_path)
+        new_path = _parent_dir_path(event.new_full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        is_same_dir = event.original_parent_id == event.new_parent_id
+        if is_same_dir:
+            action = (
+                SocketIoAction.MODIFYFOLDER
+                if event.is_folder
+                else SocketIoAction.MODIFYFILE
+            )
+            go_dir_id = None
+        else:
+            action = (
+                SocketIoAction.MOVEFOLDER
+                if event.is_folder
+                else SocketIoAction.MOVEFILE
+            )
+            go_dir_id = None if event.is_folder else event.new_parent_id
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.item_id,
+                        original_name=event.original_name,
+                        new_name=event.new_name,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.new_parent_id,
+                        go_directory_id=go_dir_id,
+                        original_path=original_path,
+                        new_path=new_path,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_copied(self, event: VfsItemCopiedEvent) -> None:
+        """Emit a COPYFOLDER or COPYFILE FILE-SYN notification when a VFS item is copied."""
+        now_ms = int(time.time() * 1000)
+        original_path = _parent_dir_path(event.original_full_path)
+        new_path = _parent_dir_path(event.new_full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        action = (
+            SocketIoAction.COPYFOLDER if event.is_folder else SocketIoAction.COPYFILE
+        )
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.source_id,
+                        new_id=event.new_id,
+                        original_name=event.original_name,
+                        new_name=event.new_name,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.source_parent_id,
+                        go_directory_id=event.new_parent_id,
+                        original_path=original_path,
+                        new_path=new_path,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_vfs_item_deleted(self, event: VfsItemDeletedEvent) -> None:
+        """Emit a DELETEFOLDER or DELETEFILE FILE-SYN notification when a VFS item is soft-deleted."""
+        now_ms = int(time.time() * 1000)
+        original_path = _parent_dir_path(event.full_path)
+        file_type = (
+            SocketIoFileType.FOLDER if event.is_folder else SocketIoFileType.FILE
+        )
+        action = (
+            SocketIoAction.DELETEFOLDER
+            if event.is_folder
+            else SocketIoAction.DELETEFILE
+        )
+        await self.send_message(
+            event.user_id,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=action,
+                        equipment_no=event.equipment_no,
+                        file_type=file_type,
+                        id=event.item_id,
+                        original_name=event.name,
+                        new_name=None,
+                        md5=None if event.is_folder else event.md5,
+                        size=0 if event.is_folder else event.size,
+                        directory_id=event.parent_id,
+                        go_directory_id=None,
+                        original_path=original_path,
+                        new_path=None,
                         timestamp=now_ms,
                     )
                 ],
