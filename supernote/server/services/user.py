@@ -36,7 +36,10 @@ from .vfs import VirtualFileSystem
 
 RANDOM_CODE_TTL = datetime.timedelta(minutes=5)
 UNIQUE_MACHINE_ID_KEY = "system:unique_machine_id"
+# CoordinationService requires a numeric expiry (defaults to 1 year if omitted);
+# use a 100-year TTL for server-lifetime keys (unique_machine_id and sold_out_count).
 UNIQUE_MACHINE_ID_TTL = 100 * 365 * 24 * 3600
+SOLD_OUT_KEY_PREFIX = "user:sold_out_count:"
 
 # Validate email format
 # 1. No consecutive dots: (?!.*\.\.)
@@ -76,6 +79,16 @@ class UserService:
         self._config = config
         self._coordination_service = coordination_service
         self._session_manager = session_manager
+
+    @staticmethod
+    def _sold_out_key(account: str) -> str:
+        """Build the CoordinationService key for tracking account deletion count."""
+        return f"{SOLD_OUT_KEY_PREFIX}{account}"
+
+    async def get_sold_out_count(self, account: str) -> int:
+        """Return the number of times an account with this email has been deleted."""
+        val = await self._coordination_service.get_value(self._sold_out_key(account))
+        return int(val) if val and val.isdigit() else 0
 
     @staticmethod
     def _session_prefix(user_id: int, equipment_no: str | None = None) -> str:
@@ -294,6 +307,10 @@ class UserService:
             await session.execute(delete(UserDO).where(UserDO.id == user_id))
             await session.commit()
 
+        await self._coordination_service.increment(
+            self._sold_out_key(account),
+            ttl=UNIQUE_MACHINE_ID_TTL,
+        )
         await self.revoke_user_sessions(user_id)
         return user_id
 
@@ -423,6 +440,7 @@ class UserService:
             equipment_no=equipment_no,
             equipment=equipment,
         )
+        sold_out_count = await self.get_sold_out_count(account)
 
         return LoginVO(
             token=token,
@@ -430,6 +448,7 @@ class UserService:
             is_bind=is_bind,
             is_bind_equipment=is_bind_equipment,
             user_name=user.email,
+            sold_out_count=sold_out_count,
         )
 
     async def create_session(

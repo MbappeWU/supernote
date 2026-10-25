@@ -203,17 +203,32 @@ async def test_update_password(user_service: UserService) -> None:
 
 
 async def test_clear_account(user_service: UserService) -> None:
-    """Clear a user account."""
+    """Clear a user account and track sold_out_count across re-registration."""
     pw_md5 = hashlib.md5(b"pw").hexdigest()
     user = await user_service.register(
         UserRegisterDTO(email="del@test.com", password=pw_md5)
     )
     assert await user_service.check_user_exists("del@test.com")
+    assert await user_service.get_sold_out_count("del@test.com") == 0
 
     cleared_id = await user_service.clear_account("del@test.com")
     assert cleared_id == user.id
     assert not await user_service.check_user_exists("del@test.com")
+    assert await user_service.get_sold_out_count("del@test.com") == 1
     assert await user_service.clear_account("del@test.com") is None
+    assert await user_service.get_sold_out_count("del@test.com") == 1
+
+    # Re-registering with the same email and logging in returns sold_out_count=1
+    new_user = await user_service.register(
+        UserRegisterDTO(email="del@test.com", password=pw_md5)
+    )
+    assert new_user.id != user.id
+    code, ts = await user_service.generate_random_code("del@test.com")
+    login_vo = await user_service.login(
+        "del@test.com", hash_with_salt(pw_md5, code), ts
+    )
+    assert login_vo is not None
+    assert login_vo.sold_out_count == 1
 
 
 async def test_token_expiration_by_equipment(user_service: UserService) -> None:
