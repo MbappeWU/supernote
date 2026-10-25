@@ -416,6 +416,7 @@ async def test_oss_download_content_type_and_disposition(
     resp_default = await client.get(relative_url, headers={})
     assert resp_default.status == 200
     assert resp_default.headers.get("Content-Type") == expected_mime
+    assert resp_default.headers.get("X-Content-Type-Options") == "nosniff"
     assert (
         resp_default.headers.get("Content-Disposition")
         == f'attachment; filename="{file_name}"'
@@ -426,6 +427,7 @@ async def test_oss_download_content_type_and_disposition(
     resp_inline = await client.get(f"{relative_url}&inline=1", headers={})
     assert resp_inline.status == 200
     assert resp_inline.headers.get("Content-Type") == expected_mime
+    assert resp_inline.headers.get("X-Content-Type-Options") == "nosniff"
     expected_disposition = "inline" if can_inline else "attachment"
     assert (
         resp_inline.headers.get("Content-Disposition")

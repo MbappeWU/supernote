@@ -216,10 +216,17 @@ def _build_download_headers(
         or content_type == "application/json"
     )
     disposition_type = "inline" if (inline and is_safe_inline_type) else "attachment"
+    safe_file_name = (
+        file_name.replace("\r", "")
+        .replace("\n", "")
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+    )
 
     headers = {
         "Content-Type": content_type,
-        "Content-Disposition": f'{disposition_type}; filename="{file_name}"',
+        "Content-Disposition": f'{disposition_type}; filename="{safe_file_name}"',
+        "X-Content-Type-Options": "nosniff",
         "Content-Length": str(content_length),
         "Accept-Ranges": "bytes",
     }
