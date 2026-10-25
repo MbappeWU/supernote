@@ -389,6 +389,7 @@ async def test_oss_upload_part_consumption_logic(
         ("data.json", "application/json", True),
         ("vector.svg", "image/svg+xml", False),
         ("page.html", "text/html", False),
+        ("feed.xml", ("application/xml", "text/xml"), False),
         ("notebook.note", "application/octet-stream", False),
     ],
 )
@@ -396,7 +397,7 @@ async def test_oss_download_content_type_and_disposition(
     device_client: DeviceClient,
     client: Client,
     file_name: str,
-    expected_mime: str,
+    expected_mime: str | tuple[str, ...],
     can_inline: bool,
 ) -> None:
     """Verify /api/oss/download sets Content-Type from filename and supports inline disposition for safe types."""
@@ -412,11 +413,19 @@ async def test_oss_download_content_type_and_disposition(
     parsed = urllib.parse.urlparse(download_info.url)
     relative_url = f"{parsed.path}?{parsed.query}"
 
+    expected_mimes = (
+        (expected_mime,) if isinstance(expected_mime, str) else expected_mime
+    )
+    expected_csp = (
+        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+    )
+
     # Default download (without inline=1) always uses attachment
     resp_default = await client.get(relative_url, headers={})
     assert resp_default.status == 200
-    assert resp_default.headers.get("Content-Type") == expected_mime
+    assert resp_default.headers.get("Content-Type") in expected_mimes
     assert resp_default.headers.get("X-Content-Type-Options") == "nosniff"
+    assert resp_default.headers.get("Content-Security-Policy") == expected_csp
     assert (
         resp_default.headers.get("Content-Disposition")
         == f'attachment; filename="{file_name}"'
@@ -426,8 +435,9 @@ async def test_oss_download_content_type_and_disposition(
     # Inline request (?inline=1) uses inline only for safe previewable types
     resp_inline = await client.get(f"{relative_url}&inline=1", headers={})
     assert resp_inline.status == 200
-    assert resp_inline.headers.get("Content-Type") == expected_mime
+    assert resp_inline.headers.get("Content-Type") in expected_mimes
     assert resp_inline.headers.get("X-Content-Type-Options") == "nosniff"
+    assert resp_inline.headers.get("Content-Security-Policy") == expected_csp
     expected_disposition = "inline" if can_inline else "attachment"
     assert (
         resp_inline.headers.get("Content-Disposition")
