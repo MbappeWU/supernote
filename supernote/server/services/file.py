@@ -157,6 +157,15 @@ class ConversionsVO:
     page_no: int
 
 
+@dataclass
+class _FileUpsertResult:
+    """Result of creating or updating a VFS file node, tracking any superseded artifacts to clean up."""
+
+    node: UserFileDO
+    superseded_storage_key: str | None = None
+    superseded_md5: str | None = None
+
+
 def _load_notebook_sync(blob_content: bytes) -> Any:
     """Helper to parse note file in a worker thread."""
     return load_notebook(BytesIO(blob_content), policy="loose")
@@ -395,7 +404,8 @@ class FileService:
             if clean_path:
                 parent_id = await vfs.ensure_directory_path(user_id, clean_path)
 
-            new_file = await vfs.create_or_update_file(
+            upsert_result = await self._upsert_vfs_file(
+                vfs=vfs,
                 user_id=user_id,
                 parent_id=parent_id,
                 name=filename,
@@ -403,6 +413,9 @@ class FileService:
                 md5=content_hash,
                 storage_key=inner_name,
             )
+            new_file = upsert_result.node
+
+        await self._cleanup_superseded_artifacts(upsert_result)
 
         # 4. Construct response
         clean_path = path_str.strip("/")
@@ -450,7 +463,8 @@ class FileService:
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
 
-            new_file = await vfs.create_or_update_file(
+            upsert_result = await self._upsert_vfs_file(
+                vfs=vfs,
                 user_id=user_id,
                 parent_id=directory_id,
                 name=file_name,
@@ -458,6 +472,9 @@ class FileService:
                 md5=md5,
                 storage_key=inner_name,
             )
+            new_file = upsert_result.node
+
+        await self._cleanup_superseded_artifacts(upsert_result)
 
         # 3. Emit Event (Fire and Forget)
         if self.event_bus and file_name.endswith(".note"):
@@ -468,6 +485,107 @@ class FileService:
                     file_id=new_file.id, user_id=user_id, file_path=full_path
                 )
             )
+
+    async def _upsert_vfs_file(
+        self,
+        vfs: VirtualFileSystem,
+        user_id: int,
+        parent_id: int,
+        name: str,
+        size: int,
+        md5: str,
+        storage_key: str,
+    ) -> _FileUpsertResult:
+        """Create or update a VFS file node and record any superseded artifacts to clean up."""
+        existing = await vfs.get_active_file(user_id, parent_id, name)
+        old_storage_key: str | None = existing.storage_key if existing else None
+        old_md5: str | None = existing.md5 if existing else None
+
+        new_file = await vfs.create_or_update_file(
+            user_id=user_id,
+            parent_id=parent_id,
+            name=name,
+            size=size,
+            md5=md5,
+            storage_key=storage_key,
+        )
+
+        superseded_storage_key: str | None = None
+        if old_storage_key and old_storage_key != storage_key:
+            unreferenced = await vfs.get_unreferenced_storage_keys({old_storage_key})
+            if old_storage_key in unreferenced:
+                superseded_storage_key = old_storage_key
+
+        superseded_md5 = old_md5 if old_md5 and old_md5 != md5 else None
+
+        return _FileUpsertResult(
+            node=new_file,
+            superseded_storage_key=superseded_storage_key,
+            superseded_md5=superseded_md5,
+        )
+
+    async def _cleanup_superseded_artifacts(
+        self,
+        result: _FileUpsertResult,
+    ) -> None:
+        """Delete unreferenced superseded primary blob and stale conversion artifacts."""
+        if result.superseded_storage_key:
+            try:
+                await self.blob_storage.delete(
+                    USER_DATA_BUCKET, result.superseded_storage_key
+                )
+            except (FileNotFoundError, OSError) as e:
+                logger.warning(
+                    f"Failed to delete superseded blob {result.superseded_storage_key}: {e}"
+                )
+
+        if result.superseded_md5:
+            await self._delete_conversion_blobs(
+                user_id=result.node.user_id,
+                file_id=result.node.id,
+                file_md5=result.superseded_md5,
+            )
+
+    async def _delete_conversion_blobs(
+        self, user_id: int, file_id: int, file_md5: str
+    ) -> None:
+        """Delete cached on-demand PNG/PDF conversion blobs for a specific file MD5."""
+        keys_to_delete: list[str] = []
+
+        pdf_key = get_conversion_pdf_path(
+            user_id=user_id, file_id=file_id, file_md5=file_md5
+        )
+        if await self.blob_storage.exists(USER_DATA_BUCKET, pdf_key):
+            keys_to_delete.append(pdf_key)
+
+        max_known_idx = -1
+        async with self.session_manager.session() as session:
+            stmt = select(NotePageContentDO.page_index).where(
+                NotePageContentDO.file_id == file_id
+            )
+            for idx in (await session.execute(stmt)).scalars().all():
+                if idx > max_known_idx:
+                    max_known_idx = idx
+
+        page_idx = 0
+        while True:
+            png_key = get_conversion_png_path(
+                user_id=user_id,
+                file_id=file_id,
+                page_index=page_idx,
+                file_md5=file_md5,
+            )
+            if await self.blob_storage.exists(USER_DATA_BUCKET, png_key):
+                keys_to_delete.append(png_key)
+            elif page_idx >= max_known_idx:
+                break
+            page_idx += 1
+
+        for key in keys_to_delete:
+            try:
+                await self.blob_storage.delete(USER_DATA_BUCKET, key)
+            except (FileNotFoundError, OSError) as e:
+                logger.warning(f"Failed to delete stale conversion blob {key}: {e}")
 
     async def create_directory(self, user: str, path: str) -> FileEntity:
         """Create a directory for a specific user using VFS."""
@@ -519,7 +637,7 @@ class FileService:
             success = await vfs.delete_node(user_id, id)
             if not success:
                 raise FileNotFound(f"Node {id} not found for user {email}")
-        await self._prune_expired_recycle(user_id)
+        await self.prune_expired_recycle(user_id)
         return entity
 
     async def delete_items(self, user: str, id_list: list[int], parent_id: int) -> None:
@@ -557,7 +675,7 @@ class FileService:
                     )
 
                 await vfs.delete_node(user_id, file_id)
-        await self._prune_expired_recycle(user_id)
+        await self.prune_expired_recycle(user_id)
 
     async def get_storage_usage(self, user: str) -> int:
         """Get total storage usage for a specific user using VFS."""
@@ -819,7 +937,7 @@ class FileService:
     async def list_recycle(self, user: str) -> list[RecycleEntity]:
         """List files in recycle bin for a specific user using VFS."""
         user_id = await self.user_service.get_user_id(user)
-        await self._prune_expired_recycle(user_id)
+        await self.prune_expired_recycle(user_id)
 
         recycle_files: list[RecycleEntity] = []
 
@@ -832,7 +950,7 @@ class FileService:
 
         return recycle_files
 
-    async def _prune_expired_recycle(self, user_id: int) -> None:
+    async def prune_expired_recycle(self, user_id: int) -> None:
         """Opportunistically purge recycle bin entries older than the retention window."""
         cutoff_ms = int(time.time() * 1000) - RECYCLE_RETENTION_MS
         await self.purge_recycle(user_id=user_id, older_than_ms=cutoff_ms)
@@ -861,25 +979,19 @@ class FileService:
                 for n in purged_nodes
                 if n.is_folder == "N" and n.storage_key
             }
-            blobs_to_delete: set[str] = set()
-            if candidate_keys:
-                stmt = (
-                    select(UserFileDO.storage_key)
-                    .where(UserFileDO.storage_key.in_(candidate_keys))
-                    .group_by(UserFileDO.storage_key)
-                )
-                surviving_keys = {
-                    k
-                    for k in (await session.execute(stmt)).scalars().all()
-                    if k is not None
-                }
-                blobs_to_delete = candidate_keys - surviving_keys
+            blobs_to_delete = await vfs.get_unreferenced_storage_keys(candidate_keys)
 
         for blob_key in blobs_to_delete:
             try:
                 await self.blob_storage.delete(USER_DATA_BUCKET, blob_key)
             except (FileNotFoundError, OSError) as e:
                 logger.warning(f"Failed to delete blob {blob_key}: {e}")
+
+        for node in purged_nodes:
+            if node.is_folder == "N" and node.md5:
+                await self._delete_conversion_blobs(
+                    user_id=node.user_id, file_id=node.id, file_md5=node.md5
+                )
 
         if self.event_bus:
             for node in purged_nodes:
