@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.base import BooleanEnum
 from supernote.notebook import (
@@ -395,7 +396,14 @@ class FileService:
             if clean_path:
                 parent_id = await vfs.ensure_directory_path(user_id, clean_path)
 
-            new_file = await vfs.create_or_update_file(
+            (
+                new_file,
+                delete_old_blob,
+                old_storage_key,
+                old_md5,
+            ) = await self._upsert_vfs_file(
+                session=session,
+                vfs=vfs,
                 user_id=user_id,
                 parent_id=parent_id,
                 name=filename,
@@ -403,6 +411,14 @@ class FileService:
                 md5=content_hash,
                 storage_key=inner_name,
             )
+
+        await self._cleanup_superseded_artifacts(
+            user_id=user_id,
+            file_id=new_file.id,
+            new_md5=content_hash,
+            old_storage_key=old_storage_key if delete_old_blob else None,
+            old_md5=old_md5,
+        )
 
         # 4. Construct response
         clean_path = path_str.strip("/")
@@ -450,7 +466,14 @@ class FileService:
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
 
-            new_file = await vfs.create_or_update_file(
+            (
+                new_file,
+                delete_old_blob,
+                old_storage_key,
+                old_md5,
+            ) = await self._upsert_vfs_file(
+                session=session,
+                vfs=vfs,
                 user_id=user_id,
                 parent_id=directory_id,
                 name=file_name,
@@ -458,6 +481,14 @@ class FileService:
                 md5=md5,
                 storage_key=inner_name,
             )
+
+        await self._cleanup_superseded_artifacts(
+            user_id=user_id,
+            file_id=new_file.id,
+            new_md5=md5,
+            old_storage_key=old_storage_key if delete_old_blob else None,
+            old_md5=old_md5,
+        )
 
         # 3. Emit Event (Fire and Forget)
         if self.event_bus and file_name.endswith(".note"):
@@ -468,6 +499,102 @@ class FileService:
                     file_id=new_file.id, user_id=user_id, file_path=full_path
                 )
             )
+
+    async def _upsert_vfs_file(
+        self,
+        session: AsyncSession,
+        vfs: VirtualFileSystem,
+        user_id: int,
+        parent_id: int,
+        name: str,
+        size: int,
+        md5: str,
+        storage_key: str,
+    ) -> tuple[UserFileDO, bool, str | None, str | None]:
+        """Create or update a VFS file node and check if a superseded blob is unreferenced."""
+        stmt = select(UserFileDO.storage_key, UserFileDO.md5).where(
+            UserFileDO.user_id == user_id,
+            UserFileDO.directory_id == parent_id,
+            UserFileDO.file_name == name,
+            UserFileDO.is_active == "Y",
+            UserFileDO.is_folder == "N",
+        )
+        existing_row = (await session.execute(stmt)).one_or_none()
+        old_storage_key: str | None = existing_row[0] if existing_row else None
+        old_md5: str | None = existing_row[1] if existing_row else None
+
+        new_file = await vfs.create_or_update_file(
+            user_id=user_id,
+            parent_id=parent_id,
+            name=name,
+            size=size,
+            md5=md5,
+            storage_key=storage_key,
+        )
+
+        delete_old_blob = False
+        if old_storage_key and old_storage_key != storage_key:
+            ref_stmt = (
+                select(UserFileDO.id)
+                .where(UserFileDO.storage_key == old_storage_key)
+                .limit(1)
+            )
+            delete_old_blob = (await session.execute(ref_stmt)).first() is None
+
+        return new_file, delete_old_blob, old_storage_key, old_md5
+
+    async def _cleanup_superseded_artifacts(
+        self,
+        user_id: int,
+        file_id: int,
+        new_md5: str,
+        old_storage_key: str | None,
+        old_md5: str | None,
+    ) -> None:
+        """Delete unreferenced superseded primary blob and stale conversion artifacts."""
+        if old_storage_key:
+            try:
+                await self.blob_storage.delete(USER_DATA_BUCKET, old_storage_key)
+            except (FileNotFoundError, OSError) as e:
+                logger.warning(
+                    f"Failed to delete superseded blob {old_storage_key}: {e}"
+                )
+
+        if old_md5 and old_md5 != new_md5:
+            await self._delete_conversion_blobs(
+                user_id=user_id, file_id=file_id, file_md5=old_md5
+            )
+
+    async def _delete_conversion_blobs(
+        self, user_id: int, file_id: int, file_md5: str
+    ) -> None:
+        """Delete cached on-demand PNG/PDF conversion blobs for a specific file MD5."""
+        keys_to_delete: list[str] = []
+
+        pdf_key = get_conversion_pdf_path(
+            user_id=user_id, file_id=file_id, file_md5=file_md5
+        )
+        if await self.blob_storage.exists(USER_DATA_BUCKET, pdf_key):
+            keys_to_delete.append(pdf_key)
+
+        page_idx = 0
+        while True:
+            png_key = get_conversion_png_path(
+                user_id=user_id,
+                file_id=file_id,
+                page_index=page_idx,
+                file_md5=file_md5,
+            )
+            if not await self.blob_storage.exists(USER_DATA_BUCKET, png_key):
+                break
+            keys_to_delete.append(png_key)
+            page_idx += 1
+
+        for key in keys_to_delete:
+            try:
+                await self.blob_storage.delete(USER_DATA_BUCKET, key)
+            except (FileNotFoundError, OSError) as e:
+                logger.warning(f"Failed to delete stale conversion blob {key}: {e}")
 
     async def create_directory(self, user: str, path: str) -> FileEntity:
         """Create a directory for a specific user using VFS."""
@@ -519,7 +646,7 @@ class FileService:
             success = await vfs.delete_node(user_id, id)
             if not success:
                 raise FileNotFound(f"Node {id} not found for user {email}")
-        await self._prune_expired_recycle(user_id)
+        await self.prune_expired_recycle(user_id)
         return entity
 
     async def delete_items(self, user: str, id_list: list[int], parent_id: int) -> None:
@@ -557,7 +684,7 @@ class FileService:
                     )
 
                 await vfs.delete_node(user_id, file_id)
-        await self._prune_expired_recycle(user_id)
+        await self.prune_expired_recycle(user_id)
 
     async def get_storage_usage(self, user: str) -> int:
         """Get total storage usage for a specific user using VFS."""
@@ -819,7 +946,7 @@ class FileService:
     async def list_recycle(self, user: str) -> list[RecycleEntity]:
         """List files in recycle bin for a specific user using VFS."""
         user_id = await self.user_service.get_user_id(user)
-        await self._prune_expired_recycle(user_id)
+        await self.prune_expired_recycle(user_id)
 
         recycle_files: list[RecycleEntity] = []
 
@@ -832,7 +959,7 @@ class FileService:
 
         return recycle_files
 
-    async def _prune_expired_recycle(self, user_id: int) -> None:
+    async def prune_expired_recycle(self, user_id: int) -> None:
         """Opportunistically purge recycle bin entries older than the retention window."""
         cutoff_ms = int(time.time() * 1000) - RECYCLE_RETENTION_MS
         await self.purge_recycle(user_id=user_id, older_than_ms=cutoff_ms)

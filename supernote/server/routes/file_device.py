@@ -154,12 +154,14 @@ async def handle_sync_end(request: web.Request) -> web.Response:
             del sync_locks[user_email]
 
     if req_data.flag != SYNC_FAILED_FLAG:
+        file_service: FileService = request.app["file_service"]
         user_id = await user_service.get_user_id(user_email)
         await coordination_service.set_value(
             _sync_initialized_key(user_id),
             "1",
             ttl=SYNC_INITIALIZED_TTL,
         )
+        await file_service.prune_expired_recycle(user_id)
 
     return web.json_response(
         SynchronousEndLocalVO(equipment_no=req_data.equipment_no).to_dict()
