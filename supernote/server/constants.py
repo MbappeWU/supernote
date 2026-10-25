@@ -42,7 +42,7 @@ MAX_UPLOAD_SIZE = 1024 * 1024 * 1024  # 1GB
 SQLITE_TIMEOUT_SECONDS = 60.0
 
 # Task processing queue settings
-DEFAULT_PAGE_CONCURRENCY = 4
+DEFAULT_PAGE_CONCURRENCY = 2
 
 # Task status database write retry settings
 DB_WRITE_MAX_RETRIES = 5
