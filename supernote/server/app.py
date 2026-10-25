@@ -271,7 +271,7 @@ def create_app(config: ServerConfig) -> web.Application:
     app.add_routes(extended.routes)
 
     # Attach Socket.IO real-time server manager
-    setup_socketio(app, config, user_service)
+    setup_socketio(app, config, user_service, event_bus)
 
     # Serve static frontend files
     if config.web_enabled:

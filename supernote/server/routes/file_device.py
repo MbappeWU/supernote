@@ -1,5 +1,4 @@
 import logging
-import time
 import urllib.parse
 
 from aiohttp import web
@@ -41,13 +40,6 @@ from supernote.models.file_device import (
     SynchronousStartLocalDTO,
     SynchronousStartLocalVO,
 )
-from supernote.models.socket import (
-    SocketIoAction,
-    SocketIoCode,
-    SocketIoMessageTemplate,
-    SocketIoMessageType,
-    SocketMessageData,
-)
 from supernote.server.config import ServerConfig
 from supernote.server.events import LocalEventBus, SyncCompletedEvent
 from supernote.server.exceptions import SupernoteError
@@ -57,7 +49,6 @@ from supernote.server.services.file import (
     FileService,
 )
 from supernote.server.services.user import UserService
-from supernote.server.socket import SocketIOServerManager
 from supernote.server.utils.paths import generate_inner_name
 from supernote.server.utils.url_signer import UrlSigner, get_request_base_url
 
@@ -183,28 +174,13 @@ async def handle_sync_end(request: web.Request) -> web.Response:
                     f"Failed opportunistic recycle bin cleanup for user {user_id}: {err}"
                 )
             event_bus: LocalEventBus = request.app["event_bus"]
-            await event_bus.publish(SyncCompletedEvent(user_id=user_id))
-            socketio_manager: SocketIOServerManager | None = request.app.get(
-                "socketio_manager"
-            )
-            if socketio_manager is not None:
-                now_ms = int(time.time() * 1000)
-                await socketio_manager.send_message(
-                    user_email,
-                    SocketMessageData(
-                        code=str(SocketIoCode.SUCCESS.value),
-                        msg="Success",
-                        timestamp=now_ms,
-                        msg_type=SocketIoMessageType.FILE_SYN,
-                        data=[
-                            SocketIoMessageTemplate(
-                                message_type=SocketIoAction.STARTSYNC,
-                                equipment_no=req_data.equipment_no,
-                                timestamp=now_ms,
-                            )
-                        ],
-                    ),
+            await event_bus.publish(
+                SyncCompletedEvent(
+                    user_id=user_id,
+                    user_email=user_email,
+                    equipment_no=req_data.equipment_no,
                 )
+            )
 
         return web.json_response(
             SynchronousEndLocalVO(equipment_no=req_data.equipment_no).to_dict()

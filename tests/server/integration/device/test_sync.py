@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import time
 from pathlib import Path
@@ -151,7 +152,7 @@ async def test_sync_lock(
         assert data["errorCode"] == "E0078"
         assert await coordination_service.get_value(lock_key) == "SN123"
 
-        # 3. End sync from SN123 -> clears lock in CoordinationService and emits STARTSYNC
+        # 3. End sync from SN123 -> clears lock in CoordinationService and emits STARTSYNC via LocalEventBus
         resp = await client.post(
             "/api/file/2/files/synchronous/end",
             json={"equipmentNo": "SN123", "flag": "true"},
@@ -159,6 +160,7 @@ async def test_sync_lock(
         )
         assert resp.status == 200
         assert await coordination_service.get_value(lock_key) is None
+        await asyncio.sleep(0)
         mock_send_message.assert_awaited_once()
         assert mock_send_message.await_args is not None
         end_user, end_msg = mock_send_message.await_args.args

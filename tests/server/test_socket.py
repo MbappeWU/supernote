@@ -24,6 +24,7 @@ from supernote.models.socket import (
 )
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
+from supernote.server.events import LocalEventBus, SyncCompletedEvent
 from supernote.server.services.user import JWT_ALGORITHM, UserService
 from supernote.server.socket import SocketIOServerManager
 from supernote.server.socket_auth import compute_handshake_signature
@@ -307,6 +308,22 @@ async def test_socketio_client_messages_async_iterator(
     assert received_digest.msg == "digest sync"
     assert len(received_digest.data) == 1
     assert received_digest.data[0].id == 302
+
+    # Verify LocalEventBus SyncCompletedEvent triggers STARTSYNC on ServerMessage
+    event_bus: LocalEventBus = socketio_server.app["event_bus"]
+    await event_bus.publish(
+        SyncCompletedEvent(
+            user_id=1,
+            user_email=user_id,
+            equipment_no="SN999",
+        )
+    )
+    received_sync = await anext(socket_client.messages())
+    assert isinstance(received_sync, SocketMessageData)
+    assert received_sync.msg_type == SocketIoMessageType.FILE_SYN
+    assert len(received_sync.data) == 1
+    assert received_sync.data[0].message_type == SocketIoAction.STARTSYNC
+    assert received_sync.data[0].equipment_no == "SN999"
 
     await socket_client.disconnect()
 
