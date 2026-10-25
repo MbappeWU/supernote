@@ -250,6 +250,9 @@ class LocalBlobStorage(BlobStorage):
                 if file_path.name.endswith(".tmp") and file_path.is_file():
                     self._remove_if_expired(file_path, now, stats)
 
+        # Group individual `.part.N` chunk files into chunk sets keyed by their
+        # target upload `(root_path, base_name)` so staleness is evaluated across
+        # the upload as a whole rather than per part file.
         chunk_sets: dict[tuple[Path, str], list[Path]] = defaultdict(list)
         for root, _, files in os.walk(self.root):
             root_path = Path(root)
@@ -269,6 +272,13 @@ class LocalBlobStorage(BlobStorage):
     def _remove_chunk_set_if_expired(
         chunk_paths: list[Path], now: float, stats: CleanupStats
     ) -> None:
+        """Remove a multipart upload's chunk set only when its newest chunk has expired.
+
+        A single multipart upload produces multiple `.part.N` chunk files that
+        together form a chunk set for one target blob. Evaluating expiration by
+        the most recently modified chunk (`newest_mtime`) keeps slow or resumed
+        uploads intact while still reclaiming all chunks of abandoned uploads.
+        """
         chunk_stats: list[tuple[Path, os.stat_result]] = []
         for path in chunk_paths:
             try:
