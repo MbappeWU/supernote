@@ -317,9 +317,11 @@ class DeviceClient:
             json=dto.to_dict(),
         )
 
-    async def sync_end(self, equipment_no: str) -> SynchronousEndLocalVO:
+    async def sync_end(
+        self, equipment_no: str, flag: str = "Y"
+    ) -> SynchronousEndLocalVO:
         """End sync session."""
-        dto = SynchronousEndLocalDTO(equipment_no=equipment_no)
+        dto = SynchronousEndLocalDTO(equipment_no=equipment_no, flag=flag)
         return await self._client.post_json(
             "/api/file/2/files/synchronous/end",
             SynchronousEndLocalVO,

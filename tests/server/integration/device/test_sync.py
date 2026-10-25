@@ -38,7 +38,7 @@ async def test_sync_start_syn_type(
     assert data["success"] is True
     assert data["synType"] is False  # Empty storage
 
-    # 2. Add a dummy file
+    # 2. Add a dummy file before initial sync completes
     await device_client.upload_content(
         "Note/test.note", b"content", equipment_no="test"
     )
@@ -50,7 +50,59 @@ async def test_sync_start_syn_type(
     )
     assert resp.status == 200
     data = await resp.json()
-    assert data["synType"] is True  # Non-empty storage
+    assert data["synType"] is False  # Still False before synchronous/end completes
+
+    # 3. Interrupted/failed sync (flag="N") must not mark initial sync completed
+    await device_client.sync_end("SN123456", flag="N")
+
+    resp = await client.post(
+        "/api/file/2/files/synchronous/start",
+        json={"equipmentNo": "SN123456"},
+        headers=auth_headers,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["synType"] is False
+
+    # 4. Complete sync (flag="Y") marks initial sync completed
+    await device_client.sync_end("SN123456", flag="Y")
+
+    resp = await client.post(
+        "/api/file/2/files/synchronous/start",
+        json={"equipmentNo": "SN123456"},
+        headers=auth_headers,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["synType"] is True
+
+    # 5. If storage becomes empty again, sync initialization is reset
+    await device_client.sync_end("SN123456", flag="Y")
+    async with session_manager.session() as session:
+        await session.execute(delete(UserFileDO))
+        await session.commit()
+
+    resp = await client.post(
+        "/api/file/2/files/synchronous/start",
+        json={"equipmentNo": "SN123456"},
+        headers=auth_headers,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["synType"] is False
+
+    await device_client.sync_end("SN123456", flag="N")
+    await device_client.upload_content(
+        "Note/test2.note", b"content2", equipment_no="test"
+    )
+    resp = await client.post(
+        "/api/file/2/files/synchronous/start",
+        json={"equipmentNo": "SN123456"},
+        headers=auth_headers,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["synType"] is False
 
 
 async def test_sync_lock(client: TestClient, auth_headers: dict[str, str]) -> None:

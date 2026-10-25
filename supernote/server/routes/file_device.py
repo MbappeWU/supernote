@@ -43,10 +43,12 @@ from supernote.models.file_device import (
 )
 from supernote.server.config import ServerConfig
 from supernote.server.exceptions import SupernoteError
+from supernote.server.services.coordination import CoordinationService
 from supernote.server.services.file import (
     FileEntity,
     FileService,
 )
+from supernote.server.services.user import UserService
 from supernote.server.utils.paths import generate_inner_name
 from supernote.server.utils.url_signer import UrlSigner, get_request_base_url
 
@@ -70,6 +72,13 @@ def _to_entries_vo(entity: FileEntity) -> EntriesVO:
 
 
 SYNC_LOCK_TIMEOUT = 300  # 5 minutes
+SYNC_INITIALIZED_KEY_PREFIX = "sync:initialized:"
+SYNC_INITIALIZED_TTL = 100 * 365 * 24 * 3600
+FAILED_SYNC_FLAGS = {"N", "n", "false", "False", "0"}
+
+
+def _sync_initialized_key(user_id: int) -> str:
+    return f"{SYNC_INITIALIZED_KEY_PREFIX}{user_id}"
 
 
 @routes.post("/api/file/2/files/synchronous/start")
@@ -80,11 +89,20 @@ async def handle_sync_start(request: web.Request) -> web.Response:
     req_data = SynchronousStartLocalDTO.from_dict(await request.json())
     user_email = request["user"]
     sync_locks = request.app["sync_locks"]
-    sync_locks = request.app["sync_locks"]
     file_service: FileService = request.app["file_service"]
+    user_service: UserService = request.app["user_service"]
+    coordination_service: CoordinationService = request.app["coordination_service"]
 
     try:
+        user_id = await user_service.get_user_id(user_email)
         is_empty = await file_service.is_empty(user_email)
+        sync_init_key = _sync_initialized_key(user_id)
+
+        if is_empty:
+            await coordination_service.delete_value(sync_init_key)
+            syn_type = False
+        else:
+            syn_type = (await coordination_service.get_value(sync_init_key)) == "1"
 
         now = time.time()
         if user_email in sync_locks:
@@ -106,7 +124,7 @@ async def handle_sync_start(request: web.Request) -> web.Response:
         return web.json_response(
             SynchronousStartLocalVO(
                 equipment_no=req_data.equipment_no,
-                syn_type=not is_empty,
+                syn_type=syn_type,
             ).to_dict()
         )
     except SupernoteError as err:
@@ -122,6 +140,8 @@ async def handle_sync_end(request: web.Request) -> web.Response:
     # Response: SynchronousEndLocalVO
     req_data = SynchronousEndLocalDTO.from_dict(await request.json())
     user_email = request["user"]
+    user_service: UserService = request.app["user_service"]
+    coordination_service: CoordinationService = request.app["coordination_service"]
 
     # Release lock
     sync_locks = request.app["sync_locks"]
@@ -130,7 +150,17 @@ async def handle_sync_end(request: web.Request) -> web.Response:
         if owner_eq == req_data.equipment_no:
             del sync_locks[user_email]
 
-    return web.json_response(SynchronousEndLocalVO().to_dict())
+    if req_data.flag not in FAILED_SYNC_FLAGS:
+        user_id = await user_service.get_user_id(user_email)
+        await coordination_service.set_value(
+            _sync_initialized_key(user_id),
+            "1",
+            ttl=SYNC_INITIALIZED_TTL,
+        )
+
+    return web.json_response(
+        SynchronousEndLocalVO(equipment_no=req_data.equipment_no).to_dict()
+    )
 
 
 @routes.post("/api/file/2/files/list_folder")
