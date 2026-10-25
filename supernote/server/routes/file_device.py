@@ -141,31 +141,41 @@ async def handle_sync_end(request: web.Request) -> web.Response:
     # Endpoint: POST /api/file/2/files/synchronous/end
     # Purpose: End a file synchronization session.
     # Response: SynchronousEndLocalVO
-    req_data = SynchronousEndLocalDTO.from_dict(await request.json())
-    user_email = request["user"]
-    user_service: UserService = request.app["user_service"]
-    coordination_service: CoordinationService = request.app["coordination_service"]
-
-    # Release lock
-    sync_locks = request.app["sync_locks"]
-    if user_email in sync_locks:
-        owner_eq, _ = sync_locks[user_email]
-        if owner_eq == req_data.equipment_no:
-            del sync_locks[user_email]
-
-    if req_data.flag != SYNC_FAILED_FLAG:
+    try:
+        req_data = SynchronousEndLocalDTO.from_dict(await request.json())
+        user_email = request["user"]
+        user_service: UserService = request.app["user_service"]
         file_service: FileService = request.app["file_service"]
-        user_id = await user_service.get_user_id(user_email)
-        await coordination_service.set_value(
-            _sync_initialized_key(user_id),
-            "1",
-            ttl=SYNC_INITIALIZED_TTL,
-        )
-        await file_service.prune_expired_recycle(user_id)
+        coordination_service: CoordinationService = request.app["coordination_service"]
 
-    return web.json_response(
-        SynchronousEndLocalVO(equipment_no=req_data.equipment_no).to_dict()
-    )
+        # Release lock
+        sync_locks = request.app["sync_locks"]
+        if user_email in sync_locks:
+            owner_eq, _ = sync_locks[user_email]
+            if owner_eq == req_data.equipment_no:
+                del sync_locks[user_email]
+
+        if req_data.flag != SYNC_FAILED_FLAG:
+            user_id = await user_service.get_user_id(user_email)
+            await coordination_service.set_value(
+                _sync_initialized_key(user_id),
+                "1",
+                ttl=SYNC_INITIALIZED_TTL,
+            )
+            try:
+                await file_service.prune_expired_recycle(user_id)
+            except Exception as err:
+                logger.warning(
+                    f"Failed opportunistic recycle bin cleanup for user {user_id}: {err}"
+                )
+
+        return web.json_response(
+            SynchronousEndLocalVO(equipment_no=req_data.equipment_no).to_dict()
+        )
+    except SupernoteError as err:
+        return err.to_response()
+    except Exception as err:
+        return SupernoteError.uncaught(err).to_response()
 
 
 @routes.post("/api/file/2/files/list_folder")

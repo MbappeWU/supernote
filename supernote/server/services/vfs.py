@@ -157,6 +157,38 @@ class VirtualFileSystem:
 
         return results
 
+    async def get_active_file(
+        self, user_id: int, parent_id: int, name: str
+    ) -> UserFileDO | None:
+        """Return the active non-folder file in the given directory if it exists."""
+        stmt = (
+            select(UserFileDO)
+            .where(
+                UserFileDO.user_id == user_id,
+                UserFileDO.directory_id == parent_id,
+                UserFileDO.file_name == name,
+                UserFileDO.is_active == "Y",
+                UserFileDO.is_folder == "N",
+            )
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
+
+    async def get_unreferenced_storage_keys(self, candidate_keys: set[str]) -> set[str]:
+        """Return the subset of candidate storage keys not referenced by any UserFileDO row."""
+        if not candidate_keys:
+            return set()
+        stmt = (
+            select(UserFileDO.storage_key)
+            .where(UserFileDO.storage_key.in_(candidate_keys))
+            .group_by(UserFileDO.storage_key)
+        )
+        surviving_keys = {
+            k for k in (await self.db.execute(stmt)).scalars().all() if k is not None
+        }
+        return candidate_keys - surviving_keys
+
     async def create_or_update_file(
         self,
         user_id: int,
@@ -169,17 +201,7 @@ class VirtualFileSystem:
         """Create or update a file entry (assuming content is handled elsewhere/CAS)."""
         now_ms = int(time.time() * 1000)
 
-        # Check if active file already exists in this folder
-        stmt = select(UserFileDO).where(
-            UserFileDO.user_id == user_id,
-            UserFileDO.directory_id == parent_id,
-            UserFileDO.file_name == name,
-            UserFileDO.is_active == "Y",
-            UserFileDO.is_folder == "N",
-        )
-        result = await self.db.execute(stmt)
-        existing = result.scalar_one_or_none()
-
+        existing = await self.get_active_file(user_id, parent_id, name)
         if existing:
             # Overwrite/update the existing active file entry
             existing.size = size

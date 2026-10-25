@@ -10,6 +10,7 @@ from sqlalchemy import update
 
 from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.db.models.file import RecycleFileDO
+from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import Event, LocalEventBus, NoteDeletedEvent
 from supernote.server.services.blob import BlobStorage
@@ -387,3 +388,146 @@ async def test_overwrite_file_cleans_up_stale_conversion_blobs(
     assert await blob_storage.exists(USER_DATA_BUCKET, png_0_v1) is False
     assert await blob_storage.exists(USER_DATA_BUCKET, png_1_v1) is False
     assert await blob_storage.exists(USER_DATA_BUCKET, pdf_v1) is False
+
+
+async def test_overwrite_same_md5_deletes_superseded_blob_but_preserves_conversions(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    test_user_id: int,
+    test_users: list[str],
+) -> None:
+    """Re-uploading a file with identical MD5 deletes old storage_key but keeps valid conversion blobs."""
+    user = test_users[0]
+    content = b"identical note content"
+    md5 = hashlib.md5(content).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "same_md5_blob_1", content)
+
+    entity = await file_service.finish_upload(
+        user, "same_md5.note", "/", md5, "same_md5_blob_1"
+    )
+
+    png_0 = get_conversion_png_path(
+        user_id=test_user_id, file_id=entity.id, page_index=0, file_md5=md5
+    )
+    pdf_key = get_conversion_pdf_path(
+        user_id=test_user_id, file_id=entity.id, file_md5=md5
+    )
+    await blob_storage.put(USER_DATA_BUCKET, png_0, b"png 0")
+    await blob_storage.put(USER_DATA_BUCKET, pdf_key, b"pdf")
+
+    await blob_storage.put(USER_DATA_BUCKET, "same_md5_blob_2", content)
+    await file_service.finish_upload(user, "same_md5.note", "/", md5, "same_md5_blob_2")
+
+    assert await blob_storage.exists(USER_DATA_BUCKET, "same_md5_blob_1") is False
+    assert await blob_storage.exists(USER_DATA_BUCKET, "same_md5_blob_2") is True
+    assert await blob_storage.exists(USER_DATA_BUCKET, png_0) is True
+    assert await blob_storage.exists(USER_DATA_BUCKET, pdf_key) is True
+
+
+async def test_overwrite_file_with_soft_deleted_copy_in_recycle_preserves_shared_blob(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    create_test_user: None,
+    test_users: list[str],
+) -> None:
+    """Overwriting a file when a copy is soft-deleted in the recycle bin preserves the shared blob."""
+    user = test_users[0]
+    content_v1 = b"shared with recycle bin copy"
+    md5_v1 = hashlib.md5(content_v1).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "shared_recycle_key", content_v1)
+
+    orig_file = await file_service.finish_upload(
+        user, "active_orig.note", "/", md5_v1, "shared_recycle_key"
+    )
+    trashed_copy = await file_service.copy_item(
+        user, orig_file.id, to_path="/trashed_copy.note", autorename=True
+    )
+    await file_service.delete_item(user, trashed_copy.id)
+
+    # Overwrite active_orig.note with v2 while trashed_copy is in the recycle bin
+    content_v2 = b"updated active orig"
+    md5_v2 = hashlib.md5(content_v2).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "active_orig_v2", content_v2)
+    await file_service.finish_upload(
+        user, "active_orig.note", "/", md5_v2, "active_orig_v2"
+    )
+
+    # Shared v1 blob must survive so trashed_copy can still be restored from recycle bin
+    assert await blob_storage.exists(USER_DATA_BUCKET, "shared_recycle_key") is True
+
+
+async def test_overwrite_file_cleans_up_sparse_conversion_blobs(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    session_manager: DatabaseSessionManager,
+    test_user_id: int,
+    test_users: list[str],
+) -> None:
+    """Stale conversion PNGs at higher page indices are cleaned up even if page 0 was not cached."""
+    user = test_users[0]
+    content_v1 = b"sparse note v1"
+    md5_v1 = hashlib.md5(content_v1).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "sparse_blob_v1", content_v1)
+
+    entity_v1 = await file_service.finish_upload(
+        user, "sparse.note", "/", md5_v1, "sparse_blob_v1"
+    )
+
+    async with session_manager.session() as session:
+        for idx in range(3):
+            session.add(
+                NotePageContentDO(
+                    file_id=entity_v1.id,
+                    page_index=idx,
+                    page_id=f"P{idx}",
+                    content_hash=f"h{idx}",
+                )
+            )
+        await session.commit()
+
+    # Only page 2 was cached in conversions/ (page 0 and page 1 missing)
+    png_2_v1 = get_conversion_png_path(
+        user_id=test_user_id, file_id=entity_v1.id, page_index=2, file_md5=md5_v1
+    )
+    await blob_storage.put(USER_DATA_BUCKET, png_2_v1, b"png page 2")
+    assert await blob_storage.exists(USER_DATA_BUCKET, png_2_v1) is True
+
+    content_v2 = b"sparse note v2"
+    md5_v2 = hashlib.md5(content_v2).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "sparse_blob_v2", content_v2)
+
+    await file_service.finish_upload(user, "sparse.note", "/", md5_v2, "sparse_blob_v2")
+    assert await blob_storage.exists(USER_DATA_BUCKET, png_2_v1) is False
+
+
+async def test_purge_recycle_cleans_up_conversion_blobs(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    test_user_id: int,
+    test_users: list[str],
+) -> None:
+    """Permanently purging a file from the recycle bin also deletes its cached conversion blobs."""
+    user = test_users[0]
+    content = b"note with conversions to purge"
+    md5 = hashlib.md5(content).hexdigest()
+    await blob_storage.put(USER_DATA_BUCKET, "purge_conv_blob", content)
+
+    entity = await file_service.finish_upload(
+        user, "purge_conv.note", "/", md5, "purge_conv_blob"
+    )
+    png_0 = get_conversion_png_path(
+        user_id=test_user_id, file_id=entity.id, page_index=0, file_md5=md5
+    )
+    pdf_key = get_conversion_pdf_path(
+        user_id=test_user_id, file_id=entity.id, file_md5=md5
+    )
+    await blob_storage.put(USER_DATA_BUCKET, png_0, b"png 0")
+    await blob_storage.put(USER_DATA_BUCKET, pdf_key, b"pdf")
+
+    await file_service.delete_item(user, entity.id)
+    recycled = await file_service.list_recycle(user)
+    await file_service.delete_from_recycle(user, [recycled[0].id])
+
+    assert await blob_storage.exists(USER_DATA_BUCKET, "purge_conv_blob") is False
+    assert await blob_storage.exists(USER_DATA_BUCKET, png_0) is False
+    assert await blob_storage.exists(USER_DATA_BUCKET, pdf_key) is False
