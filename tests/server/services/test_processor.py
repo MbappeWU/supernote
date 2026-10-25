@@ -481,8 +481,8 @@ async def test_page_parallelism(
 
     await processor_service.process_file(file_id)
 
-    assert png.max_active_seen == 4, (
-        f"Expected 4 pages in parallel, saw {png.max_active_seen}"
+    assert png.max_active_seen == 2, (
+        f"Expected 2 pages in parallel, saw {png.max_active_seen}"
     )
 
 

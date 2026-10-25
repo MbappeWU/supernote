@@ -114,19 +114,25 @@ class ImageConverter:
         default_palette = color.DEFAULT_COLORPALETTE
         page = utils.WorkaroundPageWrapper.from_page(page)
         visibility = self._get_layer_visibility(page)
-        imgs = {}
-        layers = page.get_layers()
-        for layer in layers:
-            layer_name = layer.get_name()
+        layers_by_name = {layer.get_name(): layer for layer in page.get_layers()}
+        horizontal = page.is_horizontal()
+        page_width, page_height = (self.note.get_width(), self.note.get_height())
+        if horizontal:
+            page_height, page_width = (page_width, page_height)
+        flatten_img = Image.new(
+            "RGB", (page_width, page_height), color=color.RGB_TRANSPARENT
+        )
+        page_style = page.get_style()
+        for layer_name in reversed(page.get_layer_order()):
             if not self._is_layer_visible(layer_name, visibility, visibility_overlay):
-                imgs[layer_name] = None
+                continue
+            layer = layers_by_name.get(layer_name)
+            if layer is None:
                 continue
             binary = layer.get_content()
             if binary is None:
-                imgs[layer_name] = None
                 continue
             binary_size = len(binary)
-            page_style = page.get_style()
             all_blank = (
                 layer_name == "BGLAYER"
                 and page_style is not None
@@ -134,7 +140,6 @@ class ImageConverter:
                 and binary_size == self.SPECIAL_WHITE_STYLE_BLOCK_SIZE
             )
             if all_blank:
-                imgs[layer_name] = None
                 continue
             decoder = self.find_decoder(layer, highres_grayscale)
             custom_bg = (
@@ -144,45 +149,20 @@ class ImageConverter:
             )
             if custom_bg:
                 decoder = Decoder.PngDecoder()
-            horizontal = page.is_horizontal()
             plt = default_palette if layer_name == "BGLAYER" else palette
-            img = self._create_image_from_decoder(
+            img_layer = self._create_image_from_decoder(
                 decoder,
                 binary,
                 palette=plt,
                 blank_hint=all_blank,
                 horizontal=horizontal,
             )
-            imgs[layer_name] = img
-        return self._flatten_layers(page, imgs, visibility_overlay)
-
-    def _flatten_layers(self, page, imgs, visibility_overlay=None):
-        """flatten all layers if any"""
-
-        def flatten(fg, bg):
-            mask_src = fg if fg.mode == "L" else fg.convert("L")
+            if layer_name == "BGLAYER":
+                # convert transparent to white for custom template
+                img_layer = self._whiten_transparent(img_layer)
+            mask_src = img_layer if img_layer.mode == "L" else img_layer.convert("L")
             mask = mask_src.point(_NON_TRANSPARENT_LUT, mode="1")
-            bg.paste(fg, None, mask)
-            return bg
-
-        horizontal = page.is_horizontal()
-        page_width, page_height = (self.note.get_width(), self.note.get_height())
-        if horizontal:
-            page_height, page_width = (page_width, page_height)
-        flatten_img = Image.new(
-            "RGB", (page_width, page_height), color=color.RGB_TRANSPARENT
-        )
-        visibility = self._get_layer_visibility(page)
-        layer_order = page.get_layer_order()
-        for name in reversed(layer_order):
-            if not self._is_layer_visible(name, visibility, visibility_overlay):
-                continue
-            img_layer = imgs.get(name)
-            if img_layer is not None:
-                if name == "BGLAYER":
-                    # convert transparent to white for custom template
-                    img_layer = self._whiten_transparent(img_layer)
-                flatten_img = flatten(img_layer, flatten_img)
+            flatten_img.paste(img_layer, None, mask)
         return flatten_img
 
     @staticmethod
