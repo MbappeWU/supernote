@@ -80,6 +80,7 @@ def load(
     stream: FileObj,
     metadata: fileformat.SupernoteMetadata | None = None,
     policy: str = "strict",
+    page_number: int | None = None,
 ) -> fileformat.Notebook:
     """Creates a Notebook object from the supernote binary stream.
 
@@ -95,6 +96,8 @@ def load(
          metadata object
      policy : str
          signature check policy
+     page_number : int | None
+         optional single page index to load instead of all pages
 
      Returns
      -------
@@ -104,37 +107,47 @@ def load(
     if metadata is None:
         metadata = parse_metadata(stream, policy)
 
-    note = fileformat.Notebook(metadata)
+    total_pages = metadata.get_total_pages()
+    if page_number is not None and (page_number < 0 or page_number >= total_pages):
+        raise ValueError(
+            f"page_number {page_number} out of range (0..{total_pages - 1})"
+        )
 
-    cover_address = _get_cover_address(metadata)
-    if cover_address > 0:
-        content = _get_content_at_address(stream, cover_address)
-        note.get_cover().set_content(content)
-    # store keyword data to notebook object
-    for keyword in note.get_keywords():
-        address = _get_keyword_address(keyword)
-        content = _get_content_at_address(stream, address)
-        keyword.set_content(content)
-    # store title data to notebook object
-    page_numbers = _get_page_number_from_footer_property(
-        note.get_metadata().footer, "TITLE_"
-    )
-    for i, title in enumerate(note.get_titles()):
-        address = _get_title_address(title)
-        content = _get_content_at_address(stream, address)
-        title.set_content(content)
-        title.set_page_number(page_numbers[i])
-    # store link data to notebook object
-    page_numbers = _get_page_number_from_footer_property(
-        note.get_metadata().footer, "LINK"
-    )
-    for i, link in enumerate(note.get_links()):
-        address = _get_link_address(link)
-        content = _get_content_at_address(stream, address)
-        link.set_content(content)
-        link.set_page_number(page_numbers[i])
-    page_total = metadata.get_total_pages()
-    for p in range(page_total):
+    note = fileformat.Notebook(metadata, page_number=page_number)
+
+    if page_number is not None:
+        page_indices = [page_number]
+    else:
+        cover_address = _get_cover_address(metadata)
+        if cover_address > 0:
+            content = _get_content_at_address(stream, cover_address)
+            note.get_cover().set_content(content)
+        # store keyword data to notebook object
+        for keyword in note.get_keywords():
+            address = _get_keyword_address(keyword)
+            content = _get_content_at_address(stream, address)
+            keyword.set_content(content)
+        # store title data to notebook object
+        page_numbers = _get_page_number_from_footer_property(
+            note.get_metadata().footer, "TITLE_"
+        )
+        for i, title in enumerate(note.get_titles()):
+            address = _get_title_address(title)
+            content = _get_content_at_address(stream, address)
+            title.set_content(content)
+            title.set_page_number(page_numbers[i])
+        # store link data to notebook object
+        page_numbers = _get_page_number_from_footer_property(
+            note.get_metadata().footer, "LINK"
+        )
+        for i, link in enumerate(note.get_links()):
+            address = _get_link_address(link)
+            content = _get_content_at_address(stream, address)
+            link.set_content(content)
+            link.set_page_number(page_numbers[i])
+        page_indices = list(range(metadata.get_total_pages()))
+
+    for p in page_indices:
         addresses = _get_bitmap_address(metadata, p)
         if len(addresses) == 1:  # the page has no layers
             content = _get_content_at_address(stream, addresses[0])
@@ -143,16 +156,17 @@ def load(
             for layer, addr in enumerate(addresses):
                 content = _get_content_at_address(stream, addr)
                 note.get_page(p).get_layer(layer).set_content(content)
-        # store path data to notebook object
-        totalpath_address = _get_totalpath_address(metadata, p)
-        if totalpath_address > 0:
-            content = _get_content_at_address(stream, totalpath_address)
-            note.get_page(p).set_totalpath(content)
-        # store recogn file data to notebook object
-        recogn_file_address = _get_recogn_file_address(metadata, p)
-        if recogn_file_address > 0:
-            content = _get_content_at_address(stream, recogn_file_address)
-            note.get_page(p).set_recogn_file(content)
+        if page_number is None:
+            # store path data to notebook object
+            totalpath_address = _get_totalpath_address(metadata, p)
+            if totalpath_address > 0:
+                content = _get_content_at_address(stream, totalpath_address)
+                note.get_page(p).set_totalpath(content)
+            # store recogn file data to notebook object
+            recogn_file_address = _get_recogn_file_address(metadata, p)
+            if recogn_file_address > 0:
+                content = _get_content_at_address(stream, recogn_file_address)
+                note.get_page(p).set_recogn_file(content)
         # store recogn text data to notebook object
         recogn_text_address = _get_recogn_text_address(metadata, p)
         if recogn_text_address > 0:
@@ -161,7 +175,12 @@ def load(
     return note
 
 
-def load_notebook(file_name, metadata=None, policy="strict"):
+def load_notebook(
+    file_name: str | os.PathLike[str],
+    metadata: fileformat.SupernoteMetadata | None = None,
+    policy: str = "strict",
+    page_number: int | None = None,
+) -> fileformat.Notebook:
     """Creates a Notebook object from the supernote file.
 
      Policy:
@@ -176,6 +195,8 @@ def load_notebook(file_name, metadata=None, policy="strict"):
          metadata object
      policy : str
          signature check policy
+     page_number : int | None
+         optional single page index to load instead of all pages
 
      Returns
      -------
@@ -183,7 +204,7 @@ def load_notebook(file_name, metadata=None, policy="strict"):
          notebook object
     """
     with open(file_name, "rb") as f:
-        note = load(f, metadata, policy)
+        note = load(f, metadata, policy, page_number=page_number)
     return note
 
 

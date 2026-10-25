@@ -142,8 +142,11 @@ class SupernoteMetadata:
 
 
 class Notebook:
-    def __init__(self, metadata: SupernoteMetadata) -> None:
+    def __init__(
+        self, metadata: SupernoteMetadata, page_number: int | None = None
+    ) -> None:
         self.metadata = metadata
+        self.loaded_page_number = page_number
         self.page_width = PAGE_WIDTH
         self.page_height = PAGE_HEIGHT
         if self.metadata.header.get("APPLY_EQUIPMENT") == "N5":
@@ -193,6 +196,10 @@ class Notebook:
     def get_page(self, number: int) -> "Page":
         if number < 0 or number >= len(self.pages):
             raise IndexError(f"page number out of range: {number}")
+        if self.loaded_page_number is not None and number != self.loaded_page_number:
+            raise ValueError(
+                f"Notebook was loaded with only page_number={self.loaded_page_number}; cannot access page {number}"
+            )
         return self.pages[number]
 
     def get_cover(self) -> "Cover":
