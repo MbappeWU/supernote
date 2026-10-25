@@ -226,6 +226,7 @@ def test_server_config_web_flags(tmp_path: Path) -> None:
     config = ServerConfig()
     assert config.web_enabled is True
     assert config.web_notebook_preview is True
+    assert config.mcp_enabled is True
 
     config_dir = tmp_path / "config"
     with patch.dict(
@@ -233,11 +234,13 @@ def test_server_config_web_flags(tmp_path: Path) -> None:
         {
             "SUPERNOTE_WEB_ENABLED": "false",
             "SUPERNOTE_WEB_NOTEBOOK_PREVIEW": "0",
+            "SUPERNOTE_MCP_ENABLED": "false",
         },
     ):
         loaded = ServerConfig.load(config_dir)
         assert loaded.web_enabled is False
         assert loaded.web_notebook_preview is False
+        assert loaded.mcp_enabled is False
 
 
 def test_server_config_ai_default_unconfigured() -> None:

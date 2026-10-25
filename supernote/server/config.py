@@ -186,6 +186,12 @@ class ServerConfig(DataClassYAMLMixin):
     Env Var: `SUPERNOTE_PORT`
     """
 
+    mcp_enabled: bool = True
+    """Whether to enable the Model Context Protocol (MCP) server and OAuth endpoints.
+
+    Env Var: `SUPERNOTE_MCP_ENABLED`
+    """
+
     mcp_port: int = 8081
     """Port to bind the MCP server to.
 
@@ -431,6 +437,12 @@ class ServerConfig(DataClassYAMLMixin):
                 logger.info(f"Using SUPERNOTE_PORT: {config.port}")
             except ValueError:
                 pass
+
+        if os.getenv("SUPERNOTE_MCP_ENABLED"):
+            config.mcp_enabled = _get_bool_env(
+                "SUPERNOTE_MCP_ENABLED", config.mcp_enabled
+            )
+            logger.info(f"MCP Enabled: {config.mcp_enabled}")
 
         if os.getenv("SUPERNOTE_MCP_PORT"):
             try:

@@ -89,6 +89,7 @@ auth:
 #     model: gemini-embedding-001
 #     max_concurrency: 5
 
-# Web interface settings (optional)
+# Web interface and MCP settings (optional)
 # web_enabled: true # Set to false to disable web dashboard and static routes (default: true)
 # web_notebook_preview: true # Set to false to disable heavy notebook page rendering for web preview (default: true)
+# mcp_enabled: true # Set to false to disable the Model Context Protocol (MCP) server and OAuth endpoints (default: true)
