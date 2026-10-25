@@ -26,6 +26,12 @@ from supernote.models.socket import (
     SocketMessageData,
     SocketTaskMessageData,
 )
+from supernote.models.summary import (
+    AddSummaryDTO,
+    AddSummaryGroupDTO,
+    UpdateSummaryDTO,
+    UpdateSummaryGroupDTO,
+)
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
 from supernote.server.events import (
@@ -33,6 +39,7 @@ from supernote.server.events import (
     SyncCompletedEvent,
 )
 from supernote.server.services.schedule import ScheduleService
+from supernote.server.services.summary import SummaryService
 from supernote.server.services.user import JWT_ALGORITHM, UserService
 from supernote.server.socket import SocketIOServerManager
 from supernote.server.socket_auth import compute_handshake_signature
@@ -600,6 +607,313 @@ async def test_socketio_schedule_service_events_publish_task_syn(
         socketio_server.app["config"], user_service, event_bus=None
     )
     assert standalone_manager.event_bus is None
+
+    await socket_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_socketio_summary_service_events_publish_digest_syn(
+    socketio_server: TestServer,
+    socket_client: SupernoteSocketClient,
+) -> None:
+    """Verify SummaryService tag, group, and summary mutations publish DIGEST-SYN Socket.IO notifications."""
+    user_service: UserService = socketio_server.app["user_service"]
+    summary_service: SummaryService = socketio_server.app["summary_service"]
+    user_email = "test@example.com"
+    user_id = await user_service.get_user_id(user_email)
+
+    token = await user_service.create_session(user_email)
+    await socket_client.connect(_make_handshake_params(token))
+
+    async def _next_digest_msg() -> SocketDigestMessageData:
+        msg = await asyncio.wait_for(anext(socket_client.messages()), timeout=2.0)
+        assert isinstance(msg, SocketDigestMessageData)
+        return msg
+
+    # Tag create -> ADD_DIGEST (data_type='3')
+    tag = await summary_service.add_tag(user_email, "Work")
+    assert tag.id is not None
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.ADD_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                equipment_no=None,
+                id=tag.id,
+                name="Work",
+                unique_identifier=tag.unique_identifier,
+                create_time=str(tag.created_at),
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Tag update -> UPDATE_DIGEST (data_type='3')
+    await summary_service.update_tag(user_email, tag.id, "Personal")
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.UPDATE_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                equipment_no=None,
+                id=tag.id,
+                name="Personal",
+                unique_identifier=tag.unique_identifier,
+                create_time=str(tag.created_at),
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Tag delete -> DELETE_DIGEST (data_type='3')
+    await summary_service.delete_tag(user_email, tag.id)
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.DELETE_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                equipment_no=None,
+                id=tag.id,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Summary group create -> ADD_DIGEST (data_type='1')
+    group = await summary_service.add_group(
+        user_email,
+        AddSummaryGroupDTO(
+            unique_identifier="grp-sock-1",
+            name="Reading Notes",
+            md5_hash="grp-md5-1",
+            description="Books",
+            creation_time=1700000001000,
+            last_modified_time=1700000002000,
+        ),
+    )
+    assert group.id is not None
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.ADD_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY_GROUP,
+                equipment_no=None,
+                id=group.id,
+                name="Reading Notes",
+                user_id=user_id,
+                unique_identifier="grp-sock-1",
+                is_summary_group="Y",
+                description="Books",
+                md5_hash="grp-md5-1",
+                creation_time=1700000001000,
+                last_modified_time=1700000002000,
+                is_deleted="N",
+                create_time=str(group.create_time),
+                update_time=str(group.update_time),
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Summary group update -> UPDATE_DIGEST (data_type='1')
+    await summary_service.update_group(
+        user_email,
+        UpdateSummaryGroupDTO(
+            id=group.id,
+            unique_identifier="grp-sock-1",
+            name="Reading Notes Updated",
+            md5_hash="grp-md5-2",
+        ),
+    )
+    updated_group = await summary_service.get_summary(user_email, group.id)
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.UPDATE_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY_GROUP,
+                equipment_no=None,
+                id=group.id,
+                name="Reading Notes Updated",
+                user_id=user_id,
+                unique_identifier="grp-sock-1",
+                is_summary_group="Y",
+                description="Books",
+                md5_hash="grp-md5-2",
+                creation_time=1700000001000,
+                last_modified_time=1700000002000,
+                is_deleted="N",
+                create_time=str(updated_group.create_time),
+                update_time=str(updated_group.update_time),
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Leaf summary create -> ADD_DIGEST (data_type='2')
+    summary = await summary_service.add_summary(
+        user_email,
+        AddSummaryDTO(
+            file_id=101,
+            unique_identifier="sum-sock-1",
+            parent_unique_identifier="grp-sock-1",
+            content="Highlight text",
+            source_path="/Note/Book.pdf",
+            data_source="USER",
+            source_type=1,
+            tags="Work",
+            md5_hash="sum-md5-1",
+            metadata='{"page": 1}',
+            comment_str="My comment",
+            creation_time=1700000003000,
+            last_modified_time=1700000004000,
+            author="Author",
+        ),
+    )
+    assert summary.id is not None
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.ADD_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY,
+                equipment_no=None,
+                id=summary.id,
+                file_id=101,
+                user_id=user_id,
+                unique_identifier="sum-sock-1",
+                parent_unique_identifier="grp-sock-1",
+                content="Highlight text",
+                source_path="/Note/Book.pdf",
+                data_source="USER",
+                source_type=1,
+                is_summary_group="N",
+                tags="Work",
+                md5_hash="sum-md5-1",
+                metadata='{"page": 1}',
+                comment_str="My comment",
+                creation_time=1700000003000,
+                last_modified_time=1700000004000,
+                is_deleted="N",
+                create_time=str(summary.create_time),
+                update_time=str(summary.update_time),
+                timestamp=msg.data[0].timestamp,
+                author="Author",
+            )
+        ],
+    )
+
+    # Leaf summary update -> UPDATE_DIGEST (data_type='2')
+    await summary_service.update_summary(
+        user_email,
+        UpdateSummaryDTO(
+            id=summary.id,
+            content="Updated highlight text",
+            md5_hash="sum-md5-2",
+        ),
+    )
+    updated_summary = await summary_service.get_summary(user_email, summary.id)
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.UPDATE_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY,
+                equipment_no=None,
+                id=summary.id,
+                file_id=101,
+                user_id=user_id,
+                unique_identifier="sum-sock-1",
+                parent_unique_identifier="grp-sock-1",
+                content="Updated highlight text",
+                source_path="/Note/Book.pdf",
+                data_source="USER",
+                source_type=1,
+                is_summary_group="N",
+                tags="Work",
+                md5_hash="sum-md5-2",
+                metadata='{"page": 1}',
+                comment_str="My comment",
+                creation_time=1700000003000,
+                last_modified_time=1700000004000,
+                is_deleted="N",
+                create_time=str(updated_summary.create_time),
+                update_time=str(updated_summary.update_time),
+                timestamp=msg.data[0].timestamp,
+                author="Author",
+            )
+        ],
+    )
+
+    # Leaf summary delete -> DELETE_DIGEST (data_type='2')
+    await summary_service.delete_summary(user_email, summary.id)
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.DELETE_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY,
+                equipment_no=None,
+                id=summary.id,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Summary group delete -> DELETE_DIGEST (data_type='1')
+    await summary_service.delete_group(user_email, group.id)
+    msg = await _next_digest_msg()
+    assert msg == SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.DELETE_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY_GROUP,
+                equipment_no=None,
+                id=group.id,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
 
     await socket_client.disconnect()
 

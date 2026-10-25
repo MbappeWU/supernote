@@ -223,7 +223,7 @@ def create_app(config: ServerConfig) -> web.Application:
     if config.prompts_dir:
         PROMPT_LOADER.configure(Path(config.prompts_dir))
 
-    summary_service = SummaryService(user_service, session_manager)
+    summary_service = SummaryService(user_service, session_manager, event_bus)
     app["summary_service"] = summary_service
 
     search_service = SearchService(session_manager, embedding_model)

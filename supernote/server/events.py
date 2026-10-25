@@ -4,6 +4,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from supernote.models.summary import SummaryItem, SummaryTagItem
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,9 +60,47 @@ class ScheduleUpdatedEvent(Event):
     equipment_no: str | None = None
 
 
+@dataclass
+class SummaryTagUpsertedEvent(Event):
+    """Triggered when a summary tag is created or updated."""
+
+    user_id: int
+    tag: SummaryTagItem
+    is_new: bool
+    equipment_no: str | None = None
+
+
+@dataclass
+class SummaryTagDeletedEvent(Event):
+    """Triggered when a summary tag is deleted."""
+
+    user_id: int
+    tag_id: int
+    equipment_no: str | None = None
+
+
+@dataclass
+class SummaryUpsertedEvent(Event):
+    """Triggered when a summary group or leaf summary item is created or updated."""
+
+    user_id: int
+    summary: SummaryItem
+    is_new: bool
+    equipment_no: str | None = None
+
+
+@dataclass
+class SummaryDeletedEvent(Event):
+    """Triggered when a summary group or leaf summary item is soft-deleted."""
+
+    user_id: int
+    summary_id: int
+    is_summary_group: bool = False
+    equipment_no: str | None = None
+
+
 # TODO: Define and publish additional domain events on LocalEventBus for Socket.IO notification dispatch:
 # - File/folder lifecycle events (create folder, upload finish, rename, move, copy, delete, recycle restore) -> FILE-SYN
-# - Summary/digest/tag lifecycle events (add/update/delete summary group, summary item, or tag) -> DIGEST-SYN
 
 
 EventHandler = Callable[[Any], Awaitable[Any]]

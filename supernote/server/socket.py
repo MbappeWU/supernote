@@ -9,13 +9,17 @@ import engineio.packet
 import socketio
 from aiohttp import web
 
+from supernote.models.base import BooleanEnum
 from supernote.models.socket import (
     BaseSocketMessageData,
+    DigestMessageTemplate,
     ScheduleMessageTemplate,
+    SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoAction,
     SocketIoClientMessage,
     SocketIoCode,
+    SocketIoDigestDataType,
     SocketIoEvent,
     SocketIoMessageTemplate,
     SocketIoMessageType,
@@ -26,6 +30,10 @@ from supernote.server.config import ServerConfig
 from supernote.server.events import (
     LocalEventBus,
     ScheduleUpdatedEvent,
+    SummaryDeletedEvent,
+    SummaryTagDeletedEvent,
+    SummaryTagUpsertedEvent,
+    SummaryUpsertedEvent,
     SyncCompletedEvent,
 )
 from supernote.server.services.user import UserService
@@ -278,11 +286,17 @@ class SocketIOServerManager:
             return
         self.event_bus.subscribe(SyncCompletedEvent, self._handle_sync_completed)
         self.event_bus.subscribe(ScheduleUpdatedEvent, self._handle_schedule_updated)
+        self.event_bus.subscribe(
+            SummaryTagUpsertedEvent, self._handle_summary_tag_upserted
+        )
+        self.event_bus.subscribe(
+            SummaryTagDeletedEvent, self._handle_summary_tag_deleted
+        )
+        self.event_bus.subscribe(SummaryUpsertedEvent, self._handle_summary_upserted)
+        self.event_bus.subscribe(SummaryDeletedEvent, self._handle_summary_deleted)
         # TODO: Subscribe to future LocalEventBus domain events for:
         # - File/folder mutations (ADDFOLDER, DOWNLOADFILE, MODIFYFOLDER, MODIFYFILE, MOVEFOLDER,
         #   MOVEFILE, COPYFOLDER, COPYFILE, DELETEFOLDER, DELETEFILE) -> SocketMessageData (FILE-SYN)
-        # - Summary/digest/tag mutations (ADD_DIGEST, UPDATE_DIGEST, DELETE_DIGEST, QUERY)
-        #   -> SocketDigestMessageData (DIGEST-SYN)
 
     async def _handle_sync_completed(self, event: SyncCompletedEvent) -> None:
         """Emit a STARTSYNC FILE-SYN notification when a device completes a sync session."""
@@ -323,6 +337,160 @@ class SocketIOServerManager:
                         equipment_no=event.equipment_no,
                         task_list_id=event.task_list_id,
                         task_id=event.task_id,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_tag_upserted(
+        self, event: SummaryTagUpsertedEvent
+    ) -> None:
+        """Emit an ADD_DIGEST or UPDATE_DIGEST DIGEST-SYN notification when a summary tag is upserted."""
+        now_ms = int(time.time() * 1000)
+        action = (
+            SocketIoAction.ADD_DIGEST if event.is_new else SocketIoAction.UPDATE_DIGEST
+        )
+        tag = event.tag
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=action,
+                        data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                        equipment_no=event.equipment_no,
+                        id=tag.id,
+                        name=tag.name,
+                        unique_identifier=tag.unique_identifier,
+                        create_time=(
+                            str(tag.created_at) if tag.created_at is not None else None
+                        ),
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_tag_deleted(self, event: SummaryTagDeletedEvent) -> None:
+        """Emit a DELETE_DIGEST DIGEST-SYN notification when a summary tag is deleted."""
+        now_ms = int(time.time() * 1000)
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=SocketIoAction.DELETE_DIGEST,
+                        data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                        equipment_no=event.equipment_no,
+                        id=event.tag_id,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_upserted(self, event: SummaryUpsertedEvent) -> None:
+        """Emit an ADD_DIGEST or UPDATE_DIGEST DIGEST-SYN notification when a summary group or item is upserted."""
+        now_ms = int(time.time() * 1000)
+        action = (
+            SocketIoAction.ADD_DIGEST if event.is_new else SocketIoAction.UPDATE_DIGEST
+        )
+        summary = event.summary
+        is_group = summary.is_summary_group == BooleanEnum.YES
+        data_type = (
+            SocketIoDigestDataType.SUMMARY_GROUP
+            if is_group
+            else SocketIoDigestDataType.SUMMARY
+        )
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=action,
+                        data_type=data_type,
+                        equipment_no=event.equipment_no,
+                        id=summary.id,
+                        file_id=summary.file_id,
+                        name=summary.name,
+                        user_id=summary.user_id,
+                        unique_identifier=summary.unique_identifier,
+                        parent_unique_identifier=summary.parent_unique_identifier,
+                        content=summary.content,
+                        source_path=summary.source_path,
+                        data_source=summary.data_source,
+                        source_type=summary.source_type,
+                        is_summary_group=(
+                            summary.is_summary_group.value
+                            if summary.is_summary_group is not None
+                            else None
+                        ),
+                        description=summary.description,
+                        tags=summary.tags,
+                        md5_hash=summary.md5_hash,
+                        metadata=summary.metadata,
+                        comment_str=summary.comment_str,
+                        comment_handwrite_name=summary.comment_handwrite_name,
+                        handwrite_inner_name=summary.handwrite_inner_name,
+                        handwrite_md5=summary.handwrite_md5,
+                        creation_time=summary.creation_time,
+                        last_modified_time=summary.last_modified_time,
+                        is_deleted=(
+                            summary.is_deleted.value
+                            if summary.is_deleted is not None
+                            else None
+                        ),
+                        create_time=(
+                            str(summary.create_time)
+                            if summary.create_time is not None
+                            else None
+                        ),
+                        update_time=(
+                            str(summary.update_time)
+                            if summary.update_time is not None
+                            else None
+                        ),
+                        timestamp=now_ms,
+                        author=summary.author,
+                    )
+                ],
+            ),
+        )
+
+    async def _handle_summary_deleted(self, event: SummaryDeletedEvent) -> None:
+        """Emit a DELETE_DIGEST DIGEST-SYN notification when a summary group or item is deleted."""
+        now_ms = int(time.time() * 1000)
+        data_type = (
+            SocketIoDigestDataType.SUMMARY_GROUP
+            if event.is_summary_group
+            else SocketIoDigestDataType.SUMMARY
+        )
+        await self.send_message(
+            event.user_id,
+            SocketDigestMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.DIGEST_SYN,
+                data=[
+                    DigestMessageTemplate(
+                        message_type=SocketIoAction.DELETE_DIGEST,
+                        data_type=data_type,
+                        equipment_no=event.equipment_no,
+                        id=event.summary_id,
                         timestamp=now_ms,
                     )
                 ],
