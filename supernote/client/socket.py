@@ -6,14 +6,10 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-socketio: Any = None
-try:
-    import socketio
-except ImportError:
-    pass
+import socketio
 
-from supernote.client.exceptions import SupernoteSocketError  # noqa: E402
-from supernote.models.socket import (  # noqa: E402
+from supernote.client.exceptions import SupernoteSocketError
+from supernote.models.socket import (
     SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoClientMessage,
@@ -32,17 +28,12 @@ class SupernoteSocketClient:
     """Async Socket.IO client for interacting with the Supernote real-time server."""
 
     def __init__(self, host: str) -> None:
-        if socketio is None:
-            raise SupernoteSocketError(
-                "python-socketio is required for SupernoteSocketClient. "
-                "Install supernote with client extras: pip install supernote[client]"
-            )
         self.host = host.rstrip("/")
         self._sio = socketio.AsyncClient()
         self._message_queue: asyncio.Queue[
             SocketMessageData | SocketTaskMessageData | SocketDigestMessageData
         ] = asyncio.Queue()
-        self._status_queue: asyncio.Queue[str | SocketMessageData] = asyncio.Queue()
+        self._status_queue: asyncio.Queue[str] = asyncio.Queue()
         self._ping_queue: asyncio.Queue[str] = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._connected = False
@@ -139,15 +130,11 @@ class SupernoteSocketClient:
         Raises:
             TimeoutError: If the server does not respond within timeout seconds.
         """
-
-        async def _do_ping() -> None:
-            async with self._lock:
-                await self._sio.emit(SocketIoEvent.RATTA_PING.value, "ping")
-                reply = await asyncio.wait_for(self._ping_queue.get(), timeout=timeout)
-                if reply != SocketIoClientMessage.RECEIVED.value:
-                    logger.warning("Unexpected ping reply payload: %s", reply)
-
-        await asyncio.wait_for(_do_ping(), timeout=timeout)
+        async with self._lock:
+            await self._sio.emit(SocketIoEvent.RATTA_PING.value, "ping")
+            reply = await asyncio.wait_for(self._ping_queue.get(), timeout=timeout)
+            if reply != SocketIoClientMessage.RECEIVED.value:
+                logger.warning("Unexpected ping reply payload: %s", reply)
 
     async def check_status(self, timeout: float = DEFAULT_TIMEOUT) -> None:
         """Send a status heartbeat request to the server and verify response.
@@ -159,22 +146,14 @@ class SupernoteSocketClient:
             TimeoutError: If the server does not respond within timeout seconds.
             SupernoteSocketError: If the server responds with an error or non-'true' payload.
         """
-
-        async def _do_check() -> None:
-            async with self._lock:
-                await self._sio.emit(
-                    SocketIoEvent.CLIENT_MESSAGE.value,
-                    SocketIoClientMessage.STATUS.value,
-                )
-                res = await asyncio.wait_for(self._status_queue.get(), timeout=timeout)
-                if res != "true":
-                    if isinstance(res, SocketMessageData):
-                        raise SupernoteSocketError(
-                            f"Server status check failed: code={res.code}, msg={res.msg}"
-                        )
-                    raise SupernoteSocketError(f"Unexpected status check reply: {res}")
-
-        await asyncio.wait_for(_do_check(), timeout=timeout)
+        async with self._lock:
+            await self._sio.emit(
+                SocketIoEvent.CLIENT_MESSAGE.value,
+                SocketIoClientMessage.STATUS.value,
+            )
+            res = await asyncio.wait_for(self._status_queue.get(), timeout=timeout)
+            if res != "true":
+                raise SupernoteSocketError(f"Unexpected status check reply: {res}")
 
     async def send_client_message(self, message: str) -> None:
         """Send a custom ClientMessage string payload to the server without waiting for response."""
