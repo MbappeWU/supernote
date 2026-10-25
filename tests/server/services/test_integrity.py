@@ -9,14 +9,14 @@ from supernote.client.device import DeviceClient
 from supernote.models.base import ProcessingStatus, TaskType
 from supernote.models.system import IntegrityIssueType
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
-from supernote.server.db.models.file import UserFileDO
+from supernote.server.db.models.file import RecycleFileDO, UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.models.summary import SummaryDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage, LocalBlobStorage
 from supernote.server.services.integrity import _REMEDIATION_HINTS, IntegrityService
 from supernote.server.services.user import UserService
-from supernote.server.utils.paths import get_page_png_path
+from supernote.server.utils.paths import get_conversion_pdf_path, get_page_png_path
 
 
 @pytest.fixture
@@ -113,7 +113,7 @@ async def test_integrity_orphans(
     db_session: AsyncSession,
 ) -> None:
     """Verify integrity check detects orphaned files."""
-    # Create an orphaned VFS entry for the default test user
+    # Create an orphaned VFS entry and a file missing storage_key for the default test user
     file_do = UserFileDO(
         user_id=test_user_id,
         file_name="orphan.txt",
@@ -121,11 +121,22 @@ async def test_integrity_orphans(
         directory_id=9999,  # Invalid
         is_active="Y",
     )
-    db_session.add(file_do)
+    missing_key_do = UserFileDO(
+        user_id=test_user_id,
+        file_name="no_key.txt",
+        is_folder="N",
+        directory_id=0,
+        storage_key=None,
+        is_active="Y",
+    )
+    db_session.add_all([file_do, missing_key_do])
     await db_session.commit()
 
     report = await integrity_service.verify_user_storage(test_user_id)
-    assert report.issue_counts == {IntegrityIssueType.ORPHAN: 1}
+    assert report.issue_counts == {
+        IntegrityIssueType.ORPHAN: 1,
+        IntegrityIssueType.MISSING_BLOB: 1,
+    }
 
 
 async def test_integrity_hash_mismatch(
@@ -223,11 +234,18 @@ async def test_integrity_pipeline_issues(
                 key="page_P1",
                 status=ProcessingStatus.COMPLETED,
             ),
+            SystemTaskDO(
+                file_id=note_do.id,
+                task_type=TaskType.EMBEDDING_GENERATION.value,
+                key="page_P1",
+                status=ProcessingStatus.COMPLETED,
+            ),
             NotePageContentDO(
                 file_id=note_do.id,
                 page_index=0,
                 page_id="P1",
                 text_content=None,
+                embedding=None,
             ),
         ]
     )
@@ -242,16 +260,17 @@ async def test_integrity_pipeline_issues(
         IntegrityIssueType.TASK_FAILED: 1,
         IntegrityIssueType.MISSING_CACHE_BLOB: 1,
         IntegrityIssueType.MISSING_PAGE_CONTENT: 1,
+        IntegrityIssueType.MISSING_PAGE_EMBEDDING: 1,
     }
 
-    # Now populate the PNG cache blob at the unprefixed page_id path and OCR text
+    # Now populate the PNG cache blob at the unprefixed page_id path, OCR text, and embedding
     await blob_storage.put(
         CACHE_BUCKET, get_page_png_path(note_do.id, "P1"), b"png-bytes"
     )
     await db_session.execute(
         update(NotePageContentDO)
         .where(NotePageContentDO.file_id == note_do.id)
-        .values(text_content="extracted text")
+        .values(text_content="extracted text", embedding=b"\x00\x01")
     )
     await db_session.execute(
         update(SystemTaskDO)
@@ -491,3 +510,149 @@ async def test_integrity_summary_orphans(
         ),
         (999999, "Orphan File Summary", IntegrityIssueType.ORPHAN),
     ]
+
+
+async def test_verify_full_disk_two_way_checks(
+    integrity_service: IntegrityService,
+    blob_storage: LocalBlobStorage,
+    test_user_id: int,
+    db_session: AsyncSession,
+) -> None:
+    """Verify verify_full_disk detects unreferenced blobs in both buckets and global DB orphans."""
+    # 1. Valid active note with page PNG and conversion PDF in CACHE_BUCKET
+    note_bytes = b"active-note"
+    note_key = f"active-{uuid.uuid4()}.note"
+    note_meta = await blob_storage.put(USER_DATA_BUCKET, note_key, note_bytes)
+    active_note = UserFileDO(
+        user_id=test_user_id,
+        file_name="active.note",
+        is_folder="N",
+        directory_id=0,
+        size=len(note_bytes),
+        md5=note_meta.content_md5,
+        storage_key=note_key,
+        is_active="Y",
+    )
+    # 2. Valid recycled file + matching RecycleFileDO entry
+    rec_bytes = b"recycled-file"
+    rec_key = f"recycled-{uuid.uuid4()}.txt"
+    rec_meta = await blob_storage.put(USER_DATA_BUCKET, rec_key, rec_bytes)
+    recycled_file = UserFileDO(
+        user_id=test_user_id,
+        file_name="recycled.txt",
+        is_folder="N",
+        directory_id=0,
+        size=len(rec_bytes),
+        md5=rec_meta.content_md5,
+        storage_key=rec_key,
+        is_active="N",
+    )
+    db_session.add_all([active_note, recycled_file])
+    await db_session.flush()
+
+    valid_recycle_entry = RecycleFileDO(
+        file_id=recycled_file.id,
+        user_id=test_user_id,
+        file_name="recycled.txt",
+        size=len(rec_bytes),
+        is_folder="N",
+    )
+    valid_page = NotePageContentDO(
+        file_id=active_note.id,
+        page_index=0,
+        page_id="P1",
+        text_content="page text",
+    )
+    valid_png_task = SystemTaskDO(
+        file_id=active_note.id,
+        task_type=TaskType.PNG_CONVERSION.value,
+        key="page_P2",
+        status=ProcessingStatus.COMPLETED,
+    )
+    db_session.add_all([valid_recycle_entry, valid_page, valid_png_task])
+    await db_session.commit()
+
+    assert note_meta.content_md5 is not None
+    await blob_storage.put(
+        CACHE_BUCKET, get_page_png_path(active_note.id, "P1"), b"png"
+    )
+    await blob_storage.put(
+        CACHE_BUCKET, get_page_png_path(active_note.id, "P2"), b"png2"
+    )
+    await blob_storage.put(
+        CACHE_BUCKET,
+        get_conversion_pdf_path(test_user_id, active_note.id, note_meta.content_md5),
+        b"pdf",
+    )
+
+    clean_report = await integrity_service.verify_full_disk()
+    assert clean_report.issues == []
+    # 8 default folders + 1 active note + 1 recycled file + 1 recycle entry = 11
+    assert clean_report.scanned == 11
+    assert clean_report.ok == 11
+
+    # Now plant unreferenced blobs in both buckets and global DB orphans
+    await blob_storage.put(USER_DATA_BUCKET, "orphan-user-blob.bin", b"stray")
+    await blob_storage.put(CACHE_BUCKET, "999999/pages/P1.png", b"stray-png")
+
+    db_session.add_all(
+        [
+            UserFileDO(
+                user_id=999999,
+                file_name="ghost_user_file.txt",
+                is_folder="N",
+                directory_id=0,
+                is_active="Y",
+            ),
+            SummaryDO(
+                user_id=999999,
+                unique_identifier="ghost-user-summary",
+                name="Ghost Summary",
+                is_summary_group=False,
+                is_deleted=False,
+            ),
+            RecycleFileDO(
+                file_id=888888,
+                user_id=test_user_id,
+                file_name="dangling_recycle.txt",
+                size=10,
+                is_folder="N",
+            ),
+            RecycleFileDO(
+                file_id=888889,
+                user_id=999999,
+                file_name="ghost_user_recycle.txt",
+                size=10,
+                is_folder="N",
+            ),
+            NotePageContentDO(
+                file_id=888888,
+                page_index=0,
+                page_id="P_ORPHAN",
+                text_content="orphan page",
+            ),
+            SystemTaskDO(
+                file_id=888888,
+                task_type=TaskType.OCR_EXTRACTION.value,
+                key="page_P_ORPHAN",
+                status=ProcessingStatus.COMPLETED,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    dirty_report = await integrity_service.verify_full_disk()
+    assert dirty_report.ok == 11
+    assert dirty_report.scanned == 11 + 8
+    assert dirty_report.issue_counts == {
+        IntegrityIssueType.ORPHAN: 6,
+        IntegrityIssueType.UNREFERENCED_BLOB: 2,
+    }
+    assert {
+        i.file_name
+        for i in dirty_report.issues
+        if i.issue_type == IntegrityIssueType.UNREFERENCED_BLOB
+    } == {
+        "orphan-user-blob.bin",
+        "999999/pages/P1.png",
+    }

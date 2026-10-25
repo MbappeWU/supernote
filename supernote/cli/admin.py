@@ -192,15 +192,18 @@ def reprocess(args):
 
 async def integrity_async(
     url: str | None,
-    email: str,
+    email: str | None = None,
     file_id: int | None = None,
+    full_disk: bool = False,
     as_json: bool = False,
 ) -> None:
-    """Verify server storage integrity for a user."""
+    """Verify server storage integrity for a user or across the full disk."""
     async with create_session(url) as session:
         admin_client = AdminClient(session.client)
         try:
-            report = await admin_client.verify_integrity(email=email, file_id=file_id)
+            report = await admin_client.verify_integrity(
+                email=email, file_id=file_id, full_disk=full_disk
+            )
         except Exception as e:
             print(f"Failed to verify integrity: {e}")
             sys.exit(1)
@@ -248,6 +251,7 @@ def integrity(args) -> None:
             url=args.url,
             email=args.email,
             file_id=args.file_id,
+            full_disk=args.full_disk,
             as_json=args.json,
         )
     )
@@ -410,11 +414,17 @@ def add_parser(subparsers):
         "integrity",
         help="Verify VFS and blob storage integrity",
     )
-    parser_integrity.add_argument(
+    integrity_scope = parser_integrity.add_mutually_exclusive_group(required=True)
+    integrity_scope.add_argument(
         "--email",
         type=str,
-        required=True,
+        default=None,
         help="Email address of the user to check",
+    )
+    integrity_scope.add_argument(
+        "--full-disk",
+        action="store_true",
+        help="Perform a global two-way storage check across all users and disk buckets",
     )
     parser_integrity.add_argument(
         "--file-id",

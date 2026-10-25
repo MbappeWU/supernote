@@ -3,12 +3,14 @@ import os
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from supernote.server.services.blob import (
     CLEANUP_INTERVAL_SECONDS,
     TEMP_FILE_TTL_SECONDS,
+    CleanupStats,
     LocalBlobStorage,
 )
 from supernote.server.utils.paths import (
@@ -250,13 +252,21 @@ async def test_cleanup_staging_and_chunks(tmp_path: Path) -> None:
     non_tmp.write_bytes(b"log data")
     os.utime(non_tmp, (expired_mtime, expired_mtime))
 
-    # 2. Multipart chunks in bucket
+    # 2a. Active multipart upload (chunk 1 old, chunk 2 fresh -> entire set preserved)
+    await storage.put(bucket, "active.note.part.1", b"chunk act1")
+    await storage.put(bucket, "active.note.part.2", b"chunk act2")
+    path_act1 = storage.get_blob_path(bucket, "active.note.part.1")
+    path_act2 = storage.get_blob_path(bucket, "active.note.part.2")
+    os.utime(path_act1, (expired_mtime, expired_mtime))
+    os.utime(path_act2, (fresh_mtime, fresh_mtime))
+
+    # 2b. Abandoned multipart upload (all chunks expired -> entire set removed)
     await storage.put(bucket, "abandoned.note.part.1", b"chunk a1")
     await storage.put(bucket, "abandoned.note.part.2", b"chunk a2")
     path_a1 = storage.get_blob_path(bucket, "abandoned.note.part.1")
     path_a2 = storage.get_blob_path(bucket, "abandoned.note.part.2")
     os.utime(path_a1, (expired_mtime, expired_mtime))
-    os.utime(path_a2, (fresh_mtime, fresh_mtime))
+    os.utime(path_a2, (expired_mtime, expired_mtime))
 
     # 3. Normal blob (must never be removed even if old)
     await storage.put(bucket, "normal.note", b"normal file content")
@@ -264,13 +274,17 @@ async def test_cleanup_staging_and_chunks(tmp_path: Path) -> None:
     os.utime(path_normal, (expired_mtime, expired_mtime))
 
     stats = await storage.cleanup()
-    assert stats.files_removed == 2
-    assert stats.bytes_reclaimed == len(b"stale staging data") + len(b"chunk a1")
+    assert stats.files_removed == 3
+    assert stats.bytes_reclaimed == (
+        len(b"stale staging data") + len(b"chunk a1") + len(b"chunk a2")
+    )
     assert not stale_tmp.exists()
     assert fresh_tmp.exists()
     assert non_tmp.exists()
+    assert path_act1.exists()
+    assert path_act2.exists()
     assert not path_a1.exists()
-    assert path_a2.exists()
+    assert not path_a2.exists()
     assert path_normal.exists()
 
 
@@ -331,3 +345,86 @@ async def test_conversion_paths_for_different_users_do_not_collide(
     # Intra-shard '..' traversal within the same 2-character prefix must be rejected
     with pytest.raises(ValueError, match="Invalid blob path"):
         storage.get_blob_path(bucket, "101/pages/../../102/pages/victim.png")
+
+
+async def test_list_blobs_returns_logical_keys_and_skips_chunks(
+    tmp_path: Path,
+) -> None:
+    """Verify list_blobs enumerates logical keys across flat and nested buckets while skipping .part.N chunks."""
+    storage = LocalBlobStorage(tmp_path)
+    assert await storage.list_blobs("nonexistent-bucket") == []
+
+    await storage.put("user-data", "blob_b.note", b"b")
+    await storage.put("user-data", "blob_a.note", b"a")
+    await storage.put("user-data", "upload.note.part.1", b"part1")
+
+    assert await storage.list_blobs("user-data") == ["blob_a.note", "blob_b.note"]
+
+    # Non-directory files directly under the bucket directory are ignored
+    (tmp_path / "user-data" / "stray_top_level_file").write_bytes(b"ignored")
+    assert await storage.list_blobs("user-data") == ["blob_a.note", "blob_b.note"]
+
+    png_key = get_page_png_path(file_id=42, page_id="P1")
+    pdf_key = get_conversion_pdf_path(user_id=7, file_id=42, file_md5="deadbeef")
+    await storage.put("cache", png_key, b"png")
+    await storage.put("cache", pdf_key, b"pdf")
+
+    assert await storage.list_blobs("cache") == sorted([png_key, pdf_key])
+
+
+async def test_put_stream_error_cleans_up_temp_file(tmp_path: Path) -> None:
+    """Verify put() cleans up temporary staging file and re-raises when stream fails."""
+    storage = LocalBlobStorage(tmp_path)
+
+    async def failing_stream() -> AsyncGenerator[bytes]:
+        yield b"partial data"
+        raise RuntimeError("stream interrupted")
+
+    with pytest.raises(RuntimeError, match="stream interrupted"):
+        await storage.put("test-bucket", "failed-key", failing_stream())
+
+    temp_dir = tmp_path / "temp"
+    assert list(temp_dir.glob("*.tmp")) == []
+    assert not await storage.exists("test-bucket", "failed-key")
+
+
+async def test_get_not_found_and_open_start_range(tmp_path: Path) -> None:
+    """Verify get() raises FileNotFoundError on missing blob and defaults start=0 when only end is given."""
+    storage = LocalBlobStorage(tmp_path)
+
+    with pytest.raises(FileNotFoundError):
+        async for _ in storage.get("test-bucket", "missing-key"):
+            pass
+
+    await storage.put("test-bucket", "range-key", b"abcdef")
+    chunks = [chunk async for chunk in storage.get("test-bucket", "range-key", end=2)]
+    assert b"".join(chunks) == b"abc"
+
+
+def test_cleanup_helpers_handle_missing_files_and_os_errors(tmp_path: Path) -> None:
+    """Verify _remove_chunk_set_if_expired and _remove_if_expired tolerate disappearing files and OSErrors."""
+    now = time.time()
+    expired_mtime = now - TEMP_FILE_TTL_SECONDS - 100
+    stats = CleanupStats()
+
+    missing_path = tmp_path / "missing.tmp"
+    LocalBlobStorage._remove_if_expired(missing_path, now, stats)
+    LocalBlobStorage._remove_chunk_set_if_expired([missing_path], now, stats)
+    assert stats.files_removed == 0
+
+    tmp_file = tmp_path / "err.tmp"
+    tmp_file.write_bytes(b"abc")
+    os.utime(tmp_file, (expired_mtime, expired_mtime))
+
+    with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+        LocalBlobStorage._remove_if_expired(tmp_file, now, stats)
+        LocalBlobStorage._remove_chunk_set_if_expired([tmp_file], now, stats)
+    assert stats.files_removed == 0
+
+    with patch.object(Path, "unlink", side_effect=FileNotFoundError):
+        LocalBlobStorage._remove_chunk_set_if_expired([tmp_file], now, stats)
+    assert stats.files_removed == 0
+
+    with patch.object(Path, "stat", side_effect=PermissionError("stat denied")):
+        LocalBlobStorage._remove_chunk_set_if_expired([tmp_file], now, stats)
+    assert stats.files_removed == 0

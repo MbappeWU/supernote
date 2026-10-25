@@ -99,8 +99,14 @@ def test_add_parser() -> None:
     )
     assert parsed.email == "user@example.com"
     assert parsed.file_id == 55
+    assert parsed.full_disk is False
     assert parsed.json is True
     assert parsed.func == integrity
+
+    parsed_full_disk = parser.parse_args(["admin", "integrity", "--full-disk"])
+    assert parsed_full_disk.email is None
+    assert parsed_full_disk.full_disk is True
+    assert parsed_full_disk.func == integrity
 
     parsed = parser.parse_args(
         ["admin", "tasks", "--status", "failed", "--type", "ocr", "--json"]
@@ -299,6 +305,11 @@ async def test_integrity_success_and_json(
     captured = capsys.readouterr()
     assert '"scanned": 1' in captured.out
     assert '"ok": 1' in captured.out
+
+    await integrity_async(cli_env.url, full_disk=True, as_json=True)
+    captured = capsys.readouterr()
+    assert '"scanned": 8' in captured.out
+    assert '"ok": 8' in captured.out
 
 
 async def test_integrity_issues_detected(

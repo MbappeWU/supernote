@@ -190,9 +190,30 @@ async def handle_reprocess(request: web.Request) -> web.Response:
 @routes.get("/api/admin/integrity")
 @require_admin
 async def handle_verify_integrity(request: web.Request) -> web.Response:
-    """Verify VFS and blob storage integrity for a user (Admin only)."""
+    """Verify VFS and blob storage integrity for a user or full disk (Admin only)."""
     email = request.query.get("email")
     file_id_str = request.query.get("file_id")
+    full_disk_str = request.query.get("full_disk")
+
+    if full_disk_str is not None and full_disk_str not in ("true", "false"):
+        return web.json_response(
+            create_error_response(f"Invalid full_disk: {full_disk_str}").to_dict(),
+            status=400,
+        )
+    full_disk = full_disk_str == "true"
+
+    integrity_service: IntegrityService = request.app["integrity_service"]
+
+    if full_disk:
+        if email or file_id_str is not None:
+            return web.json_response(
+                create_error_response(
+                    "Cannot combine full_disk with email or file_id"
+                ).to_dict(),
+                status=400,
+            )
+        report = await integrity_service.verify_full_disk()
+        return web.json_response(report.to_dict())
 
     if not email:
         return web.json_response(
@@ -216,7 +237,6 @@ async def handle_verify_integrity(request: web.Request) -> web.Response:
             status=404,
         )
 
-    integrity_service: IntegrityService = request.app["integrity_service"]
     report = await integrity_service.verify_user_storage(
         user_id=user.id, file_id=file_id
     )

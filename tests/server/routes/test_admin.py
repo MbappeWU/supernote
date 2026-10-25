@@ -340,6 +340,12 @@ async def test_admin_integrity(
     assert file_report.scanned == 1
     assert file_report.ok == 1
 
+    full_report = await admin_api_client.verify_integrity(full_disk=True)
+    assert full_report.success is True
+    assert full_report.scanned >= 16  # Admin + User default folders
+    assert full_report.ok == full_report.scanned
+    assert full_report.issues == []
+
     with pytest.raises(NotFoundException):
         await admin_api_client.verify_integrity(email="nonexistent@example.com")
 
@@ -358,6 +364,11 @@ async def test_admin_integrity_permission(
         {},
         {"email": ""},
         {"email": "user@example.com", "file_id": "abc"},
+        {"full_disk": "1"},
+        {"full_disk": "yes"},
+        {"full_disk": "invalid"},
+        {"full_disk": "true", "email": "user@example.com"},
+        {"full_disk": "true", "file_id": "1"},
     ],
 )
 async def test_admin_integrity_invalid_params(

@@ -5,6 +5,7 @@ import os
 import secrets
 import time
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,6 +93,13 @@ class BlobStorage(ABC):
     @abstractmethod
     def get_blob_path(self, bucket: str, key: str) -> Path:
         """Get physical path to the blob (optional, useful for serving files)."""
+
+    @abstractmethod
+    async def list_blobs(self, bucket: str) -> list[str]:
+        """Return sorted logical keys of all stored blobs in the given bucket.
+
+        Excludes temporary staging files and unmerged multipart `.part.N` chunks.
+        """
 
     @abstractmethod
     async def cleanup(self) -> CleanupStats:
@@ -234,6 +242,30 @@ class LocalBlobStorage(BlobStorage):
         """Get physical path to the blob."""
         return self._get_path(bucket, key)
 
+    async def list_blobs(self, bucket: str) -> list[str]:
+        """Return sorted logical keys of all stored blobs in the given bucket."""
+        return await asyncio.to_thread(self._list_blobs_sync, bucket)
+
+    def _list_blobs_sync(self, bucket: str) -> list[str]:
+        clean_bucket = Path(bucket).name
+        bucket_dir = (self.root / clean_bucket).resolve()
+        if not bucket_dir.is_relative_to(self.root) or not bucket_dir.is_dir():
+            return []
+
+        keys: list[str] = []
+        for shard_dir in bucket_dir.iterdir():
+            if not shard_dir.is_dir():
+                continue
+            for root, _, files in os.walk(shard_dir):
+                root_path = Path(root)
+                for filename in files:
+                    if parse_file_chunk_name(filename) is not None:
+                        continue
+                    file_path = root_path / filename
+                    keys.append(file_path.relative_to(shard_dir).as_posix())
+        keys.sort()
+        return keys
+
     async def cleanup(self) -> CleanupStats:
         """Remove expired temporary staging files and abandoned upload chunks."""
         self._last_cleanup = time.time()
@@ -249,15 +281,61 @@ class LocalBlobStorage(BlobStorage):
                 if file_path.name.endswith(".tmp") and file_path.is_file():
                     self._remove_if_expired(file_path, now, stats)
 
+        # Group individual `.part.N` chunk files into chunk sets keyed by their
+        # target upload `(root_path, base_name)` so staleness is evaluated across
+        # the upload as a whole rather than per part file.
+        chunk_sets: dict[tuple[Path, str], list[Path]] = defaultdict(list)
         for root, _, files in os.walk(self.root):
             root_path = Path(root)
             if root_path == temp_dir or temp_dir in root_path.parents:
                 continue
             for filename in files:
-                if parse_file_chunk_name(filename):
-                    self._remove_if_expired(root_path / filename, now, stats)
+                base_name = parse_file_chunk_name(filename)
+                if base_name is not None:
+                    chunk_sets[(root_path, base_name)].append(root_path / filename)
+
+        for chunk_paths in chunk_sets.values():
+            self._remove_chunk_set_if_expired(chunk_paths, now, stats)
 
         return stats
+
+    @staticmethod
+    def _remove_chunk_set_if_expired(
+        chunk_paths: list[Path], now: float, stats: CleanupStats
+    ) -> None:
+        """Remove a multipart upload's chunk set only when its newest chunk has expired.
+
+        A single multipart upload produces multiple `.part.N` chunk files that
+        together form a chunk set for one target blob. Evaluating expiration by
+        the most recently modified chunk (`newest_mtime`) keeps slow or resumed
+        uploads intact while still reclaiming all chunks of abandoned uploads.
+        """
+        chunk_stats: list[tuple[Path, os.stat_result]] = []
+        for path in chunk_paths:
+            try:
+                chunk_stats.append((path, path.stat()))
+            except FileNotFoundError:
+                continue
+            except OSError as err:
+                logger.warning("Failed to stat chunk file %s: %s", path, err)
+                return
+
+        if not chunk_stats:
+            return
+
+        newest_mtime = max(st.st_mtime for _, st in chunk_stats)
+        if now - newest_mtime < TEMP_FILE_TTL_SECONDS:
+            return
+
+        for path, st in chunk_stats:
+            try:
+                path.unlink()
+                stats.files_removed += 1
+                stats.bytes_reclaimed += st.st_size
+            except FileNotFoundError:
+                pass
+            except OSError as err:
+                logger.warning("Failed to remove expired chunk file %s: %s", path, err)
 
     @staticmethod
     def _remove_if_expired(file_path: Path, now: float, stats: CleanupStats) -> None:

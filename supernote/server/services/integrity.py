@@ -12,12 +12,17 @@ from supernote.models.system import (
     IntegrityReportVO,
 )
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
-from supernote.server.db.models.file import UserFileDO
+from supernote.server.db.models.file import RecycleFileDO, UserFileDO
 from supernote.server.db.models.note_processing import NotePageContentDO, SystemTaskDO
 from supernote.server.db.models.summary import SummaryDO
+from supernote.server.db.models.user import UserDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.blob import BlobStorage
-from supernote.server.utils.paths import get_page_png_path
+from supernote.server.utils.paths import (
+    get_conversion_pdf_path,
+    get_page_png_path,
+    is_valid_page_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,10 @@ _REMEDIATION_HINTS: dict[IntegrityIssueType, str] = {
     ),
     IntegrityIssueType.MISSING_BLOB: (
         "Re-upload or re-sync affected files from a Supernote device or restore missing blobs from backup."
+    ),
+    IntegrityIssueType.UNREFERENCED_BLOB: (
+        "Unreferenced physical blobs were found on disk with no matching database record. "
+        f"This is an unexpected server state; please report an issue at {_GITHUB_ISSUES_URL}."
     ),
     IntegrityIssueType.SIZE_MISMATCH: (
         "Re-upload or re-sync affected files from a Supernote device or restore blobs from backup. "
@@ -192,6 +201,169 @@ class IntegrityService:
                 continue
 
             report.ok += 1
+
+        report.remediations = list(
+            dict.fromkeys(
+                _REMEDIATION_HINTS[issue.issue_type]
+                for issue in report.issues
+                if issue.issue_type in _REMEDIATION_HINTS
+            )
+        )
+        return report
+
+    async def verify_full_disk(self) -> IntegrityReportVO:
+        """Perform a global two-way storage check across all users, DB tables, and disk buckets."""
+        report = IntegrityReportVO()
+
+        async with self.session_manager.session() as session:
+            user_ids = list(
+                (await session.execute(select(UserDO.id).order_by(UserDO.id.asc())))
+                .scalars()
+                .all()
+            )
+
+        for user_id in user_ids:
+            user_report = await self.verify_user_storage(user_id)
+            report.scanned += user_report.scanned
+            report.ok += user_report.ok
+            report.issues.extend(user_report.issues)
+
+        async with self.session_manager.session() as session:
+            orphan_user_files = await self._query_orphan_user_files(session)
+            recycled_files = await self._query_recycled_files_for_valid_users(session)
+            recycle_entries = await self._query_recycle_entries_with_status(session)
+            orphan_summaries = await self._query_orphan_user_summaries(session)
+            orphan_pages = await self._query_orphan_page_contents(session)
+            orphan_tasks = await self._query_orphan_system_tasks(session)
+            referenced_user_keys = await self._query_referenced_user_data_keys(session)
+            referenced_cache_keys = await self._query_referenced_cache_keys(session)
+
+        for node in orphan_user_files:
+            report.scanned += 1
+            detail = f"File {node.id} belongs to non-existent user_id={node.user_id}"
+            logger.error(f"Integrity Fail: {detail}")
+            report.issues.append(
+                IntegrityIssueVO(
+                    file_id=node.id,
+                    file_name=node.file_name,
+                    issue_type=IntegrityIssueType.ORPHAN,
+                    detail=detail,
+                )
+            )
+
+        for node in recycled_files:
+            report.scanned += 1
+            if node.is_folder == "Y" or await self._check_blob_integrity(node, report):
+                report.ok += 1
+
+        for rec, has_valid_user, has_valid_file in recycle_entries:
+            report.scanned += 1
+            if not has_valid_user:
+                detail = f"Recycle entry {rec.id} belongs to non-existent user_id={rec.user_id}"
+                logger.error(f"Integrity Fail: {detail}")
+                report.issues.append(
+                    IntegrityIssueVO(
+                        file_id=rec.file_id,
+                        file_name=rec.file_name,
+                        issue_type=IntegrityIssueType.ORPHAN,
+                        detail=detail,
+                    )
+                )
+                continue
+            if not has_valid_file:
+                detail = f"Recycle entry {rec.id} references missing or active file_id={rec.file_id}"
+                logger.error(f"Integrity Fail: {detail}")
+                report.issues.append(
+                    IntegrityIssueVO(
+                        file_id=rec.file_id,
+                        file_name=rec.file_name,
+                        issue_type=IntegrityIssueType.ORPHAN,
+                        detail=detail,
+                    )
+                )
+                continue
+            report.ok += 1
+
+        for summary in orphan_summaries:
+            report.scanned += 1
+            summary_name = (
+                summary.name or summary.source_path or summary.unique_identifier
+            )
+            issue_file_id = (
+                summary.file_id if summary.file_id is not None else summary.id
+            )
+            detail = f"Summary {summary.id} belongs to non-existent user_id={summary.user_id}"
+            logger.error(f"Integrity Fail: {detail}")
+            report.issues.append(
+                IntegrityIssueVO(
+                    file_id=issue_file_id,
+                    file_name=summary_name,
+                    issue_type=IntegrityIssueType.ORPHAN,
+                    detail=detail,
+                )
+            )
+
+        for page in orphan_pages:
+            report.scanned += 1
+            detail = (
+                f"NotePageContent {page.id} (page_id={page.page_id}) "
+                f"references missing or inactive file_id={page.file_id}"
+            )
+            logger.error(f"Integrity Fail: {detail}")
+            report.issues.append(
+                IntegrityIssueVO(
+                    file_id=page.file_id,
+                    file_name=f"page_{page.page_id}",
+                    issue_type=IntegrityIssueType.ORPHAN,
+                    detail=detail,
+                )
+            )
+
+        for task in orphan_tasks:
+            report.scanned += 1
+            detail = (
+                f"SystemTask {task.id} ({task.task_type}, {task.key}) "
+                f"references missing or inactive file_id={task.file_id}"
+            )
+            logger.error(f"Integrity Fail: {detail}")
+            report.issues.append(
+                IntegrityIssueVO(
+                    file_id=task.file_id,
+                    file_name=f"{task.task_type}:{task.key}",
+                    issue_type=IntegrityIssueType.ORPHAN,
+                    detail=detail,
+                )
+            )
+
+        disk_user_keys = await self.blob_storage.list_blobs(USER_DATA_BUCKET)
+        for key in disk_user_keys:
+            if key not in referenced_user_keys:
+                report.scanned += 1
+                detail = f"Unreferenced blob in {USER_DATA_BUCKET}: {key}"
+                logger.warning(f"Integrity Warning: {detail}")
+                report.issues.append(
+                    IntegrityIssueVO(
+                        file_id=0,
+                        file_name=key,
+                        issue_type=IntegrityIssueType.UNREFERENCED_BLOB,
+                        detail=detail,
+                    )
+                )
+
+        disk_cache_keys = await self.blob_storage.list_blobs(CACHE_BUCKET)
+        for key in disk_cache_keys:
+            if key not in referenced_cache_keys:
+                report.scanned += 1
+                detail = f"Unreferenced cache blob in {CACHE_BUCKET}: {key}"
+                logger.warning(f"Integrity Warning: {detail}")
+                report.issues.append(
+                    IntegrityIssueVO(
+                        file_id=0,
+                        file_name=key,
+                        issue_type=IntegrityIssueType.UNREFERENCED_BLOB,
+                        detail=detail,
+                    )
+                )
 
         report.remediations = list(
             dict.fromkeys(
@@ -638,3 +810,165 @@ class IntegrityService:
             return False
 
         return True
+
+    async def _query_orphan_user_files(self, session: AsyncSession) -> list[UserFileDO]:
+        """Query UserFileDO rows whose user_id does not exist in UserDO."""
+        stmt = (
+            select(UserFileDO)
+            .outerjoin(UserDO, UserDO.id == UserFileDO.user_id)
+            .where(UserDO.id.is_(None))
+            .order_by(UserFileDO.id.asc())
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def _query_recycled_files_for_valid_users(
+        self, session: AsyncSession
+    ) -> list[UserFileDO]:
+        """Query soft-deleted UserFileDO rows owned by existing users."""
+        stmt = (
+            select(UserFileDO)
+            .join(UserDO, UserDO.id == UserFileDO.user_id)
+            .where(UserFileDO.is_active == "N")
+            .order_by(UserFileDO.id.asc())
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def _query_recycle_entries_with_status(
+        self, session: AsyncSession
+    ) -> list[tuple[RecycleFileDO, bool, bool]]:
+        """Query RecycleFileDO rows with user existence and soft-deleted target file status."""
+        stmt = (
+            select(
+                RecycleFileDO,
+                UserDO.id.is_not(None),
+                UserFileDO.id.is_not(None),
+            )
+            .outerjoin(UserDO, UserDO.id == RecycleFileDO.user_id)
+            .outerjoin(
+                UserFileDO,
+                and_(
+                    UserFileDO.id == RecycleFileDO.file_id,
+                    UserFileDO.user_id == RecycleFileDO.user_id,
+                    UserFileDO.is_active == "N",
+                ),
+            )
+            .order_by(RecycleFileDO.id.asc())
+        )
+        rows = (await session.execute(stmt)).all()
+        return [
+            (rec, bool(has_valid_user), bool(has_valid_file))
+            for rec, has_valid_user, has_valid_file in rows
+        ]
+
+    async def _query_orphan_user_summaries(
+        self, session: AsyncSession
+    ) -> list[SummaryDO]:
+        """Query active SummaryDO rows whose user_id does not exist in UserDO."""
+        stmt = (
+            select(SummaryDO)
+            .outerjoin(UserDO, UserDO.id == SummaryDO.user_id)
+            .where(
+                SummaryDO.is_deleted.is_(False),
+                UserDO.id.is_(None),
+            )
+            .order_by(SummaryDO.id.asc())
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def _query_orphan_page_contents(
+        self, session: AsyncSession
+    ) -> list[NotePageContentDO]:
+        """Query NotePageContentDO rows whose file_id does not reference an active non-folder UserFileDO."""
+        stmt = (
+            select(NotePageContentDO)
+            .outerjoin(
+                UserFileDO,
+                and_(
+                    UserFileDO.id == NotePageContentDO.file_id,
+                    UserFileDO.is_active == "Y",
+                    UserFileDO.is_folder == "N",
+                ),
+            )
+            .where(UserFileDO.id.is_(None))
+            .order_by(NotePageContentDO.id.asc())
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def _query_orphan_system_tasks(
+        self, session: AsyncSession
+    ) -> list[SystemTaskDO]:
+        """Query SystemTaskDO rows whose file_id does not reference an active non-folder UserFileDO."""
+        stmt = (
+            select(SystemTaskDO)
+            .outerjoin(
+                UserFileDO,
+                and_(
+                    UserFileDO.id == SystemTaskDO.file_id,
+                    UserFileDO.is_active == "Y",
+                    UserFileDO.is_folder == "N",
+                ),
+            )
+            .where(UserFileDO.id.is_(None))
+            .order_by(SystemTaskDO.id.asc())
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def _query_referenced_user_data_keys(self, session: AsyncSession) -> set[str]:
+        """Return all storage keys in USER_DATA_BUCKET referenced by UserFileDO or SummaryDO."""
+        file_keys_stmt = select(UserFileDO.storage_key).where(
+            UserFileDO.storage_key.is_not(None)
+        )
+        summary_keys_stmt = select(SummaryDO.handwrite_inner_name).where(
+            SummaryDO.handwrite_inner_name.is_not(None),
+        )
+        file_keys = {
+            k for k in (await session.execute(file_keys_stmt)).scalars().all() if k
+        }
+        summary_keys = {
+            k for k in (await session.execute(summary_keys_stmt)).scalars().all() if k
+        }
+        return file_keys | summary_keys
+
+    async def _query_referenced_cache_keys(self, session: AsyncSession) -> set[str]:
+        """Return all logical blob keys in CACHE_BUCKET referenced by active notes and pages."""
+        referenced: set[str] = set()
+
+        page_stmt = select(NotePageContentDO.file_id, NotePageContentDO.page_id).join(
+            UserFileDO,
+            and_(
+                UserFileDO.id == NotePageContentDO.file_id,
+                UserFileDO.is_active == "Y",
+                UserFileDO.is_folder == "N",
+            ),
+        )
+        for fid, page_id in (await session.execute(page_stmt)).all():
+            if is_valid_page_id(page_id):
+                referenced.add(get_page_png_path(fid, page_id))
+
+        png_task_stmt = (
+            select(SystemTaskDO.file_id, SystemTaskDO.key)
+            .join(
+                UserFileDO,
+                and_(
+                    UserFileDO.id == SystemTaskDO.file_id,
+                    UserFileDO.is_active == "Y",
+                    UserFileDO.is_folder == "N",
+                ),
+            )
+            .where(SystemTaskDO.task_type == TaskType.PNG_CONVERSION.value)
+        )
+        for fid, task_key in (await session.execute(png_task_stmt)).all():
+            page_id = task_key.removeprefix("page_")
+            if is_valid_page_id(page_id):
+                referenced.add(get_page_png_path(fid, page_id))
+
+        conv_stmt = select(UserFileDO.user_id, UserFileDO.id, UserFileDO.md5).where(
+            UserFileDO.is_active == "Y",
+            UserFileDO.is_folder == "N",
+            UserFileDO.md5.is_not(None),
+        )
+        for uid, fid, md5 in (await session.execute(conv_stmt)).all():
+            if md5:
+                referenced.add(get_conversion_pdf_path(uid, fid, md5))
+
+        return referenced

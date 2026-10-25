@@ -166,11 +166,9 @@ class FileService:
         """Initialize the file service."""
         self.storage_root = storage_root
         self.blob_storage = blob_storage
-        self.temp_dir = storage_root / "temp"
         self.user_service = user_service
         self.session_manager = session_manager
         self.event_bus = event_bus
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
 
     async def list_folder(
         self, user: str, path_str: str, recursive: bool = False
