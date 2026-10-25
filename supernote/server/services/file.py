@@ -157,6 +157,15 @@ class ConversionsVO:
     page_no: int
 
 
+@dataclass
+class _FileUpsertResult:
+    """Result of creating or updating a VFS file node, tracking any superseded artifacts to clean up."""
+
+    node: UserFileDO
+    superseded_storage_key: str | None = None
+    superseded_md5: str | None = None
+
+
 def _load_notebook_sync(blob_content: bytes) -> Any:
     """Helper to parse note file in a worker thread."""
     return load_notebook(BytesIO(blob_content), policy="loose")
@@ -395,12 +404,7 @@ class FileService:
             if clean_path:
                 parent_id = await vfs.ensure_directory_path(user_id, clean_path)
 
-            (
-                new_file,
-                delete_old_blob,
-                old_storage_key,
-                old_md5,
-            ) = await self._upsert_vfs_file(
+            upsert_result = await self._upsert_vfs_file(
                 vfs=vfs,
                 user_id=user_id,
                 parent_id=parent_id,
@@ -409,14 +413,9 @@ class FileService:
                 md5=content_hash,
                 storage_key=inner_name,
             )
+            new_file = upsert_result.node
 
-        await self._cleanup_superseded_artifacts(
-            user_id=user_id,
-            file_id=new_file.id,
-            new_md5=content_hash,
-            old_storage_key=old_storage_key if delete_old_blob else None,
-            old_md5=old_md5,
-        )
+        await self._cleanup_superseded_artifacts(upsert_result)
 
         # 4. Construct response
         clean_path = path_str.strip("/")
@@ -464,12 +463,7 @@ class FileService:
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
 
-            (
-                new_file,
-                delete_old_blob,
-                old_storage_key,
-                old_md5,
-            ) = await self._upsert_vfs_file(
+            upsert_result = await self._upsert_vfs_file(
                 vfs=vfs,
                 user_id=user_id,
                 parent_id=directory_id,
@@ -478,14 +472,9 @@ class FileService:
                 md5=md5,
                 storage_key=inner_name,
             )
+            new_file = upsert_result.node
 
-        await self._cleanup_superseded_artifacts(
-            user_id=user_id,
-            file_id=new_file.id,
-            new_md5=md5,
-            old_storage_key=old_storage_key if delete_old_blob else None,
-            old_md5=old_md5,
-        )
+        await self._cleanup_superseded_artifacts(upsert_result)
 
         # 3. Emit Event (Fire and Forget)
         if self.event_bus and file_name.endswith(".note"):
@@ -506,8 +495,8 @@ class FileService:
         size: int,
         md5: str,
         storage_key: str,
-    ) -> tuple[UserFileDO, bool, str | None, str | None]:
-        """Create or update a VFS file node and check if a superseded blob is unreferenced."""
+    ) -> _FileUpsertResult:
+        """Create or update a VFS file node and record any superseded artifacts to clean up."""
         existing = await vfs.get_active_file(user_id, parent_id, name)
         old_storage_key: str | None = existing.storage_key if existing else None
         old_md5: str | None = existing.md5 if existing else None
@@ -521,33 +510,40 @@ class FileService:
             storage_key=storage_key,
         )
 
-        delete_old_blob = False
+        superseded_storage_key: str | None = None
         if old_storage_key and old_storage_key != storage_key:
             unreferenced = await vfs.get_unreferenced_storage_keys({old_storage_key})
-            delete_old_blob = old_storage_key in unreferenced
+            if old_storage_key in unreferenced:
+                superseded_storage_key = old_storage_key
 
-        return new_file, delete_old_blob, old_storage_key, old_md5
+        superseded_md5 = old_md5 if old_md5 and old_md5 != md5 else None
+
+        return _FileUpsertResult(
+            node=new_file,
+            superseded_storage_key=superseded_storage_key,
+            superseded_md5=superseded_md5,
+        )
 
     async def _cleanup_superseded_artifacts(
         self,
-        user_id: int,
-        file_id: int,
-        new_md5: str,
-        old_storage_key: str | None,
-        old_md5: str | None,
+        result: _FileUpsertResult,
     ) -> None:
         """Delete unreferenced superseded primary blob and stale conversion artifacts."""
-        if old_storage_key:
+        if result.superseded_storage_key:
             try:
-                await self.blob_storage.delete(USER_DATA_BUCKET, old_storage_key)
+                await self.blob_storage.delete(
+                    USER_DATA_BUCKET, result.superseded_storage_key
+                )
             except (FileNotFoundError, OSError) as e:
                 logger.warning(
-                    f"Failed to delete superseded blob {old_storage_key}: {e}"
+                    f"Failed to delete superseded blob {result.superseded_storage_key}: {e}"
                 )
 
-        if old_md5 and old_md5 != new_md5:
+        if result.superseded_md5:
             await self._delete_conversion_blobs(
-                user_id=user_id, file_id=file_id, file_md5=old_md5
+                user_id=result.node.user_id,
+                file_id=result.node.id,
+                file_md5=result.superseded_md5,
             )
 
     async def _delete_conversion_blobs(
