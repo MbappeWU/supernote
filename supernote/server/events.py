@@ -44,6 +44,14 @@ class SyncCompletedEvent(Event):
     """Triggered when a device file synchronization session completes."""
 
     user_id: int
+    user_email: str = ""
+    equipment_no: str | None = None
+
+
+# TODO: Define and publish additional domain events on LocalEventBus for Socket.IO notification dispatch:
+# - File/folder lifecycle events (create folder, upload finish, rename, move, copy, delete, recycle restore) -> FILE-SYN
+# - Schedule/task lifecycle events (create/update/delete task group or task, update sort) -> TASK-SYN
+# - Summary/digest/tag lifecycle events (add/update/delete summary group, summary item, or tag) -> DIGEST-SYN
 
 
 EventHandler = Callable[[Event], Awaitable[Any]]

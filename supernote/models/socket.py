@@ -117,6 +117,29 @@ class SocketIoCode(IntEnum):
     """Forbidden / authentication error status code."""
 
 
+class SocketIoFileType(str, BaseEnum):
+    """Object type constants for SocketIoMessageTemplate.file_type."""
+
+    FILE = "FILE"
+    """Regular file object type."""
+
+    FOLDER = "FOLDE"
+    """Directory object type (protocol literal is 'FOLDE' without trailing 'R')."""
+
+
+class SocketIoDigestDataType(str, BaseEnum):
+    """Entity data type constants for DigestMessageTemplate.data_type."""
+
+    SUMMARY_GROUP = "1"
+    """Summary group entity."""
+
+    SUMMARY = "2"
+    """Summary / digest item entity."""
+
+    SUMMARY_TAG = "3"
+    """Summary tag entity."""
+
+
 @dataclass
 class SocketHandshakeParams(DataClassJSONMixin):
     """Query parameters required for authenticating a Socket.IO connection."""
@@ -151,10 +174,10 @@ class SocketIoMessageTemplate(DataClassJSONMixin):
     )
     """Hardware serial number or unique device identifier of the origin device."""
 
-    file_type: str | None = field(
+    file_type: SocketIoFileType | str | None = field(
         metadata=field_options(alias="fileType"), default=None
     )
-    """File format descriptor (e.g., 'note', 'pdf', 'mark', 'folder')."""
+    """Object type descriptor ('FILE' or 'FOLDE')."""
 
     id: int | None = None
     """Database ID of the affected primary file or directory object."""
@@ -202,8 +225,178 @@ class SocketIoMessageTemplate(DataClassJSONMixin):
 
 
 @dataclass
-class SocketMessageData(DataClassJSONMixin):
-    """Top-level envelope for Socket.IO messages exchanged between server and clients."""
+class ScheduleMessageTemplate(DataClassJSONMixin):
+    """Template data for individual schedule/task changes in TASK-SYN Socket.IO notifications."""
+
+    message_type: SocketIoAction | str | None = field(
+        metadata=field_options(alias="messageType"), default=None
+    )
+    """Action type indicator (e.g., QUERY)."""
+
+    equipment_no: str | None = field(
+        metadata=field_options(alias="equipmentNo"), default=None
+    )
+    """Hardware serial number or unique device identifier of the origin device."""
+
+    task_list_id: str | None = field(
+        metadata=field_options(alias="taskListId"), default=None
+    )
+    """Identifier of the affected task list / group."""
+
+    task_id: str | None = field(metadata=field_options(alias="taskId"), default=None)
+    """Identifier of the affected individual task item."""
+
+    timestamp: int | None = None
+    """Event generation Unix timestamp in milliseconds."""
+
+    class Config(BaseConfig):
+        serialize_by_alias = True
+
+
+@dataclass
+class DigestMessageTemplate(DataClassJSONMixin):
+    """Template data for individual summary/digest/tag changes in DIGEST-SYN Socket.IO notifications."""
+
+    message_type: SocketIoAction | str | None = field(
+        metadata=field_options(alias="messageType"), default=None
+    )
+    """Action type indicator (ADD_DIGEST, UPDATE_DIGEST, DELETE_DIGEST, or QUERY)."""
+
+    data_type: SocketIoDigestDataType | str | None = field(
+        metadata=field_options(alias="dataType"), default=None
+    )
+    """Entity category ('1' for summary group, '2' for summary item, '3' for summary tag)."""
+
+    equipment_no: str | None = field(
+        metadata=field_options(alias="equipmentNo"), default=None
+    )
+    """Hardware serial number or unique device identifier of the origin device."""
+
+    summary_group_id: str | None = field(
+        metadata=field_options(alias="summaryGroupId"), default=None
+    )
+    """Summary group identifier (used in QUERY messages)."""
+
+    summary_id: str | None = field(
+        metadata=field_options(alias="summaryId"), default=None
+    )
+    """Summary item identifier (used in QUERY messages)."""
+
+    id: int | None = None
+    """Primary database ID of the affected summary group, summary item, or tag."""
+
+    file_id: int | None = field(metadata=field_options(alias="fileId"), default=None)
+    """Associated source file database ID."""
+
+    name: str | None = None
+    """Name of the summary group, item, or tag."""
+
+    user_id: int | None = field(metadata=field_options(alias="userId"), default=None)
+    """Owner user ID."""
+
+    unique_identifier: str | None = field(
+        metadata=field_options(alias="uniqueIdentifier"), default=None
+    )
+    """UUID / unique identifier of the summary entity or tag."""
+
+    parent_unique_identifier: str | None = field(
+        metadata=field_options(alias="parentUniqueIdentifier"), default=None
+    )
+    """Parent group unique identifier."""
+
+    content: str | None = None
+    """Extracted text content of the digest."""
+
+    source_path: str | None = field(
+        metadata=field_options(alias="sourcePath"), default=None
+    )
+    """Path of the source document."""
+
+    data_source: str | None = field(
+        metadata=field_options(alias="dataSource"), default=None
+    )
+    """Origin data source descriptor."""
+
+    source_type: int | None = field(
+        metadata=field_options(alias="sourceType"), default=None
+    )
+    """Numeric source document type."""
+
+    is_summary_group: str | None = field(
+        metadata=field_options(alias="isSummaryGroup"), default=None
+    )
+    """Flag indicating whether this record represents a summary group ('Y'/'N')."""
+
+    description: str | None = None
+    """Summary group or item description."""
+
+    tags: str | None = None
+    """Associated tags string."""
+
+    md5_hash: str | None = field(metadata=field_options(alias="md5Hash"), default=None)
+    """MD5 hash of the digest content."""
+
+    metadata: str | None = None
+    """Serialized JSON metadata string."""
+
+    comment_str: str | None = field(
+        metadata=field_options(alias="commentStr"), default=None
+    )
+    """Text comment attached to the digest."""
+
+    comment_handwrite_name: str | None = field(
+        metadata=field_options(alias="commentHandwriteName"), default=None
+    )
+    """Handwriting comment filename."""
+
+    handwrite_inner_name: str | None = field(
+        metadata=field_options(alias="handwriteInnerName"), default=None
+    )
+    """Internal storage key for handwriting data."""
+
+    handwrite_md5: str | None = field(
+        metadata=field_options(alias="handwriteMD5"), default=None
+    )
+    """MD5 hash of the handwriting overlay file."""
+
+    creation_time: int | None = field(
+        metadata=field_options(alias="creationTime"), default=None
+    )
+    """Client creation timestamp in milliseconds."""
+
+    last_modified_time: int | None = field(
+        metadata=field_options(alias="lastModifiedTime"), default=None
+    )
+    """Client last modification timestamp in milliseconds."""
+
+    is_deleted: str | None = field(
+        metadata=field_options(alias="isDeleted"), default=None
+    )
+    """Soft-deletion flag ('Y'/'N')."""
+
+    create_time: str | None = field(
+        metadata=field_options(alias="createTime"), default=None
+    )
+    """Server record creation timestamp."""
+
+    update_time: str | None = field(
+        metadata=field_options(alias="updateTime"), default=None
+    )
+    """Server record update timestamp."""
+
+    timestamp: int | None = None
+    """Event generation Unix timestamp in milliseconds."""
+
+    author: str | None = None
+    """Document author name."""
+
+    class Config(BaseConfig):
+        serialize_by_alias = True
+
+
+@dataclass
+class BaseSocketMessageData(DataClassJSONMixin):
+    """Common envelope fields for Socket.IO messages exchanged between server and clients."""
 
     code: str | int | None = None
     """Response status code indicator (e.g., '200' / 200 for success, '403' / 403 for auth error)."""
@@ -217,10 +410,43 @@ class SocketMessageData(DataClassJSONMixin):
     msg_type: SocketIoMessageType | str | None = field(
         metadata=field_options(alias="msgType"), default=None
     )
-    """Category classification of the envelope payload (e.g., FILE-SYN, TASK-SYN)."""
-
-    data: list[SocketIoMessageTemplate] = field(default_factory=list)
-    """List of message change items included in this notification envelope."""
+    """Category classification of the envelope payload (e.g., FILE-SYN, TASK-SYN, DIGEST-SYN)."""
 
     class Config(BaseConfig):
         serialize_by_alias = True
+
+
+@dataclass
+class SocketMessageData(BaseSocketMessageData):
+    """Top-level envelope for FILE-SYN Socket.IO messages on the ServerMessage channel."""
+
+    data: list[SocketIoMessageTemplate] = field(default_factory=list)
+    """List of file/folder change items included in this notification envelope."""
+
+
+@dataclass
+class SocketTaskMessageData(BaseSocketMessageData):
+    """Top-level envelope for TASK-SYN Socket.IO messages on the to-do channel."""
+
+    msg_type: SocketIoMessageType | str | None = field(
+        metadata=field_options(alias="msgType"),
+        default=SocketIoMessageType.TASK_SYN,
+    )
+    """Category classification of the envelope payload (defaults to TASK-SYN)."""
+
+    data: list[ScheduleMessageTemplate] = field(default_factory=list)
+    """List of schedule/task change items included in this notification envelope."""
+
+
+@dataclass
+class SocketDigestMessageData(BaseSocketMessageData):
+    """Top-level envelope for DIGEST-SYN Socket.IO messages on the digest channel."""
+
+    msg_type: SocketIoMessageType | str | None = field(
+        metadata=field_options(alias="msgType"),
+        default=SocketIoMessageType.DIGEST_SYN,
+    )
+    """Category classification of the envelope payload (defaults to DIGEST-SYN)."""
+
+    data: list[DigestMessageTemplate] = field(default_factory=list)
+    """List of summary/digest change items included in this notification envelope."""

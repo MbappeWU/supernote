@@ -29,6 +29,8 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
+        args:
+          - --ignore-words-list=folde
   - repo: https://github.com/adrienverge/yamllint.git
     rev: v1.38.0
     hooks:

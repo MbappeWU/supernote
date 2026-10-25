@@ -11,14 +11,20 @@ from socketio.exceptions import ConnectionError as SocketIOConnectionError
 
 from supernote.client.socket import SupernoteSocketClient
 from supernote.models.socket import (
+    DigestMessageTemplate,
+    ScheduleMessageTemplate,
+    SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoAction,
+    SocketIoDigestDataType,
     SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
+    SocketTaskMessageData,
 )
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
+from supernote.server.events import LocalEventBus, SyncCompletedEvent
 from supernote.server.services.user import JWT_ALGORITHM, UserService
 from supernote.server.socket import SocketIOServerManager
 from supernote.server.socket_auth import compute_handshake_signature
@@ -261,27 +267,63 @@ async def test_socketio_client_messages_async_iterator(
         break
 
     # Also test TASK-SYN ('to-do' channel) and DIGEST-SYN ('digest' channel) routing
-    task_msg = SocketMessageData(
+    task_msg = SocketTaskMessageData(
         msg="task sync",
         timestamp=1700000000001,
-        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no="SN123",
+                task_list_id="501",
+                task_id="1002",
+            )
+        ],
     )
     await manager.send_message(user_id, task_msg)
     received_task = await anext(socket_client.messages())
+    assert isinstance(received_task, SocketTaskMessageData)
     assert received_task.code == "200"
     assert received_task.msg_type == SocketIoMessageType.TASK_SYN
     assert received_task.msg == "task sync"
+    assert len(received_task.data) == 1
+    assert received_task.data[0].task_list_id == "501"
 
-    digest_msg = SocketMessageData(
+    digest_msg = SocketDigestMessageData(
         msg="digest sync",
         timestamp=1700000000002,
-        msg_type=SocketIoMessageType.DIGEST_SYN,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.ADD_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY,
+                equipment_no="SN123",
+                id=302,
+            )
+        ],
     )
     await manager.send_message(user_id, digest_msg)
     received_digest = await anext(socket_client.messages())
+    assert isinstance(received_digest, SocketDigestMessageData)
     assert received_digest.code == "200"
     assert received_digest.msg_type == SocketIoMessageType.DIGEST_SYN
     assert received_digest.msg == "digest sync"
+    assert len(received_digest.data) == 1
+    assert received_digest.data[0].id == 302
+
+    # Verify LocalEventBus SyncCompletedEvent triggers STARTSYNC on ServerMessage
+    event_bus: LocalEventBus = socketio_server.app["event_bus"]
+    await event_bus.publish(
+        SyncCompletedEvent(
+            user_id=1,
+            user_email=user_id,
+            equipment_no="SN999",
+        )
+    )
+    received_sync = await anext(socket_client.messages())
+    assert isinstance(received_sync, SocketMessageData)
+    assert received_sync.msg_type == SocketIoMessageType.FILE_SYN
+    assert len(received_sync.data) == 1
+    assert received_sync.data[0].message_type == SocketIoAction.STARTSYNC
+    assert received_sync.data[0].equipment_no == "SN999"
 
     await socket_client.disconnect()
 

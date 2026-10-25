@@ -1,6 +1,7 @@
 """Socket.IO server manager and event handling for Supernote server."""
 
 import logging
+import time
 from http import HTTPStatus
 from urllib.parse import parse_qs
 
@@ -9,14 +10,18 @@ import socketio
 from aiohttp import web
 
 from supernote.models.socket import (
+    BaseSocketMessageData,
     SocketHandshakeParams,
+    SocketIoAction,
     SocketIoClientMessage,
     SocketIoCode,
     SocketIoEvent,
+    SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
 )
 from supernote.server.config import ServerConfig
+from supernote.server.events import Event, LocalEventBus, SyncCompletedEvent
 from supernote.server.services.user import UserService
 from supernote.server.socket_auth import verify_handshake_signature
 
@@ -88,9 +93,15 @@ class _CompatAsyncServer(socketio.AsyncServer):
 class SocketIOServerManager:
     """Manages the Socket.IO server lifecycle, authentication, session rooms, and message delivery."""
 
-    def __init__(self, config: ServerConfig, user_service: UserService) -> None:
+    def __init__(
+        self,
+        config: ServerConfig,
+        user_service: UserService,
+        event_bus: LocalEventBus | None = None,
+    ) -> None:
         self.config = config
         self.user_service = user_service
+        self.event_bus = event_bus
         self._sio = _CompatAsyncServer(
             async_mode="aiohttp",
             cors_allowed_origins="*",
@@ -101,6 +112,7 @@ class SocketIOServerManager:
         self._sid_to_user: dict[str, str] = {}
         self._sid_to_token: dict[str, str] = {}
         self._setup_handlers()
+        self._setup_event_bus_subscriptions()
 
     @property
     def sio(self) -> socketio.AsyncServer:
@@ -208,6 +220,28 @@ class SocketIOServerManager:
                 # Client delivery acknowledgment
                 logger.debug("Client ACK received for user=%s (sid=%s)", user_id, sid)
 
+        @self._sio.on(SocketIoEvent.TODO.value)
+        async def on_todo_ack(sid: str, data: str) -> None:
+            if not await self._verify_active_session(sid):
+                return
+
+            user_id = self._sid_to_user.get(sid)
+            if data == SocketIoClientMessage.RECEIVED.value:
+                logger.debug(
+                    "Client to-do ACK received for user=%s (sid=%s)", user_id, sid
+                )
+
+        @self._sio.on(SocketIoEvent.DIGEST.value)
+        async def on_digest_ack(sid: str, data: str) -> None:
+            if not await self._verify_active_session(sid):
+                return
+
+            user_id = self._sid_to_user.get(sid)
+            if data == SocketIoClientMessage.RECEIVED.value:
+                logger.debug(
+                    "Client digest ACK received for user=%s (sid=%s)", user_id, sid
+                )
+
         @self._sio.on(SocketIoEvent.RATTA_PING.value)
         async def on_ratta_ping(sid: str, data: str) -> None:
             if not await self._verify_active_session(sid):
@@ -223,16 +257,50 @@ class SocketIOServerManager:
                 to=sid,
             )
 
+    def _setup_event_bus_subscriptions(self) -> None:
+        """Subscribe to internal LocalEventBus domain events and translate them into Socket.IO pushes."""
+        if self.event_bus is None:
+            return
+        self.event_bus.subscribe(SyncCompletedEvent, self._handle_sync_completed)
+        # TODO: Subscribe to future LocalEventBus domain events for:
+        # - File/folder mutations (ADDFOLDER, DOWNLOADFILE, MODIFYFOLDER, MODIFYFILE, MOVEFOLDER,
+        #   MOVEFILE, COPYFOLDER, COPYFILE, DELETEFOLDER, DELETEFILE) -> SocketMessageData (FILE-SYN)
+        # - Schedule/task mutations (QUERY) -> SocketTaskMessageData (TASK-SYN)
+        # - Summary/digest/tag mutations (ADD_DIGEST, UPDATE_DIGEST, DELETE_DIGEST, QUERY)
+        #   -> SocketDigestMessageData (DIGEST-SYN)
+
+    async def _handle_sync_completed(self, event: Event) -> None:
+        """Emit a STARTSYNC FILE-SYN notification when a device completes a sync session."""
+        if not isinstance(event, SyncCompletedEvent) or not event.user_email:
+            return
+        now_ms = int(time.time() * 1000)
+        await self.send_message(
+            event.user_email,
+            SocketMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.FILE_SYN,
+                data=[
+                    SocketIoMessageTemplate(
+                        message_type=SocketIoAction.STARTSYNC,
+                        equipment_no=event.equipment_no,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
     async def send_message(
         self,
         user_id: str,
-        message: SocketMessageData,
+        message: BaseSocketMessageData,
     ) -> None:
-        """Send a SocketMessageData event to all connected sessions for a given user.
+        """Send a Socket.IO message envelope to all connected sessions for a given user.
 
         Args:
             user_id: Target user email or identifier.
-            message: SocketMessageData payload to deliver.
+            message: Socket.IO envelope payload to deliver.
         """
         sids = [sid for sid, uid in list(self._sid_to_user.items()) if uid == user_id]
         for sid in sids:
@@ -263,7 +331,10 @@ class SocketIOServerManager:
 
 
 def setup_socketio(
-    app: web.Application, config: ServerConfig, user_service: UserService
+    app: web.Application,
+    config: ServerConfig,
+    user_service: UserService,
+    event_bus: LocalEventBus | None = None,
 ) -> SocketIOServerManager:
     """Initialize and attach Socket.IO server manager to an aiohttp Application.
 
@@ -271,10 +342,11 @@ def setup_socketio(
         app: The aiohttp web Application.
         config: The server configuration instance.
         user_service: The user authentication and session service.
+        event_bus: Optional LocalEventBus instance for domain event subscriptions.
 
     Returns:
         The configured SocketIOServerManager instance.
     """
-    manager = SocketIOServerManager(config, user_service)
+    manager = SocketIOServerManager(config, user_service, event_bus)
     manager.attach_to_app(app)
     return manager

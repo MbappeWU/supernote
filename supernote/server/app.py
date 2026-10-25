@@ -229,7 +229,6 @@ def create_app(config: ServerConfig) -> web.Application:
     search_service = SearchService(session_manager, embedding_model)
     app["search_service"] = search_service
 
-    app["sync_locks"] = {}  # user -> (equipment_no, expiry_time)
     app["rate_limiter"] = RateLimiter(coordination_service)
 
     processor_service = ProcessorService(
@@ -276,7 +275,7 @@ def create_app(config: ServerConfig) -> web.Application:
     app.add_routes(extended.routes)
 
     # Attach Socket.IO real-time server manager
-    setup_socketio(app, config, user_service)
+    setup_socketio(app, config, user_service, event_bus)
 
     # Serve static frontend files
     if config.web_enabled:

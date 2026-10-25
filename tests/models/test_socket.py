@@ -3,18 +3,29 @@
 import json
 
 from supernote.models.socket import (
+    DigestMessageTemplate,
+    ScheduleMessageTemplate,
+    SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoAction,
     SocketIoCode,
+    SocketIoDigestDataType,
+    SocketIoFileType,
     SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
+    SocketTaskMessageData,
 )
 
 
 def test_socket_io_code_constants() -> None:
     assert SocketIoCode.SUCCESS == 200
     assert SocketIoCode.FORBIDDEN == 403
+    assert SocketIoFileType.FILE == "FILE"
+    assert SocketIoFileType.FOLDER == "FOLDE"
+    assert SocketIoDigestDataType.SUMMARY_GROUP == "1"
+    assert SocketIoDigestDataType.SUMMARY == "2"
+    assert SocketIoDigestDataType.SUMMARY_TAG == "3"
 
 
 def test_socket_handshake_params_serialization() -> None:
@@ -110,3 +121,75 @@ def test_socket_message_data_envelope_serialization() -> None:
     assert restored.msg_type == SocketIoMessageType.FILE_SYN
     assert len(restored.data) == 1
     assert restored.data[0].original_path == "/Documents/Note.note"
+
+
+def test_schedule_message_template_and_task_envelope_serialization() -> None:
+    task_item = ScheduleMessageTemplate(
+        message_type=SocketIoAction.QUERY,
+        equipment_no="SN123456",
+        task_list_id="501",
+        task_id="1002",
+        timestamp=1700000005000,
+    )
+    envelope = SocketTaskMessageData(
+        code="200",
+        msg="Success",
+        timestamp=1700000005000,
+        data=[task_item],
+    )
+
+    d = envelope.to_dict()
+    assert d["msgType"] == "TASK-SYN"
+    assert d["data"] == [
+        {
+            "messageType": "QUERY",
+            "equipmentNo": "SN123456",
+            "taskListId": "501",
+            "taskId": "1002",
+            "timestamp": 1700000005000,
+        }
+    ]
+
+    restored = SocketTaskMessageData.from_dict(d)
+    assert restored.msg_type == SocketIoMessageType.TASK_SYN
+    assert len(restored.data) == 1
+    assert restored.data[0].task_list_id == "501"
+    assert restored.data[0].task_id == "1002"
+
+
+def test_digest_message_template_and_digest_envelope_serialization() -> None:
+    digest_item = DigestMessageTemplate(
+        message_type=SocketIoAction.ADD_DIGEST,
+        data_type=SocketIoDigestDataType.SUMMARY,
+        equipment_no="SN123456",
+        id=302,
+        file_id=10023,
+        name="Action Items",
+        unique_identifier="uuid-302",
+        parent_unique_identifier="uuid-300",
+        content="Review Socket.IO specification",
+        source_path="/Note/MeetingNotes.note",
+        is_summary_group="N",
+        md5_hash="e10adc3949ba59abbe56e057f20f883e",
+        timestamp=1700000005000,
+    )
+    envelope = SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=1700000005000,
+        data=[digest_item],
+    )
+
+    d = envelope.to_dict()
+    assert d["msgType"] == "DIGEST-SYN"
+    assert len(d["data"]) == 1
+    assert d["data"][0]["messageType"] == "ADD_DIGEST"
+    assert d["data"][0]["dataType"] == "2"
+    assert d["data"][0]["id"] == 302
+    assert d["data"][0]["uniqueIdentifier"] == "uuid-302"
+
+    restored = SocketDigestMessageData.from_dict(d)
+    assert restored.msg_type == SocketIoMessageType.DIGEST_SYN
+    assert len(restored.data) == 1
+    assert restored.data[0].data_type == SocketIoDigestDataType.SUMMARY
+    assert restored.data[0].content == "Review Socket.IO specification"

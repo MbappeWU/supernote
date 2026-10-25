@@ -76,19 +76,21 @@ Supernote firmware supports two heartbeat mechanisms:
    - Server responds with event `ratta_ping` with payload `"Received"`.
    - Flushes pending notifications across all three channels (File, Schedule, and Digest).
 
-#### Heartbeat Payload Summary
+#### Heartbeat & ACK Payload Summary
 
 | Event Name | Direction | Payload Sent | Expected Response | Purpose |
 | :--- | :--- | :--- | :--- | :--- |
 | `ClientMessage` | Client $\to$ Server | `"status"` | `ServerMessage` `"true"` | Legacy file heartbeat. |
 | `ratta_ping` | Client $\to$ Server | `"ratta_ping"` | `ratta_ping` `"Received"` | Multi-channel heartbeat. |
-| `ClientMessage` | Client $\to$ Server | `"Received"` | (None - ACK acknowledged) | Client ACK for received push. |
+| `ClientMessage` | Client $\to$ Server | `"Received"` | (None - ACK acknowledged) | Client ACK for `ServerMessage` (`FILE-SYN`) push. |
+| `to-do` | Client $\to$ Server | `"Received"` | (None - ACK acknowledged) | Client ACK for `to-do` (`TASK-SYN`) push. |
+| `digest` | Client $\to$ Server | `"Received"` | (None - ACK acknowledged) | Client ACK for `digest` (`DIGEST-SYN`) push. |
 
 ---
 
 ### 4.2. File Synchronization (`ServerMessage`)
 
-When file actions occur (upload, edit, delete, move), the server emits a `ServerMessage` containing a JSON string of `SocketMessageData`.
+When file actions occur (upload, edit, delete, move, copy, restore) or when a device finishes a sync session (`/synchronous/end`), the server emits a `ServerMessage` containing a JSON string of `SocketMessageData` (`SocketIoMessageTemplate` items).
 
 #### Payload Schema (`SocketMessageData`)
 
@@ -115,26 +117,28 @@ When file actions occur (upload, edit, delete, move), the server emits a `Server
 }
 ```
 
+* **`fileType` Values**: `"FILE"` for files, `"FOLDE"` (without trailing `R`) for directories.
+
 #### Action Constants (`messageType`)
 
 | Constant | Description |
 | :--- | :--- |
-| `DOWNLOADFILE` / `ADDFILE` | New file uploaded by another device; client should download. |
-| `ADDFOLDER` | New directory created. |
-| `MODIFYFILE` | File content updated; client should re-sync file. |
-| `MODIFYFOLDER` | Folder attributes updated. |
-| `DELETEFILE` | File moved to trash or deleted. |
-| `DELETEFOLDER` | Directory deleted. |
-| `COPYFILE` / `COPYFOLDER` | Copy operation completed. |
-| `MOVEFILE` / `MOVEFOLDER` | Move/rename operation completed (`originalName` $\to$ `newName`, `directoryId` $\to$ `goDirectoryId`). |
-| `STARTSYNC` | Sync session initiated by another device on account. |
-| `WAITING` | Sync request queued behind an active cloud lock. |
+| `DOWNLOADFILE` | New file uploaded or restored from recycle bin; client should download. |
+| `ADDFOLDER` | New directory created or restored from recycle bin (`fileType`: `"FOLDE"`). |
+| `MODIFYFILE` | File renamed (`fileType`: `"FILE"`). |
+| `MODIFYFOLDER` | Folder renamed (`fileType`: `"FOLDE"`). |
+| `DELETEFILE` | File moved to trash or deleted (`fileType`: `"FILE"`). |
+| `DELETEFOLDER` | Directory moved to trash or deleted (`fileType`: `"FOLDE"`). |
+| `COPYFILE` / `COPYFOLDER` | Copy operation completed (`fileType`: `"FILE"` / `"FOLDE"`). |
+| `MOVEFILE` / `MOVEFOLDER` | Move operation completed (`originalName` $\to$ `newName`, `directoryId` $\to$ `goDirectoryId`). |
+| `STARTSYNC` | Emitted when another device finishes its sync session (`/synchronous/end`), prompting other connected devices on the account to start syncing. |
+| `WAITING` | Defined in protocol constants (`SocketIoConstant.WAITING`), unused by server `syncMessage` (which returns early on `synchronousStart`). |
 
 ---
 
 ### 4.3. Schedule & Tasks (`to-do`)
 
-Real-time synchronization channel for device calendar and task lists.
+Real-time synchronization channel for device calendar and task lists (`SocketTaskMessageData` containing `ScheduleMessageTemplate` items).
 
 * **Event Name**: `to-do`
 * **Message Type**: `TASK-SYN`
@@ -148,10 +152,10 @@ Real-time synchronization channel for device calendar and task lists.
   "msgType": "TASK-SYN",
   "data": [
     {
+      "messageType": "QUERY",
       "equipmentNo": "SN078C10001550",
-      "taskListId": 501,
-      "taskId": 1002,
-      "action": "UPDATE_TASK",
+      "taskListId": "501",
+      "taskId": "1002",
       "timestamp": 1785509989000
     }
   ]
@@ -162,10 +166,15 @@ Real-time synchronization channel for device calendar and task lists.
 
 ### 4.4. Digest & Summaries (`digest`)
 
-Real-time synchronization channel for note summaries, digests, and tags.
+Real-time synchronization channel for note summaries, digests, and tags (`SocketDigestMessageData` containing `DigestMessageTemplate` items).
 
 * **Event Name**: `digest`
 * **Message Type**: `DIGEST-SYN`
+* **`dataType` Constants**:
+  * `"1"` — Summary Group (`isSummaryGroup = "Y"`)
+  * `"2"` — Summary / Digest Item (`isSummaryGroup = "N"`)
+  * `"3"` — Summary Tag
+* **`messageType` Constants**: `ADD_DIGEST`, `UPDATE_DIGEST`, `DELETE_DIGEST`, `QUERY`
 
 #### Example Payload (`digest`)
 ```json
@@ -176,9 +185,18 @@ Real-time synchronization channel for note summaries, digests, and tags.
   "msgType": "DIGEST-SYN",
   "data": [
     {
+      "messageType": "ADD_DIGEST",
+      "dataType": "2",
       "equipmentNo": "SN078C10001550",
-      "digestId": 302,
-      "action": "ADD_DIGEST",
+      "id": 302,
+      "fileId": 10023,
+      "name": "Action Items",
+      "uniqueIdentifier": "f3a1b2c4-5678-4000-8000-000000000302",
+      "parentUniqueIdentifier": "f3a1b2c4-5678-4000-8000-000000000300",
+      "content": "Review Socket.IO specification",
+      "sourcePath": "/Note/MeetingNotes.note",
+      "isSummaryGroup": "N",
+      "md5Hash": "e10adc3949ba59abbe56e057f20f883e",
       "timestamp": 1785509989000
     }
   ]
