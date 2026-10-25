@@ -46,7 +46,6 @@ class SyncCompletedEvent(Event):
     """Triggered when a device file synchronization session completes."""
 
     user_id: int
-    user_email: str = ""
     equipment_no: str | None = None
 
 

@@ -101,9 +101,7 @@ async def test_local_event_bus_publish_and_subscribe() -> None:
     ev_completed = NoteProcessingCompletedEvent(
         file_id=10, user_id=1, file_path="/Note/a.note"
     )
-    ev_sync = SyncCompletedEvent(
-        user_id=1, user_email="user@example.com", equipment_no="SN123"
-    )
+    ev_sync = SyncCompletedEvent(user_id=1, equipment_no="SN123")
     ev_schedule = ScheduleUpdatedEvent(
         user_id=1, task_list_id="group-1", task_id="task-2", equipment_no="SN123"
     )
@@ -222,7 +220,7 @@ async def test_local_event_bus_isolates_subscriber_exceptions(
     bus.subscribe(SyncCompletedEvent, failing_handler)
     bus.subscribe(SyncCompletedEvent, healthy_handler)
 
-    ev = SyncCompletedEvent(user_id=42, user_email="test@example.com")
+    ev = SyncCompletedEvent(user_id=42)
     await bus.publish(ev)
     await asyncio.sleep(0)
 

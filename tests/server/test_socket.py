@@ -145,6 +145,7 @@ async def test_socketio_multi_user_message_isolation(
     user_service: UserService = socketio_server.app["user_service"]
     user_a = "test@example.com"
     user_b = "a@example.com"
+    user_a_id = await user_service.get_user_id(user_a)
 
     token_a = await user_service.create_session(user_a)
     token_b = await user_service.create_session(user_b)
@@ -181,7 +182,7 @@ async def test_socketio_multi_user_message_isolation(
         ],
     )
 
-    await manager.send_message(user_a, msg_data_a)
+    await manager.send_message(user_a_id, msg_data_a)
 
     # User A receives the targeted message
     received_a = await anext(client_a.messages())
@@ -267,8 +268,9 @@ async def test_socketio_client_messages_async_iterator(
     socket_client: SupernoteSocketClient,
 ) -> None:
     user_service: UserService = socketio_server.app["user_service"]
-    user_id = "test@example.com"
-    token_a = await user_service.create_session(user_id)
+    user_email = "test@example.com"
+    user_id = await user_service.get_user_id(user_email)
+    token_a = await user_service.create_session(user_email)
     params_a = _make_handshake_params(token_a)
 
     await socket_client.connect(params_a)
@@ -334,8 +336,7 @@ async def test_socketio_client_messages_async_iterator(
     event_bus: LocalEventBus = socketio_server.app["event_bus"]
     await event_bus.publish(
         SyncCompletedEvent(
-            user_id=1,
-            user_email=user_id,
+            user_id=user_id,
             equipment_no="SN999",
         )
     )
@@ -357,11 +358,12 @@ async def test_socketio_revoked_session_disconnected_on_heartbeat_and_send(
     """Verify revoked sessions are disconnected on heartbeat or outbound send_message."""
     user_service: UserService = socketio_server.app["user_service"]
     manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
-    user_id = "test@example.com"
+    user_email = "test@example.com"
+    user_id = await user_service.get_user_id(user_email)
 
-    token_ping = await user_service.create_session(user_id)
-    token_status = await user_service.create_session(user_id)
-    token_send = await user_service.create_session(user_id)
+    token_ping = await user_service.create_session(user_email)
+    token_status = await user_service.create_session(user_email)
+    token_send = await user_service.create_session(user_email)
 
     client_ping = create_socket_client()
     client_status = create_socket_client()
@@ -409,24 +411,11 @@ async def test_socketio_schedule_service_events_publish_task_syn(
     """Verify ScheduleService mutations publish ScheduleUpdatedEvent and emit TASK-SYN messages."""
     user_service: UserService = socketio_server.app["user_service"]
     schedule_service: ScheduleService = socketio_server.app["schedule_service"]
-    manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
-    event_bus: LocalEventBus = socketio_server.app["event_bus"]
     user_email = "test@example.com"
     user_id = await user_service.get_user_id(user_email)
 
     token = await user_service.create_session(user_email)
     await socket_client.connect(_make_handshake_params(token))
-
-    # Sending to stringified numeric ID must NOT collide with numeric user_id room
-    await manager.send_message(
-        str(user_id),
-        SocketTaskMessageData(
-            msg="wrong namespace",
-            data=[ScheduleMessageTemplate(message_type=SocketIoAction.QUERY)],
-        ),
-    )
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(anext(socket_client.messages()), timeout=0.05)
 
     # Create task group -> emits TASK-SYN QUERY with task_list_id
     group = await schedule_service.create_group(user_id, "Work Tasks")
@@ -600,11 +589,6 @@ async def test_socketio_schedule_service_events_publish_task_syn(
             )
         ],
     )
-
-    # Publishing SyncCompletedEvent with empty user_id and user_email is ignored
-    await event_bus.publish(SyncCompletedEvent(user_id=0, user_email=""))
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(anext(socket_client.messages()), timeout=0.05)
 
     # Standalone manager without event_bus initializes cleanly
     standalone_manager = SocketIOServerManager(
@@ -1268,9 +1252,7 @@ async def test_socketio_file_service_events_publish_file_syn(
     recycled = await file_service.list_recycle(user_email)
     recycle_file = next(r for r in recycled if r.name == "notes_copy.pdf")
     recycle_folder = next(r for r in recycled if r.name == "SubB_Copy")
-    await file_service.revert_from_recycle(
-        user_email, [recycle_file.id, recycle_folder.id]
-    )
+    await file_service.revert_from_recycle(user_email, [recycle_file.id])
     msg_restored_file = await _next_file_msg()
     assert msg_restored_file == SocketMessageData(
         code="200",
@@ -1295,6 +1277,7 @@ async def test_socketio_file_service_events_publish_file_syn(
             )
         ],
     )
+    await file_service.revert_from_recycle(user_email, [recycle_folder.id])
     msg_restored_folder = await _next_file_msg()
     assert msg_restored_folder == SocketMessageData(
         code="200",
@@ -1330,9 +1313,10 @@ async def test_socketio_eio3_device_handshake_and_ping_compat(
     """Verify real Supernote device EIO=3 (Socket.IO v2) WebSocket handshake, ACKs, and client PING/PONG."""
     user_service: UserService = socketio_server.app["user_service"]
     manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
-    user_id = "test@example.com"
+    user_email = "test@example.com"
+    user_id = await user_service.get_user_id(user_email)
 
-    token = await user_service.create_session(user_id)
+    token = await user_service.create_session(user_email)
     params = _make_handshake_params(token)
 
     def _ws_url(p: SocketHandshakeParams) -> str:
@@ -1367,6 +1351,8 @@ async def test_socketio_eio3_device_handshake_and_ping_compat(
             await ws.send_str('42["to-do","other"]')
             await ws.send_str('42["digest","Received"]')
             await ws.send_str('42["digest","other"]')
+            await ws.send_str("2")
+            assert await asyncio.wait_for(ws.receive_str(), timeout=2.0) == "3"
 
             # Server-to-device notification is delivered over the default namespace
             msg_data = SocketMessageData(
@@ -1388,7 +1374,7 @@ async def test_socketio_eio3_device_handshake_and_ping_compat(
             assert "token verification failed" in err_frame
 
         # Also verify revoked session on digest ACK channel
-        token2 = await user_service.create_session(user_id)
+        token2 = await user_service.create_session(user_email)
         async with session.ws_connect(_ws_url(_make_handshake_params(token2))) as ws2:
             await asyncio.wait_for(ws2.receive_str(), timeout=2.0)
             await asyncio.wait_for(ws2.receive_str(), timeout=2.0)
@@ -1408,9 +1394,10 @@ async def test_socketio_client_channels_and_error_handling_via_server(
     """Verify SupernoteSocketClient handles TASK-SYN, DIGEST-SYN, malformed payloads, and unexpected server replies."""
     user_service: UserService = socketio_server.app["user_service"]
     manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
-    user_id = "test@example.com"
+    user_email = "test@example.com"
+    user_id = await user_service.get_user_id(user_email)
 
-    token = await user_service.create_session(user_id)
+    token = await user_service.create_session(user_email)
     await socket_client.connect(_make_handshake_params(token))
 
     # Valid TASK-SYN and DIGEST-SYN envelopes delivered through server
@@ -1449,15 +1436,15 @@ async def test_socketio_client_channels_and_error_handling_via_server(
 
     # Malformed payloads emitted by server on to-do and digest channels log warnings without crashing
     await manager.sio.emit(
-        SocketIoEvent.TODO.value, "{not-valid-json", room=f"user_email_{user_id}"
+        SocketIoEvent.TODO.value, "{not-valid-json", room=f"user_{user_id}"
     )
     await manager.sio.emit(
-        SocketIoEvent.DIGEST.value, "{not-valid-json", room=f"user_email_{user_id}"
+        SocketIoEvent.DIGEST.value, "{not-valid-json", room=f"user_{user_id}"
     )
 
     # Unexpected ping reply payload logs a warning
     await manager.sio.emit(
-        SocketIoEvent.RATTA_PING.value, "unexpected-pong", room=f"user_email_{user_id}"
+        SocketIoEvent.RATTA_PING.value, "unexpected-pong", room=f"user_{user_id}"
     )
     await socket_client.ping(timeout=1.0)
     assert "Unexpected ping reply payload: unexpected-pong" in caplog.text
@@ -1466,7 +1453,7 @@ async def test_socketio_client_channels_and_error_handling_via_server(
 
     # Non-'true' plain-string ServerMessage causes check_status to raise SupernoteSocketError
     await manager.sio.emit(
-        SocketIoEvent.SERVER_MESSAGE.value, "false", room=f"user_email_{user_id}"
+        SocketIoEvent.SERVER_MESSAGE.value, "false", room=f"user_{user_id}"
     )
     with pytest.raises(SupernoteSocketError, match="Unexpected status check reply"):
         await socket_client.check_status(timeout=1.0)

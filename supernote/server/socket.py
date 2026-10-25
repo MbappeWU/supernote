@@ -136,8 +136,7 @@ class SocketIOServerManager:
             logger=False,
             engineio_logger=False,
         )
-        self._sid_to_user: dict[str, str] = {}
-        self._sid_to_user_id: dict[str, int] = {}
+        self._sid_to_user: dict[str, int] = {}
         self._sid_to_token: dict[str, str] = {}
         self._setup_handlers()
         self._setup_event_bus_subscriptions()
@@ -170,18 +169,15 @@ class SocketIOServerManager:
         if token and await self.user_service.verify_token(token):
             return True
 
-        user_email = self._sid_to_user.pop(sid, None)
-        numeric_user_id = self._sid_to_user_id.pop(sid, None)
+        user_id = self._sid_to_user.pop(sid, None)
         self._sid_to_token.pop(sid, None)
         logger.warning(
             "Socket.IO session no longer valid for user=%s (sid=%s); disconnecting",
-            user_email,
+            user_id,
             sid,
         )
-        if user_email:
-            await self._sio.leave_room(sid, f"user_email_{user_email}")
-        if numeric_user_id is not None:
-            await self._sio.leave_room(sid, f"user_id_{numeric_user_id}")
+        if user_id is not None:
+            await self._sio.leave_room(sid, f"user_{user_id}")
         await self._send_error(sid, HTTPStatus.FORBIDDEN, "token verification failed")
         await self._sio.disconnect(sid)
         return False
@@ -210,27 +206,23 @@ class SocketIOServerManager:
                 )
                 return False
 
-            # Associate session ID with distinct email and numeric user_id rooms
-            user_email = session.email
-            self._sid_to_user[sid] = user_email
-            self._sid_to_user_id[sid] = session.user_id
+            # Associate session ID with user room
+            user_id = session.user_id
+            self._sid_to_user[sid] = user_id
             self._sid_to_token[sid] = params.token
-            email_room = f"user_email_{user_email}"
-            id_room = f"user_id_{session.user_id}"
-            await self._sio.enter_room(sid, email_room)
-            await self._sio.enter_room(sid, id_room)
+            user_room = f"user_{user_id}"
+            await self._sio.enter_room(sid, user_room)
             logger.info(
                 "Socket.IO connection established for user=%s (sid=%s, room=%s)",
-                user_email,
+                user_id,
                 sid,
-                email_room,
+                user_room,
             )
             return True
 
         @self._sio.event
         async def disconnect(sid: str) -> None:
             user_id = self._sid_to_user.pop(sid, None)
-            self._sid_to_user_id.pop(sid, None)
             self._sid_to_token.pop(sid, None)
             logger.info("Socket.IO disconnected for user=%s (sid=%s)", user_id, sid)
 
@@ -315,12 +307,9 @@ class SocketIOServerManager:
 
     async def _handle_sync_completed(self, event: SyncCompletedEvent) -> None:
         """Emit a STARTSYNC FILE-SYN notification when a device completes a sync session."""
-        target_user: str | int = event.user_email or event.user_id
-        if not target_user:
-            return
         now_ms = int(time.time() * 1000)
         await self.send_message(
-            target_user,
+            event.user_id,
             SocketMessageData(
                 code=str(SocketIoCode.SUCCESS.value),
                 msg="Success",
@@ -677,27 +666,19 @@ class SocketIOServerManager:
 
     async def send_message(
         self,
-        user_id: str | int,
+        user_id: int,
         message: BaseSocketMessageData,
     ) -> None:
         """Send a Socket.IO message envelope to all connected sessions for a given user.
 
         Args:
-            user_id: Target user email (`str`) or numeric user ID (`int`).
+            user_id: Target numeric user ID.
             message: Socket.IO envelope payload to deliver.
         """
-        if isinstance(user_id, int):
-            sids = [
-                sid for sid, uid in list(self._sid_to_user_id.items()) if uid == user_id
-            ]
-            user_room = f"user_id_{user_id}"
-        else:
-            sids = [
-                sid for sid, uid in list(self._sid_to_user.items()) if uid == user_id
-            ]
-            user_room = f"user_email_{user_id}"
+        sids = [sid for sid, uid in list(self._sid_to_user.items()) if uid == user_id]
         for sid in sids:
             await self._verify_active_session(sid)
+        user_room = f"user_{user_id}"
 
         if message.code is None:
             message.code = str(SocketIoCode.SUCCESS.value)

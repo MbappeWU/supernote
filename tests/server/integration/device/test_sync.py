@@ -164,7 +164,7 @@ async def test_sync_lock(
         mock_send_message.assert_awaited_once()
         assert mock_send_message.await_args is not None
         end_user, end_msg = mock_send_message.await_args.args
-        assert end_user == "test@example.com"
+        assert end_user == user_id
         assert isinstance(end_msg, SocketMessageData)
         assert end_msg.msg_type == SocketIoMessageType.FILE_SYN
         assert len(end_msg.data) == 1
