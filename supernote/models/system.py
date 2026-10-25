@@ -458,6 +458,7 @@ class IntegrityIssueType(str, BaseEnum):
     ORPHAN = "orphan"
     DUPLICATE_ROOT_FOLDER = "duplicate_root_folder"
     MISSING_BLOB = "missing_blob"
+    UNREFERENCED_BLOB = "unreferenced_blob"
     SIZE_MISMATCH = "size_mismatch"
     HASH_MISMATCH = "hash_mismatch"
     TASK_FAILED = "task_failed"

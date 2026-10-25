@@ -343,3 +343,24 @@ async def test_conversion_paths_for_different_users_do_not_collide(
     # Intra-shard '..' traversal within the same 2-character prefix must be rejected
     with pytest.raises(ValueError, match="Invalid blob path"):
         storage.get_blob_path(bucket, "101/pages/../../102/pages/victim.png")
+
+
+async def test_list_blobs_returns_logical_keys_and_skips_chunks(
+    tmp_path: Path,
+) -> None:
+    """Verify list_blobs enumerates logical keys across flat and nested buckets while skipping .part.N chunks."""
+    storage = LocalBlobStorage(tmp_path)
+    assert await storage.list_blobs("nonexistent-bucket") == []
+
+    await storage.put("user-data", "blob_b.note", b"b")
+    await storage.put("user-data", "blob_a.note", b"a")
+    await storage.put("user-data", "upload.note.part.1", b"part1")
+
+    assert await storage.list_blobs("user-data") == ["blob_a.note", "blob_b.note"]
+
+    png_key = get_page_png_path(file_id=42, page_id="P1")
+    pdf_key = get_conversion_pdf_path(user_id=7, file_id=42, file_md5="deadbeef")
+    await storage.put("cache", png_key, b"png")
+    await storage.put("cache", pdf_key, b"pdf")
+
+    assert await storage.list_blobs("cache") == sorted([png_key, pdf_key])

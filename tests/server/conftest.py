@@ -312,15 +312,17 @@ def user_service(
 
 @pytest.fixture(name="client")
 async def client_fixture(
+    session_manager: DatabaseSessionManager,
     aiohttp_client: AiohttpClient,
     server_config: ServerConfig,
-    session_manager: DatabaseSessionManager,
     coordination_service: SqliteCoordinationService,
     user_service: UserService,
-) -> TestClient:
+) -> AsyncGenerator[TestClient]:
     """Create a test client for server tests."""
     app = create_app(server_config)
-    return await aiohttp_client(app)
+    test_client = await aiohttp_client(app)
+    yield test_client
+    await test_client.close()
 
 
 @pytest.fixture

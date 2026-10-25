@@ -95,6 +95,13 @@ class BlobStorage(ABC):
         """Get physical path to the blob (optional, useful for serving files)."""
 
     @abstractmethod
+    async def list_blobs(self, bucket: str) -> list[str]:
+        """Return sorted logical keys of all stored blobs in the given bucket.
+
+        Excludes temporary staging files and unmerged multipart `.part.N` chunks.
+        """
+
+    @abstractmethod
     async def cleanup(self) -> CleanupStats:
         """Remove expired temporary staging files and abandoned upload chunks."""
 
@@ -234,6 +241,30 @@ class LocalBlobStorage(BlobStorage):
     def get_blob_path(self, bucket: str, key: str) -> Path:
         """Get physical path to the blob."""
         return self._get_path(bucket, key)
+
+    async def list_blobs(self, bucket: str) -> list[str]:
+        """Return sorted logical keys of all stored blobs in the given bucket."""
+        return await asyncio.to_thread(self._list_blobs_sync, bucket)
+
+    def _list_blobs_sync(self, bucket: str) -> list[str]:
+        clean_bucket = Path(bucket).name
+        bucket_dir = (self.root / clean_bucket).resolve()
+        if not bucket_dir.is_relative_to(self.root) or not bucket_dir.is_dir():
+            return []
+
+        keys: list[str] = []
+        for shard_dir in bucket_dir.iterdir():
+            if not shard_dir.is_dir():
+                continue
+            for root, _, files in os.walk(shard_dir):
+                root_path = Path(root)
+                for filename in files:
+                    if parse_file_chunk_name(filename) is not None:
+                        continue
+                    file_path = root_path / filename
+                    keys.append(file_path.relative_to(shard_dir).as_posix())
+        keys.sort()
+        return keys
 
     async def cleanup(self) -> CleanupStats:
         """Remove expired temporary staging files and abandoned upload chunks."""
