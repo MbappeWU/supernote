@@ -67,3 +67,32 @@ async def test_get_and_update_task_status(
     assert failed.status == ProcessingStatus.FAILED
     assert failed.data is None
     assert failed.last_error == "boom"
+    assert failed.retry_count == 0
+
+    # Subsequent failure increments retry_count
+    await update_task_status(
+        session_manager,
+        file_id=file_id,
+        task_type=task_type,
+        key=key,
+        status=ProcessingStatus.FAILED,
+        error="boom again",
+    )
+    retried = await get_task(session_manager, file_id, task_type, key)
+    assert retried is not None
+    assert retried.retry_count == 1
+    assert retried.last_error == "boom again"
+
+    # Recovery to COMPLETED resets retry_count to 0
+    await update_task_status(
+        session_manager,
+        file_id=file_id,
+        task_type=task_type,
+        key=key,
+        status=ProcessingStatus.COMPLETED,
+        data="model-v2",
+    )
+    recovered = await get_task(session_manager, file_id, task_type, key)
+    assert recovered is not None
+    assert recovered.retry_count == 0
+    assert recovered.last_error is None

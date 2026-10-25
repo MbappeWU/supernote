@@ -155,13 +155,15 @@ class ProcessorModule(abc.ABC):
             return True
         except Exception as e:
             logger.error(f"Error in {self.name} for file {file_id}: {e}", exc_info=True)
+            msg = str(e)
+            error_detail = f"{type(e).__name__}: {msg}" if msg else type(e).__name__
             await update_task_status(
                 session_manager,
                 file_id,
                 self.task_type,
                 key,
                 ProcessingStatus.FAILED,
-                str(e),
+                error_detail,
             )
             return False
         finally:
