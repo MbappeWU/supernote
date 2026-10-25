@@ -40,6 +40,7 @@ from .routes import (
 )
 from .routes.decorators import public_route
 from .services.blob import LocalBlobStorage
+from .services.conversion import ConversionService
 from .services.coordination import CoordinationService, SqliteCoordinationService
 from .services.file import FileService
 from .services.integrity import IntegrityService
@@ -238,6 +239,12 @@ def create_app(config: ServerConfig) -> web.Application:
         event_bus, session_manager, file_service, summary_service, coordination_service
     )
     app["processor_service"] = processor_service
+    app["conversion_service"] = ConversionService(
+        session_manager=session_manager,
+        blob_storage=blob_storage,
+        user_service=user_service,
+        processor_service=processor_service,
+    )
 
     webhook_service = WebhookService(config.webhooks, event_bus, user_service)
     app["webhook_service"] = webhook_service

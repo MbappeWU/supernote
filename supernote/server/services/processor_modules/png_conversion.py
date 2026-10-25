@@ -48,6 +48,21 @@ class PngConversionModule(ProcessorModule):
     def version(self) -> str | None:
         return "v2"
 
+    async def run_if_needed(
+        self,
+        file_id: int,
+        session_manager: DatabaseSessionManager,
+        page_index: int | None = None,
+        page_id: str | None = None,
+    ) -> bool:
+        if await super().run_if_needed(file_id, session_manager, page_index, page_id):
+            return True
+        if page_id:
+            png_path = get_page_png_path(file_id, page_id)
+            if not await self.file_service.blob_storage.exists(CACHE_BUCKET, png_path):
+                return True
+        return False
+
     async def process(
         self,
         file_id: int,
@@ -76,17 +91,17 @@ class PngConversionModule(ProcessorModule):
                 return
             storage_key = user_file.storage_key
 
-            # Get Page ID for stable path
-            page_result = await session.execute(
-                select(NotePageContentDO.page_id).where(
-                    NotePageContentDO.file_id == file_id,
-                    NotePageContentDO.page_index == page_index,
+            if page_id is None:
+                page_result = await session.execute(
+                    select(NotePageContentDO.page_id).where(
+                        NotePageContentDO.file_id == file_id,
+                        NotePageContentDO.page_index == page_index,
+                    )
                 )
-            )
-            page_id = page_result.scalars().first()
-            if not page_id:
-                logger.error(f"Page ID not found for {file_id} index {page_index}")
-                return
+                page_id = page_result.scalars().first()
+                if not page_id:
+                    logger.error(f"Page ID not found for {file_id} index {page_index}")
+                    return
 
         try:
             abs_path = self.file_service.blob_storage.get_blob_path(

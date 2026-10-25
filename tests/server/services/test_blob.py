@@ -13,7 +13,6 @@ from supernote.server.services.blob import (
 )
 from supernote.server.utils.paths import (
     get_conversion_pdf_path,
-    get_conversion_png_path,
     get_page_png_path,
 )
 
@@ -318,23 +317,17 @@ async def test_page_png_paths_for_different_files_do_not_collide(
 async def test_conversion_paths_for_different_users_do_not_collide(
     tmp_path: Path,
 ) -> None:
-    """Verify conversion PNG and PDF keys for different users/files do not collide in LocalBlobStorage."""
+    """Verify conversion PDF keys for different users/files do not collide in LocalBlobStorage."""
     storage = LocalBlobStorage(tmp_path)
-    bucket = "users"
+    bucket = "cache"
     shared_md5 = "d41d8cd98f00b204e9800998ecf8427e"
-
-    png_user_1 = get_conversion_png_path(
-        user_id=1, file_id=101, page_index=0, file_md5=shared_md5
-    )
-    png_user_2 = get_conversion_png_path(
-        user_id=2, file_id=202, page_index=0, file_md5=shared_md5
-    )
-    assert storage.get_blob_path(bucket, png_user_1) != storage.get_blob_path(
-        bucket, png_user_2
-    )
 
     pdf_user_1 = get_conversion_pdf_path(user_id=1, file_id=101, file_md5=shared_md5)
     pdf_user_2 = get_conversion_pdf_path(user_id=2, file_id=202, file_md5=shared_md5)
     assert storage.get_blob_path(bucket, pdf_user_1) != storage.get_blob_path(
         bucket, pdf_user_2
     )
+
+    # Intra-shard '..' traversal within the same 2-character prefix must be rejected
+    with pytest.raises(ValueError, match="Invalid blob path"):
+        storage.get_blob_path(bucket, "101/pages/../../102/pages/victim.png")

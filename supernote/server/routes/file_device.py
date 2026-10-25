@@ -44,6 +44,7 @@ from supernote.models.file_device import (
 from supernote.server.config import ServerConfig
 from supernote.server.events import LocalEventBus, SyncCompletedEvent
 from supernote.server.exceptions import SupernoteError
+from supernote.server.services.conversion import ConversionService
 from supernote.server.services.coordination import CoordinationService
 from supernote.server.services.file import (
     FileEntity,
@@ -601,24 +602,24 @@ async def handle_note_to_png(request: web.Request) -> web.Response:
     if not (config.web_enabled and config.web_notebook_preview):
         return web.json_response(PngVO(png_page_vo_list=[]).to_dict())
 
-    file_service: FileService = request.app["file_service"]
+    conversion_service: ConversionService = request.app["conversion_service"]
     url_signer: UrlSigner = request.app["url_signer"]
 
     try:
-        results = await file_service.convert_note_to_png(user_email, req_data.id)
+        page_numbers = await conversion_service.convert_note_to_png(
+            user_email, req_data.id
+        )
         base_url = get_request_base_url(request)
         png_pages = []
-        for res in results:
-            # Generate signed URL for each PNG
-            # OSS download URL: /api/oss/download?path={inner_name}
-            # Here storage_key is already the full path within bucket
-            path_to_sign = f"/api/oss/download?path={res.storage_key}"
+        for page_no in page_numbers:
+            # Generate signed URL for each PNG page
+            path_to_sign = f"/api/oss/png/{req_data.id}/{page_no}"
             signed_path = await url_signer.sign(
                 path_to_sign, user=user_email, single_use=False
             )
             download_url = f"{base_url}{signed_path}"
 
-            png_pages.append(PngPageVO(page_no=res.page_no, url=download_url))
+            png_pages.append(PngPageVO(page_no=page_no, url=download_url))
 
         return web.json_response(PngVO(png_page_vo_list=png_pages).to_dict())
     except SupernoteError as err:
@@ -634,16 +635,16 @@ async def handle_note_to_pdf(request: web.Request) -> web.Response:
     # Response: PdfVO
     req_data = PdfDTO.from_dict(await request.json())
     user_email = request["user"]
-    file_service: FileService = request.app["file_service"]
+    conversion_service: ConversionService = request.app["conversion_service"]
     url_signer: UrlSigner = request.app["url_signer"]
 
     try:
-        storage_key = await file_service.convert_note_to_pdf(
+        await conversion_service.convert_note_to_pdf(
             user_email, req_data.id, req_data.page_no_list
         )
 
-        # Generate signed URL for PDF
-        path_to_sign = f"/api/oss/download?path={storage_key}"
+        # Generate signed URL for converted PDF
+        path_to_sign = f"/api/oss/pdf/{req_data.id}"
         signed_path = await url_signer.sign(
             path_to_sign, user=user_email, single_use=False
         )

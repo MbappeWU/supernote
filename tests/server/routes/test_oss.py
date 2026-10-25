@@ -1,5 +1,7 @@
 import hashlib
 import urllib.parse
+from http import HTTPStatus
+from pathlib import Path
 
 import pytest
 from aiohttp import FormData
@@ -9,6 +11,8 @@ from supernote.client.device import DeviceClient
 from supernote.client.exceptions import ApiException, ForbiddenException
 from supernote.models.file_common import FileUploadApplyLocalVO
 from supernote.models.system import FileChunkVO, UploadFileVO
+from supernote.server.config import ServerConfig
+from supernote.server.utils.url_signer import UrlSigner
 
 TEST_USER = "user@example.com"
 
@@ -444,3 +448,57 @@ async def test_oss_download_content_type_and_disposition(
         == f'{expected_disposition}; filename="{file_name}"'
     )
     assert await resp_inline.read() == content
+
+
+async def test_oss_png_and_pdf_routes_require_matching_signed_path_and_ownership(
+    device_client: DeviceClient,
+    server_config: ServerConfig,
+    test_note_path: Path,
+    client: Client,
+) -> None:
+    """Verify /api/oss/png/{file_id}/{page_no} and /api/oss/pdf/{file_id} enforce signature and user ownership."""
+    url_signer = UrlSigner(secret_key=server_config.auth.secret_key)
+
+    note_content = test_note_path.read_bytes()
+    upload_res = await device_client.upload_content(
+        path="/oss_route_note.note", content=note_content, equipment_no="SN_TEST"
+    )
+    assert upload_res.id is not None
+    file_id = int(upload_res.id)
+
+    png_vo = await device_client.note_to_png(file_id)
+    assert len(png_vo.png_page_vo_list) > 0
+    first_png_url = png_vo.png_page_vo_list[0].url
+    parsed_png = urllib.parse.urlparse(first_png_url)
+    assert parsed_png.path == f"/api/oss/png/{file_id}/0"
+    resp_png = await client.get(f"{parsed_png.path}?{parsed_png.query}", headers={})
+    assert resp_png.status == HTTPStatus.OK
+    assert (
+        resp_png.headers.get("Content-Disposition")
+        == 'attachment; filename="oss_route_note_page_0.png"'
+    )
+
+    pdf_vo = await device_client.note_to_pdf(file_id)
+    assert pdf_vo.url is not None
+    parsed_pdf = urllib.parse.urlparse(pdf_vo.url)
+    assert parsed_pdf.path == f"/api/oss/pdf/{file_id}"
+    resp_pdf = await client.get(f"{parsed_pdf.path}?{parsed_pdf.query}", headers={})
+    assert resp_pdf.status == HTTPStatus.OK
+    assert (
+        resp_pdf.headers.get("Content-Disposition")
+        == 'attachment; filename="oss_route_note.pdf"'
+    )
+
+    # Using a PNG signature on the PDF endpoint (or another page) is rejected
+    tampered_path = f"/api/oss/pdf/{file_id}?{parsed_png.query}"
+    resp_tampered = await client.get(tampered_path, headers={})
+    assert resp_tampered.status == HTTPStatus.FORBIDDEN
+
+    # A signed URL for a different user who does not own file_id returns 404
+    other_user_url = await url_signer.sign(
+        f"/api/oss/png/{file_id}/0",
+        user="other@example.com",
+        single_use=False,
+    )
+    resp_other = await client.get(other_user_url, headers={})
+    assert resp_other.status == HTTPStatus.NOT_FOUND

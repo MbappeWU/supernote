@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from aiohttp.test_utils import TestClient
 from pytest_aiohttp import AiohttpClient
-from sqlalchemy import delete
+from sqlalchemy import select
 
 from supernote.client.device import DeviceClient
 from supernote.server.app import create_app
@@ -12,10 +12,14 @@ from supernote.server.config import ServerConfig
 from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.session import DatabaseSessionManager
-from supernote.server.utils.paths import get_conversion_png_path, get_page_png_path
+from supernote.server.utils.paths import (
+    get_conversion_pdf_path,
+    get_page_png_path,
+)
 
 
 async def test_note_conversion_wrappers(
+    client: TestClient,
     device_client: DeviceClient,
     storage_root: Path,
     test_note_path: Path,
@@ -39,6 +43,16 @@ async def test_note_conversion_wrappers(
     # 3. Test PDF Conversion via wrapper
     pdf_content = await device_client.get_note_pdf(file_id)
     assert pdf_content.startswith(b"%PDF")
+
+    # Verify PDF is stored in CACHE_BUCKET and not USER_DATA_BUCKET
+    file_service = client.app["file_service"]
+    user_email = "test@example.com"
+    user_id = await file_service.user_service.get_user_id(user_email)
+    file_info = await file_service.get_file_info_by_id(user_email, file_id)
+    assert file_info is not None and file_info.md5 is not None
+    pdf_key = get_conversion_pdf_path(user_id, file_id, file_info.md5)
+    assert await file_service.blob_storage.exists(CACHE_BUCKET, pdf_key)
+    assert not await file_service.blob_storage.exists(USER_DATA_BUCKET, pdf_key)
 
 
 async def test_note_to_pdf_partial(
@@ -80,80 +94,42 @@ async def test_note_png_caching(
 
     file_service = client.app["file_service"]
 
-    # First conversion: this will download, parse, and save pages to USER_DATA_BUCKET
+    # First conversion: runs PageHashingModule + PngConversionModule and saves PNGs to CACHE_BUCKET
     png_pages_first = await device_client.get_note_png_pages(file_id)
     assert len(png_pages_first) > 0
 
     # Retrieve file info to get the storage_key
     user_email = "test@example.com"
     file_info = await file_service.get_file_info_by_id(user_email, file_id)
-    assert file_info is not None
+    assert file_info is not None and file_info.md5 is not None
     storage_key = file_info.storage_key
     assert storage_key is not None
 
-    # Deleting the source notebook from USER_DATA_BUCKET to prove caching:
-    # If caching works, it should serve from USER_DATA_BUCKET and NOT attempt to download/parse the source file.
-    await file_service.blob_storage.delete(USER_DATA_BUCKET, storage_key)
-
-    # Second conversion: should succeed because files are cached in USER_DATA_BUCKET
-    # (If caching fails, it will attempt to download the missing source file and throw FileNotFoundError)
-    png_pages_second = await device_client.get_note_png_pages(file_id)
-    assert len(png_pages_second) == len(png_pages_first)
-
-    # Now let's test CACHE_BUCKET copying (Medium-path)
-    # Delete the files from USER_DATA_BUCKET's conversions directory
-    user_id = await file_service.user_service.get_user_id(user_email)
-
-    # Clean USER_DATA_BUCKET conversions
-    for idx in range(len(png_pages_first)):
-        png_storage_key = get_conversion_png_path(
-            user_id=user_id,
-            file_id=file_id,
-            page_index=idx,
-            file_md5=file_info.md5,
-        )
-        await file_service.blob_storage.delete(USER_DATA_BUCKET, png_storage_key)
-
-    # Add records to NotePageContentDO and put dummy images in CACHE_BUCKET
+    # Verify PageHashingModule populated NotePageContentDO with hashes and PNGs are in CACHE_BUCKET
     async with session_manager.session() as session:
-        await session.execute(
-            delete(NotePageContentDO).where(NotePageContentDO.file_id == file_id)
-        )
-        for idx in range(len(png_pages_first)):
-            page_id = f"page_id_mock_{idx}"
-            content = NotePageContentDO(
-                file_id=file_id,
-                page_index=idx,
-                page_id=page_id,
-                content_hash=f"mock_hash_{idx}",
+        pages = list(
+            (
+                await session.execute(
+                    select(NotePageContentDO)
+                    .where(NotePageContentDO.file_id == file_id)
+                    .order_by(NotePageContentDO.page_index)
+                )
             )
-            session.add(content)
-            # Write mock PNG to CACHE_BUCKET
-            cache_png_key = get_page_png_path(file_id, page_id)
-            await file_service.blob_storage.put(
-                CACHE_BUCKET, cache_png_key, b"mock_png_bytes"
-            )
-        await session.commit()
-
-    # Request conversion: should succeed by copying from CACHE_BUCKET to USER_DATA_BUCKET!
-    png_pages_third = await device_client.get_note_png_pages(file_id)
-    assert len(png_pages_third) == len(png_pages_first)
-
-    # Let's verify that the files copied to USER_DATA_BUCKET actually contain our mock_png_bytes!
-    for idx in range(len(png_pages_first)):
-        png_storage_key = get_conversion_png_path(
-            user_id=user_id,
-            file_id=file_id,
-            page_index=idx,
-            file_md5=file_info.md5,
+            .scalars()
+            .all()
         )
-        # Read from USER_DATA_BUCKET
-        chunks = []
-        async for chunk in file_service.blob_storage.get(
-            USER_DATA_BUCKET, png_storage_key
-        ):
-            chunks.append(chunk)
-        assert b"".join(chunks) == b"mock_png_bytes"
+    assert len(pages) == len(png_pages_first)
+    for page in pages:
+        assert page.content_hash is not None
+        png_key = get_page_png_path(file_id, page.page_id)
+        assert await file_service.blob_storage.exists(CACHE_BUCKET, png_key)
+        assert not await file_service.blob_storage.exists(USER_DATA_BUCKET, png_key)
+        # Overwrite cached PNG in CACHE_BUCKET to prove subsequent conversions
+        # serve the existing CACHE_BUCKET blob without re-rendering
+        await file_service.blob_storage.put(CACHE_BUCKET, png_key, b"cached_png_bytes")
+
+    png_pages_second = await device_client.get_note_png_pages(file_id)
+    assert png_pages_second == [b"cached_png_bytes"] * len(png_pages_first)
 
 
 @pytest.mark.parametrize(
