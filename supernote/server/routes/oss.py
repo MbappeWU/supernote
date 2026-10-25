@@ -195,6 +195,22 @@ async def handle_oss_upload_part(request: web.Request) -> web.Response:
     return web.Response(status=400, text="No file field")
 
 
+_SAFE_INLINE_MIME_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/json",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/bmp",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+    }
+)
+
+
 def _build_download_headers(
     file_name: str,
     file_size: int,
@@ -209,12 +225,7 @@ def _build_download_headers(
     guessed_type, _ = mimetypes.guess_type(file_name)
     content_type = guessed_type or "application/octet-stream"
 
-    is_safe_inline_type = (
-        content_type == "application/pdf"
-        or (content_type.startswith("image/") and content_type != "image/svg+xml")
-        or (content_type.startswith("text/") and content_type != "text/html")
-        or content_type == "application/json"
-    )
+    is_safe_inline_type = content_type in _SAFE_INLINE_MIME_TYPES
     disposition_type = "inline" if (inline and is_safe_inline_type) else "attachment"
     safe_file_name = (
         file_name.replace("\r", "")
@@ -227,6 +238,9 @@ def _build_download_headers(
         "Content-Type": content_type,
         "Content-Disposition": f'{disposition_type}; filename="{safe_file_name}"',
         "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": (
+            "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+        ),
         "Content-Length": str(content_length),
         "Accept-Ranges": "bytes",
     }
