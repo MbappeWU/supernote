@@ -7,8 +7,9 @@ import time
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
+from supernote.models.base import BooleanEnum
 from supernote.models.summary import (
     AddSummaryDTO,
     AddSummaryGroupDTO,
@@ -680,8 +681,112 @@ async def test_handwrite_replacement_and_expired_summary_purge_publish_blob_clea
     assert purged_count == 1
     assert published_events == [BlobCleanupEvent(storage_keys={"hw-new.bin"})]
 
-    # Expired soft-deleted summary is hard-deleted; active old summary and 1ms-newer soft-deleted group survive
+    # Expired soft-deleted summary is hard-deleted; active old summary and 1ms-newer soft-deleted group row survive
     with pytest.raises(SummaryNotFound):
         await summary_service.get_summary(USER_EMAIL, summary.id)
     assert await summary_service.get_summary(USER_EMAIL, active_old.id) is not None
-    assert await summary_service.get_summary(USER_EMAIL, group.id) is not None
+    with pytest.raises(SummaryNotFound):
+        await summary_service.get_summary(USER_EMAIL, group.id)
+
+    async with session_manager.session() as session:
+        remaining_ids = set(
+            (await session.execute(select(SummaryDO.id))).scalars().all()
+        )
+    assert remaining_ids == {active_old.id, group.id}
+
+
+async def test_add_remove_and_readd_summary_and_group_lifecycle(
+    summary_service: SummaryService,
+    published_events: list[Event],
+) -> None:
+    """Verify adding, soft-deleting, and re-adding summaries and groups with the same unique_identifier."""
+    group = await summary_service.add_group(
+        USER_EMAIL,
+        AddSummaryGroupDTO(
+            unique_identifier="grp-lifecycle-1", name="Initial Group", md5_hash="gh-v1"
+        ),
+    )
+    assert group.id is not None
+    await summary_service.update_group(
+        USER_EMAIL,
+        UpdateSummaryGroupDTO(
+            id=group.id,
+            unique_identifier="grp-lifecycle-1",
+            md5_hash="gh-v1",
+            handwrite_inner_name="grp-hw-v1.bin",
+        ),
+    )
+    child_1 = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="sum-lifecycle-1",
+            parent_unique_identifier="grp-lifecycle-1",
+            content="Child 1 v1",
+            handwrite_inner_name="sum-hw-v1.bin",
+        ),
+    )
+    child_2 = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="sum-lifecycle-2",
+            parent_unique_identifier="grp-lifecycle-1",
+            content="Child 2 v1",
+            handwrite_inner_name="sum-2-hw-v1.bin",
+        ),
+    )
+    assert child_1.id is not None and child_2.id is not None
+
+    # Soft-delete the group (cascades soft-delete to child_1 and child_2)
+    await summary_service.delete_group(USER_EMAIL, group.id)
+    assert (
+        await summary_service.get_summary_by_uuid(USER_EMAIL, "grp-lifecycle-1") is None
+    )
+    assert (
+        await summary_service.get_summary_by_uuid(USER_EMAIL, "sum-lifecycle-1") is None
+    )
+    with pytest.raises(SummaryNotFound):
+        await summary_service.get_summary(USER_EMAIL, child_1.id)
+    with pytest.raises(SummaryNotFound):
+        await summary_service.update_summary(
+            USER_EMAIL, UpdateSummaryDTO(id=child_1.id, content="Should fail")
+        )
+    with pytest.raises(SummaryNotFound):
+        await summary_service.delete_summary(USER_EMAIL, child_1.id)
+
+    # Re-add group and children with the same unique_identifier -> replaces soft-deleted rows and cleans up superseded blobs
+    revived_group = await summary_service.add_group(
+        USER_EMAIL,
+        AddSummaryGroupDTO(
+            unique_identifier="grp-lifecycle-1", name="Revived Group", md5_hash="gh-v2"
+        ),
+    )
+    assert revived_group.is_deleted == BooleanEnum.NO
+    assert await summary_service.list_summaries(USER_EMAIL) == []
+
+    revived_child_1 = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="sum-lifecycle-1",
+            parent_unique_identifier="grp-lifecycle-1",
+            content="Child 1 revived same hw",
+            handwrite_inner_name="sum-hw-v1.bin",
+        ),
+    )
+    revived_child_2 = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="sum-lifecycle-2",
+            parent_unique_identifier="grp-lifecycle-1",
+            content="Child 2 revived new hw",
+            handwrite_inner_name="sum-2-hw-v2.bin",
+        ),
+    )
+    await asyncio.sleep(0)
+    assert published_events == [
+        BlobCleanupEvent(storage_keys={"grp-hw-v1.bin"}),
+        BlobCleanupEvent(storage_keys={"sum-2-hw-v1.bin"}),
+    ]
+    active_summaries = await summary_service.list_summaries(
+        USER_EMAIL, parent_uuid="grp-lifecycle-1"
+    )
+    assert [s.id for s in active_summaries] == [revived_child_1.id, revived_child_2.id]

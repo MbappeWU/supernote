@@ -178,7 +178,7 @@ class SummaryService:
             return [_to_tag_item(tag) for tag in tags]
 
     async def add_summary(self, user_email: str, dto: AddSummaryDTO) -> SummaryItem:
-        """Add a new summary."""
+        """Add a new summary, reviving any existing row with the same unique_identifier."""
         user_id = await self.user_service.get_user_id(user_email)
         md5 = dto.md5_hash
         if not md5 and dto.content:
@@ -187,12 +187,16 @@ class SummaryService:
         now_ms = int(time.time() * 1000)
         creation_time = dto.creation_time or now_ms
         last_modified_time = dto.last_modified_time or now_ms
+        unique_identifier = dto.unique_identifier or str(uuid.uuid4())
 
         async with self.session_manager.session() as session:
+            old_inner_name = await self._replace_existing_by_uuid(
+                session, user_id, unique_identifier
+            )
             summary_do = SummaryDO(
                 user_id=user_id,
                 file_id=dto.file_id,
-                unique_identifier=dto.unique_identifier or str(uuid.uuid4()),
+                unique_identifier=unique_identifier,
                 parent_unique_identifier=dto.parent_unique_identifier,
                 content=dto.content,
                 source_path=dto.source_path,
@@ -222,6 +226,10 @@ class SummaryService:
                     is_new=True,
                 )
             )
+            if old_inner_name and old_inner_name != dto.handwrite_inner_name:
+                await self.event_bus.publish(
+                    BlobCleanupEvent(storage_keys={old_inner_name})
+                )
         return summary_item
 
     async def update_summary(self, user_email: str, dto: UpdateSummaryDTO) -> bool:
@@ -390,12 +398,17 @@ class SummaryService:
             return [_to_summary_item(s) for s in summaries]
 
     async def add_group(self, user_email: str, dto: AddSummaryGroupDTO) -> SummaryItem:
-        """Add a new summary group."""
+        """Add a new summary group, reviving any existing row with the same unique_identifier."""
         user_id = await self.user_service.get_user_id(user_email)
+        unique_identifier = dto.unique_identifier or str(uuid.uuid4())
+
         async with self.session_manager.session() as session:
+            old_inner_name = await self._replace_existing_by_uuid(
+                session, user_id, unique_identifier
+            )
             summary_do = SummaryDO(
                 user_id=user_id,
-                unique_identifier=dto.unique_identifier or str(uuid.uuid4()),
+                unique_identifier=unique_identifier,
                 name=dto.name,
                 md5_hash=dto.md5_hash,
                 description=dto.description,
@@ -415,6 +428,10 @@ class SummaryService:
                     is_new=True,
                 )
             )
+            if old_inner_name:
+                await self.event_bus.publish(
+                    BlobCleanupEvent(storage_keys={old_inner_name})
+                )
         return summary_item
 
     async def update_group(self, user_email: str, dto: UpdateSummaryGroupDTO) -> bool:
@@ -538,8 +555,26 @@ class SummaryService:
             groups = list(result.scalars().all())
             return [_to_summary_item(g) for g in groups]
 
+    async def _replace_existing_by_uuid(
+        self, session: AsyncSession, user_id: int, unique_identifier: str
+    ) -> str | None:
+        """Remove any existing row with the same UUID (including soft-deleted) and return its handwriting key."""
+        existing_do = await self._get_summary_by_uuid(
+            session, user_id, unique_identifier, include_deleted=True
+        )
+        if existing_do is None:
+            return None
+        old_inner_name = existing_do.handwrite_inner_name
+        await session.delete(existing_do)
+        await session.flush()
+        return old_inner_name
+
     async def _get_summary_by_uuid(
-        self, session: AsyncSession, user_id: int, uuid_str: str | None
+        self,
+        session: AsyncSession,
+        user_id: int,
+        uuid_str: str | None,
+        include_deleted: bool = False,
     ) -> SummaryDO | None:
         """Helper to get a summary by UUID and user ownership."""
         if not uuid_str:
@@ -547,13 +582,15 @@ class SummaryService:
         stmt = select(SummaryDO).where(
             SummaryDO.unique_identifier == uuid_str, SummaryDO.user_id == user_id
         )
+        if not include_deleted:
+            stmt = stmt.where(SummaryDO.is_deleted.is_(False))
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def get_summary_by_uuid(
         self, user_email: str, unique_identifier: str
     ) -> SummaryItem | None:
-        """Get a single summary by UUID and user ownership."""
+        """Get a single active summary by UUID and user ownership."""
         user_id = await self.user_service.get_user_id(user_email)
         async with self.session_manager.session() as session:
             summary_do = await self._get_summary_by_uuid(
@@ -564,7 +601,7 @@ class SummaryService:
             return _to_summary_item(summary_do)
 
     async def get_summary(self, user_email: str, summary_id: int) -> SummaryItem:
-        """Get a single summary by ID."""
+        """Get a single active summary by ID."""
         user_id = await self.user_service.get_user_id(user_email)
         async with self.session_manager.session() as session:
             summary_do = await self._get_summary(session, user_id, summary_id)
@@ -607,9 +644,11 @@ class SummaryService:
     async def _get_summary(
         self, session: AsyncSession, user_id: int, summary_id: int
     ) -> SummaryDO | None:
-        """Helper to get a summary by ID and user ownership."""
+        """Helper to get an active summary by ID and user ownership."""
         stmt = select(SummaryDO).where(
-            SummaryDO.id == summary_id, SummaryDO.user_id == user_id
+            SummaryDO.id == summary_id,
+            SummaryDO.user_id == user_id,
+            SummaryDO.is_deleted.is_(False),
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
