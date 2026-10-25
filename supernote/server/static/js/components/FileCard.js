@@ -1,5 +1,8 @@
-import { ref, onMounted } from 'vue';
-import { convertNoteToPng, downloadFile } from '../api/client.js';
+import { ref, computed, onMounted, watch } from 'vue';
+import { convertNoteToPng, fetchDownloadUrl, downloadFile } from '../api/client.js';
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']);
+const DOCUMENT_EXTENSIONS = new Set(['epub', 'doc', 'docx', 'txt', 'md', 'csv', 'json', 'yaml', 'yml', 'log']);
 
 export default {
     props: ['file', 'isSelected', 'processingStatus'],
@@ -7,6 +10,24 @@ export default {
     setup(props) {
         const coverUrl = ref(null);
         const downloading = ref(false);
+
+        const fileExt = computed(() => {
+            if (!props.file) return '';
+            if (props.file.extension) return String(props.file.extension).toLowerCase();
+            if (props.file.name && props.file.name.includes('.')) {
+                return props.file.name.split('.').pop().toLowerCase();
+            }
+            return '';
+        });
+
+        const iconType = computed(() => {
+            const ext = fileExt.value;
+            if (ext === 'note') return 'note';
+            if (ext === 'pdf') return 'pdf';
+            if (IMAGE_EXTENSIONS.has(ext)) return 'image';
+            if (DOCUMENT_EXTENSIONS.has(ext)) return 'document';
+            return 'generic';
+        });
 
         const download = async () => {
             if (downloading.value) return;
@@ -21,7 +42,10 @@ export default {
         };
 
         const loadCover = async () => {
-            if (props.file && props.file.extension === 'note') {
+            coverUrl.value = null;
+            if (!props.file || props.file.isDirectory) return;
+            const ext = fileExt.value;
+            if (ext === 'note') {
                 try {
                     const pages = await convertNoteToPng(props.file.id);
                     if (pages && pages.length > 0) {
@@ -30,12 +54,19 @@ export default {
                 } catch (e) {
                     // Fallback to vector icon
                 }
+            } else if (IMAGE_EXTENSIONS.has(ext)) {
+                try {
+                    coverUrl.value = await fetchDownloadUrl(props.file.id);
+                } catch (e) {
+                    // Fallback to vector icon
+                }
             }
         };
 
         onMounted(loadCover);
+        watch(() => props.file?.id, loadCover);
 
-        return { coverUrl, downloading, download };
+        return { coverUrl, downloading, download, fileExt, iconType };
     },
     methods: {
         formatSize(bytes) {
@@ -71,8 +102,23 @@ export default {
                 </div>
 
                 <!-- Notebook File Icon -->
-                <div v-else-if="file.extension === 'note'" class="p-3 bg-white/90 dark:bg-slate-800/90 backdrop-blur rounded-xl shadow-sm border border-white/50 dark:border-slate-700">
+                <div v-else-if="iconType === 'note'" class="p-3 bg-white/90 dark:bg-slate-800/90 backdrop-blur rounded-xl shadow-sm border border-white/50 dark:border-slate-700">
                     <svg class="w-8 h-8 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                </div>
+
+                <!-- PDF File Icon -->
+                <div v-else-if="iconType === 'pdf'" class="p-3 bg-white/90 dark:bg-slate-800/90 backdrop-blur rounded-xl shadow-sm border border-white/50 dark:border-slate-700">
+                    <svg class="w-8 h-8 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 13h6m-6 4h4"></path></svg>
+                </div>
+
+                <!-- Image File Icon -->
+                <div v-else-if="iconType === 'image'" class="p-3 bg-white/90 dark:bg-slate-800/90 backdrop-blur rounded-xl shadow-sm border border-white/50 dark:border-slate-700">
+                    <svg class="w-8 h-8 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                </div>
+
+                <!-- Document / EPUB / Text Icon -->
+                <div v-else-if="iconType === 'document'" class="p-3 bg-white/90 dark:bg-slate-800/90 backdrop-blur rounded-xl shadow-sm border border-white/50 dark:border-slate-700">
+                    <svg class="w-8 h-8 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
                 </div>
 
                 <!-- Generic File Icon -->

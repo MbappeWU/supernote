@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import mimetypes
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -194,6 +195,46 @@ async def handle_oss_upload_part(request: web.Request) -> web.Response:
     return web.Response(status=400, text="No file field")
 
 
+def _build_download_headers(
+    file_name: str,
+    file_size: int,
+    start: int,
+    end: int,
+    *,
+    is_range: bool,
+    inline: bool,
+) -> dict[str, str]:
+    """Build HTTP response headers for an OSS file download."""
+    content_length = end - start + 1
+    guessed_type, _ = mimetypes.guess_type(file_name)
+    content_type = guessed_type or "application/octet-stream"
+
+    is_safe_inline_type = (
+        content_type == "application/pdf"
+        or (content_type.startswith("image/") and content_type != "image/svg+xml")
+        or (content_type.startswith("text/") and content_type != "text/html")
+        or content_type == "application/json"
+    )
+    disposition_type = "inline" if (inline and is_safe_inline_type) else "attachment"
+    safe_file_name = (
+        file_name.replace("\r", "")
+        .replace("\n", "")
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+    )
+
+    headers = {
+        "Content-Type": content_type,
+        "Content-Disposition": f'{disposition_type}; filename="{safe_file_name}"',
+        "X-Content-Type-Options": "nosniff",
+        "Content-Length": str(content_length),
+        "Accept-Ranges": "bytes",
+    }
+    if is_range:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    return headers
+
+
 @routes.get("/api/oss/download")
 @public_route
 async def handle_oss_download(request: web.Request) -> web.StreamResponse:
@@ -287,17 +328,15 @@ async def handle_oss_download(request: web.Request) -> web.StreamResponse:
                 create_error_response("Invalid Range header").to_dict(), status=400
             )
 
-    content_length = end - start + 1
     status = 206 if range_header else 200
-
-    headers = {
-        "Content-Disposition": f'attachment; filename="{file_name}"',
-        "Content-Length": str(content_length),
-        "Accept-Ranges": "bytes",
-    }
-
-    if status == 206:
-        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    headers = _build_download_headers(
+        file_name=file_name,
+        file_size=file_size,
+        start=start,
+        end=end,
+        is_range=bool(range_header),
+        inline=request.query.get("inline") in ("1", "true"),
+    )
 
     response = web.StreamResponse(status=status, headers=headers)
     await response.prepare(request)

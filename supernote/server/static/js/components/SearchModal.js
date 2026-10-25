@@ -34,14 +34,21 @@ export default {
                         fetchTasks().catch(() => ({ tasks: [] }))
                     ]);
 
-                    results.value = fileMatches.map(f => ({
-                        id: f.id,
-                        name: f.name || f.fileName,
-                        path: f.path_display || f.parent_path || f.name,
-                        isDirectory: f.tag === 'folder' || f.isDirectory,
-                        size: f.size,
-                        extension: f.name?.endsWith('.note') ? 'note' : null
-                    }));
+                    results.value = fileMatches.map(f => {
+                        const fileName = f.name || f.fileName || '';
+                        const isDir = f.tag === 'folder' || f.isDirectory;
+                        const ext = !isDir && fileName.includes('.')
+                            ? fileName.split('.').pop().toLowerCase()
+                            : null;
+                        return {
+                            id: f.id,
+                            name: fileName,
+                            path: f.path_display || f.parent_path || fileName,
+                            isDirectory: isDir,
+                            size: f.size,
+                            extension: ext
+                        };
+                    });
 
                     semanticResults.value = vectorMatches;
 
