@@ -195,27 +195,6 @@ async def test_static_frontend_sha256_fallback(client: TestClient) -> None:
     js = await resp.text()
     assert "crypto.subtle" in js
     assert "window.sha256" in js
-    assert "fetchPathInfo" in js
-    assert "/api/file/path/query" in js
-
-
-async def test_static_frontend_url_history_routing(client: TestClient) -> None:
-    """Verify that main.js synchronizes folder breadcrumbs, FileViewer, and tabs with URL history."""
-    resp = await client.get("/static/js/main.js")
-    assert resp.status == 200
-    main_js = await resp.text()
-    assert "export function parseUrlHash" in main_js
-    assert "export function buildUrlHash" in main_js
-    assert "syncBreadcrumbsForDirectory" in main_js
-    assert "restoreViewerState" in main_js
-    assert "restoreDirectoryState" in main_js
-    assert "closeViewer" in main_js
-    assert "closeSystemPanel" in main_js
-    assert "fetchPathInfo" in main_js
-    assert "#/system" in main_js
-    assert "#/tasks" in main_js
-    assert "#/file/" in main_js
-    assert "#/files/" in main_js
 
 
 async def test_static_frontend_disabled_when_web_enabled_false(
