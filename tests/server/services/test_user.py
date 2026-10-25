@@ -601,6 +601,26 @@ async def test_query_equipment_by_no(user_service: UserService) -> None:
         status="Y",
     )
 
+    # Re-binding to the same user is idempotent
+    await user_service.bind_equipment("eq1@example.com", "SN-999")
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
+        equipment_number="SN-999",
+        user_id=user1.id,
+        status="Y",
+    )
+
+    # Binding an already-bound device to a different user fails unless unlinked first
+    with pytest.raises(ValueError, match="already bound"):
+        await user_service.bind_equipment("eq2@example.com", "SN-999")
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
+        equipment_number="SN-999",
+        user_id=user1.id,
+        status="Y",
+    )
+
+    await user_service.unlink_equipment("SN-999")
+    assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO()
+
     await user_service.bind_equipment("eq2@example.com", "SN-999")
     assert await user_service.query_equipment_by_no("SN-999") == UserEquipmentVO(
         equipment_number="SN-999",
