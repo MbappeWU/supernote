@@ -140,21 +140,31 @@ class VirtualFileSystem:
 
         Returns a list of tuples: (node, relative_path_from_parent).
         """
+        stmt = (
+            select(UserFileDO)
+            .where(
+                UserFileDO.user_id == user_id,
+                UserFileDO.is_active == "Y",
+            )
+            .order_by(UserFileDO.id)
+        )
+        all_nodes = (await self.db.execute(stmt)).scalars().all()
+        by_parent: dict[int, list[UserFileDO]] = {}
+        for node in all_nodes:
+            by_parent.setdefault(node.directory_id, []).append(node)
+
         results: list[tuple[UserFileDO, str]] = []
 
-        children = await self.list_directory(user_id, parent_id)
-        for child in children:
-            child_rel_path = (
-                f"{base_path}/{child.file_name}" if base_path else child.file_name
-            )
-            results.append((child, child_rel_path))
-
-            if child.is_folder == "Y":
-                sub_results = await self.list_recursive(
-                    user_id, child.id, child_rel_path
+        def _walk(curr_parent_id: int, curr_base: str) -> None:
+            for child in by_parent.get(curr_parent_id, ()):
+                child_rel_path = (
+                    f"{curr_base}/{child.file_name}" if curr_base else child.file_name
                 )
-                results.extend(sub_results)
+                results.append((child, child_rel_path))
+                if child.is_folder == "Y":
+                    _walk(child.id, child_rel_path)
 
+        _walk(parent_id, base_path)
         return results
 
     async def get_active_file(

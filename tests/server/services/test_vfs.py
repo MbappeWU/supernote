@@ -299,3 +299,35 @@ async def test_purge_folder_removes_all_descendants_and_recycle_entries(
         .all()
     )
     assert len(remaining_recycle) == 0
+
+
+async def test_list_recursive_nested_hierarchy(
+    db_session: AsyncSession,
+) -> None:
+    """Verify list_recursive traverses nested folders in memory and returns accurate relative paths."""
+    vfs = VirtualFileSystem(db_session)
+    user_id = 1005
+
+    root_dir = await vfs.create_directory(user_id, 0, "Note")
+    sub_dir = await vfs.create_directory(user_id, root_dir.id, "Project")
+    deep_dir = await vfs.create_directory(user_id, sub_dir.id, "2026")
+    other_root = await vfs.create_directory(user_id, 0, "Document")
+
+    await vfs.create_or_update_file(
+        user_id, root_dir.id, "root.note", size=10, md5="m1", storage_key="k1"
+    )
+    await vfs.create_or_update_file(
+        user_id, deep_dir.id, "deep.note", size=20, md5="m2", storage_key="k2"
+    )
+    await vfs.create_or_update_file(
+        user_id, other_root.id, "other.pdf", size=30, md5="m3", storage_key="k3"
+    )
+
+    items = await vfs.list_recursive(user_id, root_dir.id)
+    rel_paths = [rel_path for _, rel_path in items]
+    assert rel_paths == [
+        "Project",
+        "Project/2026",
+        "Project/2026/deep.note",
+        "root.note",
+    ]
