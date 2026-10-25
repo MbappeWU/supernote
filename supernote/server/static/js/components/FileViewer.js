@@ -1,4 +1,4 @@
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { convertNoteToPng, fetchTranscript, fetchSummaries, fetchDownloadUrl, downloadFile } from '../api/client.js';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
@@ -12,7 +12,6 @@ export default {
     setup(props) {
         const pages = ref([]);
         const previewUrl = ref(null);
-        const blobObjectUrl = ref(null);
         const textContent = ref('');
         const isTextTooLarge = ref(false);
         const isLoading = ref(true);
@@ -24,13 +23,6 @@ export default {
         const realTranscript = ref('');
         const realSummaries = ref([]);
         const isLoadingTranscript = ref(false);
-
-        const revokeBlobUrl = () => {
-            if (blobObjectUrl.value) {
-                URL.revokeObjectURL(blobObjectUrl.value);
-                blobObjectUrl.value = null;
-            }
-        };
 
         const fileExt = computed(() => {
             if (!props.file) return '';
@@ -96,7 +88,6 @@ export default {
         const loadFileContent = async () => {
             if (!props.file) return;
 
-            revokeBlobUrl();
             pages.value = [];
             previewUrl.value = null;
             textContent.value = '';
@@ -117,15 +108,7 @@ export default {
                     previewUrl.value = signedUrl;
                 } else if (category === 'pdf') {
                     const signedUrl = await fetchDownloadUrl(props.file.id);
-                    const inlineUrl = signedUrl.includes('?') ? `${signedUrl}&inline=1` : `${signedUrl}?inline=1`;
-                    const resp = await fetch(inlineUrl);
-                    if (!resp.ok) {
-                        throw new Error(`Failed to fetch PDF (${resp.status})`);
-                    }
-                    const arrayBuffer = await resp.arrayBuffer();
-                    const pdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' });
-                    blobObjectUrl.value = URL.createObjectURL(pdfBlob);
-                    previewUrl.value = blobObjectUrl.value;
+                    previewUrl.value = signedUrl.includes('?') ? `${signedUrl}&inline=1` : `${signedUrl}?inline=1`;
                 } else if (category === 'text') {
                     const fileSize = Number(props.file.size || 0);
                     if (fileSize > MAX_TEXT_PREVIEW_BYTES) {
@@ -138,6 +121,9 @@ export default {
                         }
                         const contentLength = Number(resp.headers.get('Content-Length') || 0);
                         if (contentLength > MAX_TEXT_PREVIEW_BYTES) {
+                            if (resp.body) {
+                                await resp.body.cancel().catch(() => {});
+                            }
                             isTextTooLarge.value = true;
                         } else {
                             textContent.value = await resp.text();
@@ -175,7 +161,6 @@ export default {
         };
 
         onMounted(loadFileContent);
-        onBeforeUnmount(revokeBlobUrl);
         watch(() => props.file?.id, (newId) => {
             if (newId) loadFileContent();
         });
