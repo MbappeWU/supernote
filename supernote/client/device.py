@@ -320,7 +320,13 @@ class DeviceClient:
     async def sync_end(
         self, equipment_no: str, flag: str = "Y"
     ) -> SynchronousEndLocalVO:
-        """End sync session."""
+        """End sync session.
+
+        Args:
+            equipment_no: Device equipment identifier.
+            flag: Synchronization result flag sent by the device ("Y" when sync
+                completed normally, or "N" when sync failed or was interrupted).
+        """
         dto = SynchronousEndLocalDTO(equipment_no=equipment_no, flag=flag)
         return await self._client.post_json(
             "/api/file/2/files/synchronous/end",

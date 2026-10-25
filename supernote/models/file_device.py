@@ -95,7 +95,7 @@ class SynchronousEndLocalDTO(DataClassJSONMixin):
         metadata=field_options(alias="equipmentNo"), default=None
     )
     flag: str | None = None
-    """Synchronization success flag typically a string "true" or "false"."""
+    """Synchronization completion flag ("Y" on success, "N" on failure/interruption)."""
 
     class Config(BaseConfig):
         serialize_by_alias = True

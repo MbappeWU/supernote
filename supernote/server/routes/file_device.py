@@ -73,8 +73,11 @@ def _to_entries_vo(entity: FileEntity) -> EntriesVO:
 
 SYNC_LOCK_TIMEOUT = 300  # 5 minutes
 SYNC_INITIALIZED_KEY_PREFIX = "sync:initialized:"
+# CoordinationService requires a numeric expiry (defaults to 1 year if omitted);
+# use a 100-year TTL so initial-sync completion persists for the lifetime of the account.
 SYNC_INITIALIZED_TTL = 100 * 365 * 24 * 3600
-FAILED_SYNC_FLAGS = {"N", "n", "false", "False", "0"}
+# The Android client (FullSyncTask) sends flag="Y" on normal completion and flag="N" on exception.
+SYNC_FAILED_FLAG = "N"
 
 
 def _sync_initialized_key(user_id: int) -> str:
@@ -150,7 +153,7 @@ async def handle_sync_end(request: web.Request) -> web.Response:
         if owner_eq == req_data.equipment_no:
             del sync_locks[user_email]
 
-    if req_data.flag not in FAILED_SYNC_FLAGS:
+    if req_data.flag != SYNC_FAILED_FLAG:
         user_id = await user_service.get_user_id(user_email)
         await coordination_service.set_value(
             _sync_initialized_key(user_id),

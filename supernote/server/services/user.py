@@ -36,6 +36,8 @@ from .vfs import VirtualFileSystem
 
 RANDOM_CODE_TTL = datetime.timedelta(minutes=5)
 UNIQUE_MACHINE_ID_KEY = "system:unique_machine_id"
+# CoordinationService requires a numeric expiry (defaults to 1 year if omitted);
+# use a 100-year TTL for server-lifetime keys (unique_machine_id and sold_out_count).
 UNIQUE_MACHINE_ID_TTL = 100 * 365 * 24 * 3600
 SOLD_OUT_KEY_PREFIX = "user:sold_out_count:"
 
