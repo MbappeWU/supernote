@@ -250,13 +250,21 @@ async def test_cleanup_staging_and_chunks(tmp_path: Path) -> None:
     non_tmp.write_bytes(b"log data")
     os.utime(non_tmp, (expired_mtime, expired_mtime))
 
-    # 2. Multipart chunks in bucket
+    # 2a. Active multipart upload (chunk 1 old, chunk 2 fresh -> entire set preserved)
+    await storage.put(bucket, "active.note.part.1", b"chunk act1")
+    await storage.put(bucket, "active.note.part.2", b"chunk act2")
+    path_act1 = storage.get_blob_path(bucket, "active.note.part.1")
+    path_act2 = storage.get_blob_path(bucket, "active.note.part.2")
+    os.utime(path_act1, (expired_mtime, expired_mtime))
+    os.utime(path_act2, (fresh_mtime, fresh_mtime))
+
+    # 2b. Abandoned multipart upload (all chunks expired -> entire set removed)
     await storage.put(bucket, "abandoned.note.part.1", b"chunk a1")
     await storage.put(bucket, "abandoned.note.part.2", b"chunk a2")
     path_a1 = storage.get_blob_path(bucket, "abandoned.note.part.1")
     path_a2 = storage.get_blob_path(bucket, "abandoned.note.part.2")
     os.utime(path_a1, (expired_mtime, expired_mtime))
-    os.utime(path_a2, (fresh_mtime, fresh_mtime))
+    os.utime(path_a2, (expired_mtime, expired_mtime))
 
     # 3. Normal blob (must never be removed even if old)
     await storage.put(bucket, "normal.note", b"normal file content")
@@ -264,13 +272,17 @@ async def test_cleanup_staging_and_chunks(tmp_path: Path) -> None:
     os.utime(path_normal, (expired_mtime, expired_mtime))
 
     stats = await storage.cleanup()
-    assert stats.files_removed == 2
-    assert stats.bytes_reclaimed == len(b"stale staging data") + len(b"chunk a1")
+    assert stats.files_removed == 3
+    assert stats.bytes_reclaimed == (
+        len(b"stale staging data") + len(b"chunk a1") + len(b"chunk a2")
+    )
     assert not stale_tmp.exists()
     assert fresh_tmp.exists()
     assert non_tmp.exists()
+    assert path_act1.exists()
+    assert path_act2.exists()
     assert not path_a1.exists()
-    assert path_a2.exists()
+    assert not path_a2.exists()
     assert path_normal.exists()
 
 

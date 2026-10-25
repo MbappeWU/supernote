@@ -5,6 +5,7 @@ import os
 import secrets
 import time
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
@@ -249,15 +250,51 @@ class LocalBlobStorage(BlobStorage):
                 if file_path.name.endswith(".tmp") and file_path.is_file():
                     self._remove_if_expired(file_path, now, stats)
 
+        chunk_sets: dict[tuple[Path, str], list[Path]] = defaultdict(list)
         for root, _, files in os.walk(self.root):
             root_path = Path(root)
             if root_path == temp_dir or temp_dir in root_path.parents:
                 continue
             for filename in files:
-                if parse_file_chunk_name(filename):
-                    self._remove_if_expired(root_path / filename, now, stats)
+                base_name = parse_file_chunk_name(filename)
+                if base_name is not None:
+                    chunk_sets[(root_path, base_name)].append(root_path / filename)
+
+        for chunk_paths in chunk_sets.values():
+            self._remove_chunk_set_if_expired(chunk_paths, now, stats)
 
         return stats
+
+    @staticmethod
+    def _remove_chunk_set_if_expired(
+        chunk_paths: list[Path], now: float, stats: CleanupStats
+    ) -> None:
+        chunk_stats: list[tuple[Path, os.stat_result]] = []
+        for path in chunk_paths:
+            try:
+                chunk_stats.append((path, path.stat()))
+            except FileNotFoundError:
+                continue
+            except OSError as err:
+                logger.warning("Failed to stat chunk file %s: %s", path, err)
+                return
+
+        if not chunk_stats:
+            return
+
+        newest_mtime = max(st.st_mtime for _, st in chunk_stats)
+        if now - newest_mtime < TEMP_FILE_TTL_SECONDS:
+            return
+
+        for path, st in chunk_stats:
+            try:
+                path.unlink()
+                stats.files_removed += 1
+                stats.bytes_reclaimed += st.st_size
+            except FileNotFoundError:
+                pass
+            except OSError as err:
+                logger.warning("Failed to remove expired chunk file %s: %s", path, err)
 
     @staticmethod
     def _remove_if_expired(file_path: Path, now: float, stats: CleanupStats) -> None:

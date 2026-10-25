@@ -397,6 +397,8 @@ async def handle_account_clear(request: web.Request) -> web.Response:
     except ValueError as e:
         return web.json_response(create_error_response(str(e)).to_dict(), status=400)
 
+    # TODO(#407): Purge the deleted user's VFS files, recycle bin records,
+    # storage capacity rows, summaries, schedule tasks, and blobs.
     return web.json_response(BaseResponse().to_dict())
 
 
