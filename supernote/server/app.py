@@ -9,14 +9,11 @@ from typing import Any
 import aiohttp_remotes
 from aiohttp import web
 from aiohttp.web_urldispatcher import SystemRoute
-from aiohttp_asgi import ASGIResource
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from supernote.models.base import create_error_response
 from supernote.models.user import UserRegisterDTO
 from supernote.server.db.migrations import run_migrations
-from supernote.server.mcp.auth import create_auth_app
-from supernote.server.mcp.server import create_mcp_server, run_server, set_services
 from supernote.server.utils.auth_utils import get_token_from_request
 
 from .ai.models.embedding import create_embedding_model
@@ -129,7 +126,7 @@ async def jwt_auth_middleware(
     if isinstance(route, SystemRoute):
         return await handler(request)
 
-    if route.resource and isinstance(route.resource, ASGIResource):
+    if route.resource and route.resource is request.app.get("mcp_asgi_resource"):
         return await handler(request)
 
     handler_func = getattr(route, "handler", None)
@@ -334,31 +331,40 @@ def create_app(config: ServerConfig) -> web.Application:
         if config.ephemeral:
             await bootstrap_ephemeral_user(app)
 
-        rs_url = f"{config.mcp_base_url}/mcp"
+        if config.mcp_enabled:
+            from aiohttp_asgi import ASGIResource  # noqa: PLC0415
 
-        logger.info(f"Mounting MCP Authorization Server at {config.base_url}")
-        auth_app = create_auth_app(
-            app["user_service"], app["coordination_service"], config.base_url
-        )
-        asgi_resource = ASGIResource(auth_app)
-        app.router.register_resource(asgi_resource)
+            from supernote.server.mcp.auth import create_auth_app  # noqa: PLC0415
+            from supernote.server.mcp.server import (  # noqa: PLC0415
+                create_mcp_server,
+                run_server,
+                set_services,
+            )
 
-        # Inject services and start MCP server on a separate port
-        set_services(
-            app["search_service"], app["user_service"], app["coordination_service"]
-        )
-        mcp_port = config.mcp_port
-        mcp_server = create_mcp_server(config.base_url, rs_url)
-        mcp_task = asyncio.create_task(
-            run_server(mcp_server, config.host, mcp_port, config.proxy_mode)
-        )
+            rs_url = f"{config.mcp_base_url}/mcp"
+
+            logger.info(f"Mounting MCP Authorization Server at {config.base_url}")
+            auth_app = create_auth_app(
+                app["user_service"], app["coordination_service"], config.base_url
+            )
+            asgi_resource = ASGIResource(auth_app)
+            app.router.register_resource(asgi_resource)
+            app["mcp_asgi_resource"] = asgi_resource
+
+            # Inject services and start MCP server on a separate port
+            set_services(
+                app["search_service"], app["user_service"], app["coordination_service"]
+            )
+            mcp_port = config.mcp_port
+            mcp_server = create_mcp_server(config.base_url, rs_url)
+            app["mcp_task"] = asyncio.create_task(
+                run_server(mcp_server, config.host, mcp_port, config.proxy_mode)
+            )
 
         logger.info("Starting background services...")
         await processor_service.start()
         await webhook_service.start()
         logger.info("Startup sequence complete.")
-
-        app["mcp_task"] = mcp_task
 
     app.on_startup.append(on_startup_handler)
 
