@@ -23,9 +23,11 @@ class FakeSummaryModel(SummaryModel):
         self,
         segments: list[SummarySegment] | None = None,
         model_id: str = "fake-summary-v1",
+        error: Exception | None = None,
     ) -> None:
         self._segments = segments
         self._model_id = model_id
+        self.error = error
         self.calls: list[str] = []
 
     @property
@@ -37,6 +39,8 @@ class FakeSummaryModel(SummaryModel):
         prompt: str,
     ) -> SummaryResponse:
         self.calls.append(prompt)
+        if self.error is not None:
+            raise self.error
         if self._segments is not None:
             return SummaryResponse(segments=list(self._segments))
         return SummaryResponse(
