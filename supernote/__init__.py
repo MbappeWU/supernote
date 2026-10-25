@@ -2,27 +2,20 @@
 .. include:: ../README.md
 """
 
-# Core notebook parsing (always available)
-from . import notebook  # noqa: F401
+import importlib
+from typing import Any
 
 __all__ = [
+    "client",
     "models",
+    "notebook",
+    "server",
 ]
 
-# Optional: Client library
-try:
-    from . import client  # noqa: F401
 
-    __all__.extend(["client"])
-except ImportError:
-    pass
-
-# Optional: Server
-try:
-    from . import server  # noqa: F401
-
-    __all__.extend(["server"])
-except ImportError:
-    pass
-
-__all__.extend(["notebook"])
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        module = importlib.import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

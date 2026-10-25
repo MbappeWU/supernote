@@ -1,10 +1,13 @@
 import io
+import subprocess
+import sys
 import zlib
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import supernote
 from supernote.notebook import (
     SupernoteMetadata,
     exceptions,
@@ -13,6 +16,23 @@ from supernote.notebook import (
     parse_metadata,
 )
 from supernote.notebook.decoder import FlateDecoder, RattaRleDecoder
+
+
+def test_top_level_package_lazy_imports() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, supernote; assert 'supernote.server' not in sys.modules; assert 'supernote.client' not in sys.modules",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert supernote.notebook is not None
+    with pytest.raises(AttributeError):
+        _ = supernote.nonexistent_submodule
 
 
 def test_parse_metadata(test_note_path: Path) -> None:
