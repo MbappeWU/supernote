@@ -107,7 +107,6 @@ class IntegrityService:
                 logger.error(
                     f"Integrity Fail: Node {node.id} ({node.file_name}) has invalid parent {node.directory_id}"
                 )
-                report.orphans += 1
                 report.issues.append(
                     IntegrityIssueVO(
                         user_id=user_id,
@@ -125,7 +124,6 @@ class IntegrityService:
                     logger.warning(
                         f"Integrity Warning: Folder {node.id} ({node.file_name}) {detail}"
                     )
-                    report.folder_anomalies += 1
                     report.issues.append(
                         IntegrityIssueVO(
                             user_id=user_id,
@@ -168,7 +166,6 @@ class IntegrityService:
                 logger.error(
                     f"Integrity Fail: Summary {summary.id} ({summary_name}) has invalid parent {summary.parent_unique_identifier}"
                 )
-                report.orphans += 1
                 report.issues.append(
                     IntegrityIssueVO(
                         user_id=user_id,
@@ -185,7 +182,6 @@ class IntegrityService:
                 logger.error(
                     f"Integrity Fail: Summary {summary.id} ({summary_name}) has invalid file_id {summary.file_id}"
                 )
-                report.orphans += 1
                 report.issues.append(
                     IntegrityIssueVO(
                         user_id=user_id,
@@ -309,7 +305,6 @@ class IntegrityService:
             logger.error(
                 f"Integrity Fail: File {node.id} ({node.file_name}) missing storage key"
             )
-            report.missing_blob += 1
             report.issues.append(
                 IntegrityIssueVO(
                     user_id=user_id,
@@ -328,7 +323,6 @@ class IntegrityService:
         except FileNotFoundError:
             detail = f"Missing blob key {node.storage_key}"
             logger.error(f"Integrity Fail: File {node.id} ({node.file_name}) {detail}")
-            report.missing_blob += 1
             report.issues.append(
                 IntegrityIssueVO(
                     user_id=user_id,
@@ -345,7 +339,6 @@ class IntegrityService:
             logger.warning(
                 f"Integrity Warning: File {node.id} size mismatch. VFS: {node.size}, Blob: {metadata.size}"
             )
-            report.size_mismatch += 1
             report.issues.append(
                 IntegrityIssueVO(
                     user_id=user_id,
@@ -362,7 +355,6 @@ class IntegrityService:
             logger.error(
                 f"Integrity Fail: File {node.id} hash mismatch. VFS: {node.md5}, Blob: {metadata.content_md5}"
             )
-            report.hash_mismatch += 1
             report.issues.append(
                 IntegrityIssueVO(
                     user_id=user_id,
@@ -532,8 +524,6 @@ class IntegrityService:
                     )
                 )
 
-        if not passed:
-            report.pipeline_issues += 1
         return passed
 
     async def _query_summaries_with_status(
@@ -607,7 +597,6 @@ class IntegrityService:
                 logger.error(
                     f"Integrity Fail: Summary {summary.id} ({summary_name}) missing handwrite_inner_name"
                 )
-                report.missing_blob += 1
                 report.issues.append(
                     IntegrityIssueVO(
                         user_id=user_id,
@@ -631,7 +620,6 @@ class IntegrityService:
             logger.error(
                 f"Integrity Fail: Summary {summary.id} ({summary_name}) {detail}"
             )
-            report.missing_blob += 1
             report.issues.append(
                 IntegrityIssueVO(
                     user_id=user_id,
@@ -655,7 +643,6 @@ class IntegrityService:
             logger.error(
                 f"Integrity Fail: Summary {summary.id} hash mismatch. Summary: {summary.handwrite_md5}, Blob: {metadata.content_md5}"
             )
-            report.hash_mismatch += 1
             report.issues.append(
                 IntegrityIssueVO(
                     user_id=user_id,

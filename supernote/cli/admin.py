@@ -215,12 +215,9 @@ async def integrity_async(
             print("========================")
             print(f"Scanned Nodes:     {report.scanned}")
             print(f"OK Nodes:          {report.ok}")
-            print(f"Orphans:           {report.orphans}")
-            print(f"Missing Blobs:     {report.missing_blob}")
-            print(f"Size Mismatches:   {report.size_mismatch}")
-            print(f"Hash Mismatches:   {report.hash_mismatch}")
-            print(f"Folder Anomalies:  {report.folder_anomalies}")
-            print(f"Pipeline Issues:   {report.pipeline_issues}")
+            print(f"Total Issues:      {len(report.issues)}")
+            for issue_type, count in report.issue_counts.items():
+                print(f"  {issue_type.value + ':':<24} {count}")
             print()
             if report.issues:
                 print(f"Issues Found ({len(report.issues)}):")
@@ -237,15 +234,7 @@ async def integrity_async(
                         print(f"  - {hint}")
                     print()
 
-        has_failures = bool(
-            report.issues
-            or report.orphans
-            or report.missing_blob
-            or report.size_mismatch
-            or report.hash_mismatch
-            or report.folder_anomalies
-            or report.pipeline_issues
-        )
+        has_failures = bool(report.issues)
         if not as_json:
             if has_failures:
                 print("Integrity issues detected.")
