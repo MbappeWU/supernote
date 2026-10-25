@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import delete, or_, select
 
-from supernote.models.base import ProcessingStatus
+from supernote.models.base import ProcessingStatus, TaskType
 from supernote.server.metrics import (
     PROCESSOR_FILES_PROCESSING,
     PROCESSOR_MISSING_TASKS_RECOVERED_TOTAL,
@@ -24,6 +24,7 @@ from ..events import (
     NoteDeletedEvent,
     NoteProcessingCompletedEvent,
     NoteUpdatedEvent,
+    SyncCompletedEvent,
 )
 from ..services.file import FileService
 from ..services.processor_modules import ProcessorModule
@@ -116,6 +117,7 @@ class ProcessorService:
         # subscribe to events
         self.event_bus.subscribe(NoteUpdatedEvent, self.handle_note_updated)
         self.event_bus.subscribe(NoteDeletedEvent, self.handle_note_deleted)
+        self.event_bus.subscribe(SyncCompletedEvent, self.handle_sync_completed)
 
         # Start workers
         for i in range(self.concurrency):
@@ -181,11 +183,30 @@ class ProcessorService:
         """Enqueue file for processing."""
         if not isinstance(event, NoteUpdatedEvent):
             return
+        if event.defer_processing:
+            logger.debug(
+                f"Deferring processing for note {event.file_id} ({event.file_path}) until sync completes"
+            )
+            async with self.session_manager.session() as session:
+                await session.execute(
+                    delete(SystemTaskDO).where(
+                        SystemTaskDO.file_id == event.file_id,
+                        SystemTaskDO.task_type == TaskType.PAGE_HASHING,
+                    )
+                )
+                await session.commit()
+            return
         logger.info(f"Received update for note: {event.file_id} ({event.file_path})")
         if event.file_id not in self.processing_files:
             self.processing_files.add(event.file_id)
             await self.queue.put(event.file_id)
             self._update_queue_metrics()
+
+    async def handle_sync_completed(self, event: Event) -> None:
+        """Discover and enqueue unprocessed or updated .note files after sync completes."""
+        if not isinstance(event, SyncCompletedEvent):
+            return
+        await self.recover_missing_tasks(user_id=event.user_id)
 
     async def handle_note_deleted(self, event: Event) -> None:
         """Clean up artifacts for deleted note."""
@@ -306,7 +327,7 @@ class ProcessorService:
                 await self.queue.put(file_id)
         self._update_queue_metrics()
 
-    async def recover_missing_tasks(self) -> None:
+    async def recover_missing_tasks(self, user_id: int | None = None) -> None:
         """Find .note files that have missing or outdated tasks and enqueue them."""
         logger.info("Checking for files with missing tasks...")
         conditions = [UserFileDO.id.not_in(select(SystemTaskDO.file_id))]
@@ -352,6 +373,8 @@ class ProcessorService:
                 )
                 .where(or_(*conditions))
             )
+            if user_id is not None:
+                stmt = stmt.where(UserFileDO.user_id == user_id)
             result = await session.execute(stmt)
             missing = result.all()
 

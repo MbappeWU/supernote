@@ -425,7 +425,10 @@ class FileService:
         if self.event_bus and filename.endswith(".note"):
             await self.event_bus.publish(
                 NoteUpdatedEvent(
-                    file_id=new_file.id, user_id=user_id, file_path=full_path
+                    file_id=new_file.id,
+                    user_id=user_id,
+                    file_path=full_path,
+                    defer_processing=True,
                 )
             )
 
