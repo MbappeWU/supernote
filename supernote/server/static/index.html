@@ -36,7 +36,7 @@
 
                     <!-- Navigation Tabs -->
                     <div v-if="isLoggedIn" class="flex items-center gap-2 bg-slate-100 p-1 rounded-xl">
-                        <button @click="activeTab = 'files'; view = 'grid'"
+                        <button @click="switchTab('files')"
                             :class="(activeTab === 'files' || activeTab === 'explorer') ? 'bg-white text-indigo-700 font-semibold shadow-sm' : 'text-slate-600 hover:text-slate-900 font-medium'"
                             class="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm transition-all">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -44,7 +44,7 @@
                             </svg>
                             Files
                         </button>
-                        <button @click="activeTab = 'tasks'"
+                        <button @click="switchTab('tasks')"
                             :class="activeTab === 'tasks' ? 'bg-white text-indigo-700 font-semibold shadow-sm' : 'text-slate-600 hover:text-slate-900 font-medium'"
                             class="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm transition-all">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -55,7 +55,7 @@
                     </div>
 
                     <div v-if="isLoggedIn" class="flex items-center gap-4">
-                        <button @click="showSystemPanel = true"
+                        <button @click="openSystemPanel"
                             class="text-slate-500 hover:text-slate-700 transition-colors" title="System Status">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -182,7 +182,7 @@
 
                 <!-- Viewer -->
                 <div v-if="view === 'viewer'" class="min-h-full">
-                    <file-viewer :file="selectedFile" @close="view = 'grid'; selectedFile = null"></file-viewer>
+                    <file-viewer :file="selectedFile" @close="closeViewer"></file-viewer>
                 </div>
 
                 <!-- Modals -->
@@ -205,7 +205,7 @@
             </template>
 
             <!-- System Panel -->
-            <system-panel v-if="showSystemPanel" @close="showSystemPanel = false"></system-panel>
+            <system-panel v-if="showSystemPanel" @close="closeSystemPanel"></system-panel>
         </main>
     </div>
     <!-- Load Main Module -->

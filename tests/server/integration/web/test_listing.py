@@ -1,6 +1,6 @@
 from supernote.client.web import WebClient
 from supernote.models.base import BooleanEnum
-from supernote.models.file_web import FileSortOrder, FileSortSequence
+from supernote.models.file_web import FilePathQueryVO, FileSortOrder, FileSortSequence
 
 
 async def test_file_list_query(
@@ -350,6 +350,57 @@ async def test_path_query_flattening(
     assert info.path == "Note"
     # idPath should be "note_id"
     assert info.id_path == f"{note_id}"
+
+
+async def test_path_query_nested_folder_and_file(
+    web_client: WebClient,
+) -> None:
+    """Verify /api/file/path/query resolves nested folder and file paths for Web UI refresh."""
+    res = await web_client.list_query(directory_id=0)
+    note_folder = next(f for f in res.user_file_vo_list if f.file_name == "Note")
+    note_id = int(note_folder.id)
+
+    work_vo = await web_client.create_folder(parent_id=note_id, name="Work")
+    work_id = int(work_vo.id)
+
+    projects_vo = await web_client.create_folder(parent_id=work_id, name="Projects")
+    projects_id = int(projects_vo.id)
+
+    # Upload a notebook inside /NOTE/Note/Work/Projects
+    await web_client.upload_file(
+        parent_id=projects_id,
+        name="Roadmap.note",
+        content=b"notebook-bytes",
+    )
+    projects_list = await web_client.list_query(directory_id=projects_id)
+    file_vo = next(
+        f for f in projects_list.user_file_vo_list if f.file_name == "Roadmap.note"
+    )
+    file_id = int(file_vo.id)
+
+    # Query nested folder
+    folder_info = await web_client.path_query(id=projects_id)
+    assert folder_info == FilePathQueryVO(
+        success=True,
+        path="Note/Work/Projects",
+        id_path=f"{note_id}/{work_id}/{projects_id}",
+    )
+
+    # Query file inside nested folder
+    file_info = await web_client.path_query(id=file_id)
+    assert file_info == FilePathQueryVO(
+        success=True,
+        path="Note/Work/Projects/Roadmap.note",
+        id_path=f"{note_id}/{work_id}/{projects_id}/{file_id}",
+    )
+
+    # Query non-existent/deleted ID returns empty path and id_path
+    missing_info = await web_client.path_query(id=999999999)
+    assert missing_info == FilePathQueryVO(
+        success=True,
+        path="",
+        id_path="",
+    )
 
 
 async def test_list_query_flattening(

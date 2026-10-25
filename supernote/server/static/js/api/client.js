@@ -146,6 +146,35 @@ export async function fetchFiles(directoryId = "0", pageNo = 1, pageSize = 50) {
     }));
 }
 
+/**
+ * Query path and ID path for a file or folder.
+ * @param {string|number} nodeId
+ * @returns {Promise<{success: boolean, path: string, idPath: string}>}
+ */
+export async function fetchPathInfo(nodeId) {
+    const currentToken = getToken();
+    if (!currentToken) throw new Error("Unauthorized");
+
+    const response = await fetch('/api/file/path/query', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-access-token': currentToken
+        },
+        body: JSON.stringify({ id: String(nodeId) })
+    });
+
+    if (!response.ok) {
+        if (response.status === 401) {
+            logout();
+            throw new Error("Unauthorized");
+        }
+        throw new Error(`Path query failed: ${response.statusText}`);
+    }
+
+    return await response.json();
+}
+
 function getExtension(filename) {
     if (!filename) return null;
     const parts = filename.split('.');
