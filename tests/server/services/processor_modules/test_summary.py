@@ -9,6 +9,7 @@ from supernote.models.summary import (
     AddSummaryDTO,
     AddSummaryGroupDTO,
 )
+from supernote.server.ai.base import AIError
 from supernote.server.ai.models.fake.summary import FakeSummaryModel
 from supernote.server.ai.prompts import SummarySegment
 from supernote.server.db.models.file import UserFileDO
@@ -359,3 +360,70 @@ async def test_summary_waits_until_all_pages_have_ocr_text(
     assert len(fake_summary_model.calls) == 1
     assert "Page 1 text" in fake_summary_model.calls[0]
     assert "Page 2 text" in fake_summary_model.calls[0]
+
+
+async def test_summary_failure_marks_task_failed(
+    summary_module: SummaryModule,
+    session_manager: DatabaseSessionManager,
+    fake_summary_model: FakeSummaryModel,
+    summary_service: SummaryService,
+) -> None:
+    user_id = 102
+    user_email = "fail@example.com"
+    file_id = 777
+    storage_key = "fail_storage_key"
+
+    async with session_manager.session() as session:
+        user = UserDO(id=user_id, email=user_email, password_md5="hash")
+        session.add(user)
+        user_file = UserFileDO(
+            id=file_id,
+            user_id=user_id,
+            storage_key=storage_key,
+            file_name="fail.note",
+            directory_id=0,
+        )
+        session.add(user_file)
+        session.add(
+            NotePageContentDO(
+                file_id=file_id,
+                page_index=0,
+                page_id="p0",
+                content_hash="h1",
+                text_content="Page 1 text",
+            )
+        )
+        await session.commit()
+
+    fake_summary_model.error = AIError("Gemini API unavailable")
+
+    result = await summary_module.run(file_id, session_manager)
+    assert result is False
+
+    transcript = await summary_service.get_summary_by_uuid(
+        user_email, get_transcript_id(storage_key)
+    )
+    assert transcript is not None
+    assert transcript.data_source == "OCR"
+
+    ai_summary = await summary_service.get_summary_by_uuid(
+        user_email, get_summary_id(storage_key)
+    )
+    assert ai_summary is None
+
+    async with session_manager.session() as session:
+        task = (
+            (
+                await session.execute(
+                    select(SystemTaskDO)
+                    .where(SystemTaskDO.file_id == file_id)
+                    .where(SystemTaskDO.task_type == "SUMMARY_GENERATION")
+                    .where(SystemTaskDO.key == "global")
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert task is not None
+        assert task.status == "FAILED"
+        assert task.last_error == "AIError: Gemini API unavailable"
