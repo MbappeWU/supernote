@@ -9,6 +9,7 @@ import pytest
 from aiohttp.test_utils import TestServer
 from socketio.exceptions import ConnectionError as SocketIOConnectionError
 
+from supernote.client.exceptions import SupernoteSocketError
 from supernote.client.socket import SupernoteSocketClient
 from supernote.models.socket import (
     DigestMessageTemplate,
@@ -17,6 +18,7 @@ from supernote.models.socket import (
     SocketHandshakeParams,
     SocketIoAction,
     SocketIoDigestDataType,
+    SocketIoEvent,
     SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
@@ -426,3 +428,78 @@ async def test_socketio_eio3_device_handshake_and_ping_compat(
             event_frame = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
             assert event_frame.startswith('42["ServerMessage",')
             assert "eio3 sync notification" in event_frame
+
+
+@pytest.mark.asyncio
+async def test_socketio_client_channels_and_error_handling_via_server(
+    socketio_server: TestServer,
+    socket_client: SupernoteSocketClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify SupernoteSocketClient handles TASK-SYN, DIGEST-SYN, malformed payloads, and unexpected server replies."""
+    user_service: UserService = socketio_server.app["user_service"]
+    manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
+    user_id = "test@example.com"
+
+    token = await user_service.create_session(user_id)
+    await socket_client.connect(_make_handshake_params(token))
+
+    # Valid TASK-SYN and DIGEST-SYN envelopes delivered through server
+    task_msg = SocketTaskMessageData(
+        code="200",
+        msg="Success",
+        timestamp=1700000001000,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                task_list_id="list-1",
+                task_id="task-1",
+                timestamp=1700000001000,
+            )
+        ],
+    )
+    await manager.send_message(user_id, task_msg)
+    assert await anext(socket_client.messages()) == task_msg
+
+    digest_msg = SocketDigestMessageData(
+        code="200",
+        msg="Success",
+        timestamp=1700000002000,
+        data=[
+            DigestMessageTemplate(
+                message_type=SocketIoAction.ADD_DIGEST,
+                data_type=SocketIoDigestDataType.SUMMARY_TAG,
+                id=10,
+                name="Tag",
+                timestamp=1700000002000,
+            )
+        ],
+    )
+    await manager.send_message(user_id, digest_msg)
+    assert await anext(socket_client.messages()) == digest_msg
+
+    # Malformed payloads emitted by server on to-do and digest channels log warnings without crashing
+    await manager.sio.emit(
+        SocketIoEvent.TODO.value, "{not-valid-json", room=f"user_{user_id}"
+    )
+    await manager.sio.emit(
+        SocketIoEvent.DIGEST.value, "{not-valid-json", room=f"user_{user_id}"
+    )
+
+    # Unexpected ping reply payload logs a warning
+    await manager.sio.emit(
+        SocketIoEvent.RATTA_PING.value, "unexpected-pong", room=f"user_{user_id}"
+    )
+    await socket_client.ping(timeout=1.0)
+    assert "Unexpected ping reply payload: unexpected-pong" in caplog.text
+    assert "Failed to parse to-do message" in caplog.text
+    assert "Failed to parse digest message" in caplog.text
+
+    # Non-'true' plain-string ServerMessage causes check_status to raise SupernoteSocketError
+    await manager.sio.emit(
+        SocketIoEvent.SERVER_MESSAGE.value, "false", room=f"user_{user_id}"
+    )
+    with pytest.raises(SupernoteSocketError, match="Unexpected status check reply"):
+        await socket_client.check_status(timeout=1.0)
+
+    await socket_client.disconnect()

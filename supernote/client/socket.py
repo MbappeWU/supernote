@@ -6,14 +6,10 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-socketio: Any = None
-try:
-    import socketio
-except ImportError:
-    pass
+import socketio
 
-from supernote.client.exceptions import SupernoteSocketError  # noqa: E402
-from supernote.models.socket import (  # noqa: E402
+from supernote.client.exceptions import SupernoteSocketError
+from supernote.models.socket import (
     SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoClientMessage,
@@ -32,11 +28,6 @@ class SupernoteSocketClient:
     """Async Socket.IO client for interacting with the Supernote real-time server."""
 
     def __init__(self, host: str) -> None:
-        if socketio is None:
-            raise SupernoteSocketError(
-                "python-socketio is required for SupernoteSocketClient. "
-                "Install supernote with client extras: pip install supernote[client]"
-            )
         self.host = host.rstrip("/")
         self._sio = socketio.AsyncClient()
         self._message_queue: asyncio.Queue[
