@@ -14,20 +14,22 @@ notebook = parse_notebook("path/to/note.note")
 
 ### Converting to Formats
 
-The `Notebook` object provides convenience methods for conversion:
+Use the built-in converters (`PdfConverter`, `ImageConverter`, `SvgConverter`, `TextConverter`) to convert notebook pages:
 
 ```python
-# Convert to PDF
-data = notebook.to_pdf()
-with open("output.pdf", "wb") as f:
-    f.write(data)
+from pathlib import Path
+from supernote.notebook import ImageConverter, PdfConverter, SvgConverter
 
-# Convert to PNG (first page)
-image = notebook.to_png(0)
+# Convert all pages (-1) or a specific page index to PDF
+pdf_data = PdfConverter(notebook).convert(-1)
+Path("output.pdf").write_bytes(pdf_data)
+
+# Convert first page to PNG (PIL Image)
+image = ImageConverter(notebook).convert(0)
 image.save("page1.png")
 
-# Convert to SVG (first page)
-svg_string = notebook.to_svg(0)
+# Convert first page to SVG
+svg_string = SvgConverter(notebook).convert(0)
 ```
 
 ### Accessing Metadata
