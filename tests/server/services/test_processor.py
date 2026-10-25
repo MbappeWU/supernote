@@ -17,6 +17,7 @@ from supernote.server.db.models.note_processing import NotePageContentDO, System
 from supernote.server.db.models.summary import SummaryDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import (
+    BlobCleanupEvent,
     Event,
     LocalEventBus,
     NoteDeletedEvent,
@@ -215,11 +216,59 @@ async def test_handle_note_deleted_cleanup(
     )
     assert await summary_module.run(file_id, session_manager) is True
 
+    # Attach handwriting blobs to the note's summary and group, plus a shared group with another child
+    await blob_storage.put(USER_DATA_BUCKET, "note_sum_hw.bin", b"sum-hw")
+    await blob_storage.put(USER_DATA_BUCKET, "note_grp_hw.bin", b"grp-hw")
+    await blob_storage.put(USER_DATA_BUCKET, "shared_grp_hw.bin", b"shared-grp-hw")
+    async with session_manager.session() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(SummaryDO).where(SummaryDO.user_id == test_user_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            if row.is_summary_group:
+                row.handwrite_inner_name = "note_grp_hw.bin"
+            elif row.file_id == file_id:
+                row.handwrite_inner_name = "note_sum_hw.bin"
+
+        # Near-miss: a parent group shared by both file_id and another digest must survive
+        session.add_all(
+            [
+                SummaryDO(
+                    user_id=test_user_id,
+                    unique_identifier="shared-grp-uuid",
+                    name="Shared Group",
+                    is_summary_group=True,
+                    handwrite_inner_name="shared_grp_hw.bin",
+                ),
+                SummaryDO(
+                    user_id=test_user_id,
+                    file_id=file_id,
+                    unique_identifier="deleted-note-in-shared-grp",
+                    parent_unique_identifier="shared-grp-uuid",
+                    is_summary_group=False,
+                ),
+                SummaryDO(
+                    user_id=test_user_id,
+                    file_id=None,
+                    unique_identifier="surviving-digest-in-shared-grp",
+                    parent_unique_identifier="shared-grp-uuid",
+                    is_summary_group=False,
+                ),
+            ]
+        )
+        await session.commit()
+
     # Trigger deletion event
     event = NoteDeletedEvent(file_id=file_id, user_id=test_user_id)
     await processor_service.handle_note_deleted(event)
 
-    # Verify DB records (including parent summary group) are gone
+    # Verify DB records for file_id and its now-empty group are gone, while shared group & surviving child remain
     async with session_manager.session() as session:
         contents = (
             (
@@ -241,10 +290,12 @@ async def test_handle_note_deleted_cleanup(
             .scalars()
             .all()
         )
-        summaries = (
+        surviving_uuids = set(
             (
                 await session.execute(
-                    select(SummaryDO).where(SummaryDO.user_id == test_user_id)
+                    select(SummaryDO.unique_identifier).where(
+                        SummaryDO.user_id == test_user_id
+                    )
                 )
             )
             .scalars()
@@ -252,11 +303,100 @@ async def test_handle_note_deleted_cleanup(
         )
         assert len(contents) == 0
         assert len(tasks) == 0
-        assert len(summaries) == 0
+        assert surviving_uuids == {
+            "shared-grp-uuid",
+            "surviving-digest-in-shared-grp",
+        }
 
-    # Verify Blobs are deleted
+    # Verify Blobs are deleted only for unreferenced note summaries/groups
     assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "p0"))
     assert not await blob_storage.exists(CACHE_BUCKET, get_page_png_path(file_id, "p1"))
+    assert not await blob_storage.exists(USER_DATA_BUCKET, "note_sum_hw.bin")
+    assert not await blob_storage.exists(USER_DATA_BUCKET, "note_grp_hw.bin")
+    assert await blob_storage.exists(USER_DATA_BUCKET, "shared_grp_hw.bin")
+
+
+async def test_handle_blob_cleanup_event(
+    processor_service: ProcessorService,
+    session_manager: DatabaseSessionManager,
+    blob_storage: BlobStorage,
+    test_user_id: int,
+) -> None:
+    """Verify BlobCleanupEvent deletes unreferenced blobs while preserving active and soft-deleted file/summary blobs."""
+    await blob_storage.put(USER_DATA_BUCKET, "unreferenced_hw.bin", b"orphan")
+    await blob_storage.put(USER_DATA_BUCKET, "referenced_by_file.bin", b"file-data")
+    await blob_storage.put(
+        USER_DATA_BUCKET, "referenced_by_recycled_file.bin", b"recycled-file-data"
+    )
+    await blob_storage.put(USER_DATA_BUCKET, "referenced_by_summary.bin", b"sum-data")
+    await blob_storage.put(
+        USER_DATA_BUCKET, "referenced_by_deleted_summary.bin", b"deleted-sum-data"
+    )
+
+    async with session_manager.session() as session:
+        session.add_all(
+            [
+                UserFileDO(
+                    id=777,
+                    user_id=test_user_id,
+                    storage_key="referenced_by_file.bin",
+                    file_name="keep.note",
+                    directory_id=0,
+                    is_active="Y",
+                ),
+                UserFileDO(
+                    id=778,
+                    user_id=test_user_id,
+                    storage_key="referenced_by_recycled_file.bin",
+                    file_name="recycled.note",
+                    directory_id=0,
+                    is_active="N",
+                ),
+                SummaryDO(
+                    user_id=test_user_id,
+                    unique_identifier="keep-summary-uuid",
+                    handwrite_inner_name="referenced_by_summary.bin",
+                    is_deleted=False,
+                ),
+                SummaryDO(
+                    user_id=test_user_id,
+                    unique_identifier="soft-deleted-summary-uuid",
+                    handwrite_inner_name="referenced_by_deleted_summary.bin",
+                    is_deleted=True,
+                ),
+            ]
+        )
+        await session.commit()
+
+    await processor_service.start()
+    try:
+        await processor_service.event_bus.publish(
+            BlobCleanupEvent(
+                storage_keys={
+                    "unreferenced_hw.bin",
+                    "referenced_by_file.bin",
+                    "referenced_by_recycled_file.bin",
+                    "referenced_by_summary.bin",
+                    "referenced_by_deleted_summary.bin",
+                }
+            )
+        )
+        await asyncio.sleep(0.05)
+        await processor_service.handle_blob_cleanup(
+            BlobCleanupEvent(storage_keys={"referenced_by_file.bin"})
+        )
+    finally:
+        await processor_service.stop()
+
+    assert not await blob_storage.exists(USER_DATA_BUCKET, "unreferenced_hw.bin")
+    assert await blob_storage.exists(USER_DATA_BUCKET, "referenced_by_file.bin")
+    assert await blob_storage.exists(
+        USER_DATA_BUCKET, "referenced_by_recycled_file.bin"
+    )
+    assert await blob_storage.exists(USER_DATA_BUCKET, "referenced_by_summary.bin")
+    assert await blob_storage.exists(
+        USER_DATA_BUCKET, "referenced_by_deleted_summary.bin"
+    )
 
 
 async def test_page_hashing_orphan_cleanup(

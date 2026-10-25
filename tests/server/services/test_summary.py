@@ -3,9 +3,11 @@
 import asyncio
 import hashlib
 import math
+import time
 from dataclasses import replace
 
 import pytest
+from sqlalchemy import update
 
 from supernote.models.summary import (
     AddSummaryDTO,
@@ -16,8 +18,11 @@ from supernote.models.summary import (
     UpdateSummaryGroupDTO,
 )
 from supernote.models.user import UserRegisterDTO
+from supernote.server.constants import RECYCLE_RETENTION_MS
+from supernote.server.db.models.summary import SummaryDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import (
+    BlobCleanupEvent,
     Event,
     LocalEventBus,
     SummaryDeletedEvent,
@@ -33,15 +38,35 @@ USER_EMAIL = "test@example.com"
 
 
 @pytest.fixture
+def event_bus() -> LocalEventBus:
+    """Real LocalEventBus for verifying published domain events."""
+    return LocalEventBus()
+
+
+@pytest.fixture
+def published_events(event_bus: LocalEventBus) -> list[Event]:
+    """Capture BlobCleanupEvents published on the LocalEventBus."""
+    events: list[Event] = []
+
+    async def capture(event: Event) -> None:
+        events.append(event)
+
+    event_bus.subscribe(BlobCleanupEvent, capture)
+    return events
+
+
+@pytest.fixture
 async def summary_service(
     user_service: UserService,
     session_manager: DatabaseSessionManager,
+    event_bus: LocalEventBus,
 ) -> SummaryService:
     """Create a SummaryService bound to the test session manager with a registered test user."""
     await user_service.register(UserRegisterDTO(email=USER_EMAIL, password="a" * 32))
     return SummaryService(
         user_service=user_service,
         session_manager=session_manager,
+        event_bus=event_bus,
     )
 
 
@@ -528,3 +553,135 @@ async def test_summary_service_publishes_domain_events_on_mutations(
         await service.delete_summary(USER_EMAIL, 99999)
     await asyncio.sleep(0)
     assert published == []
+
+
+async def test_handwrite_replacement_and_expired_summary_purge_publish_blob_cleanup(
+    summary_service: SummaryService,
+    session_manager: DatabaseSessionManager,
+    published_events: list[Event],
+) -> None:
+    """Verify replacing handwrite_inner_name and purging expired soft-deleted summaries publish BlobCleanupEvent."""
+    summary = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="sum-hw-1",
+            content="Summary with handwriting",
+            handwrite_inner_name="hw-old.bin",
+            handwrite_md5="md5-old",
+        ),
+    )
+    group = await summary_service.add_group(
+        USER_EMAIL,
+        AddSummaryGroupDTO(
+            unique_identifier="grp-hw-1",
+            name="Group with handwriting",
+            md5_hash="gh1",
+        ),
+    )
+    assert summary.id is not None and group.id is not None
+
+    await summary_service.update_group(
+        USER_EMAIL,
+        UpdateSummaryGroupDTO(
+            id=group.id,
+            unique_identifier="grp-hw-1",
+            md5_hash="gh2",
+            handwrite_inner_name="grp-hw-old.bin",
+        ),
+    )
+    # Near-misses: updating with the same handwrite_inner_name or omitting it must not publish cleanup
+    await summary_service.update_summary(
+        USER_EMAIL,
+        UpdateSummaryDTO(id=summary.id, handwrite_inner_name="hw-old.bin"),
+    )
+    await summary_service.update_summary(
+        USER_EMAIL,
+        UpdateSummaryDTO(id=summary.id, content="Edited text only"),
+    )
+    await summary_service.update_group(
+        USER_EMAIL,
+        UpdateSummaryGroupDTO(
+            id=group.id,
+            unique_identifier="grp-hw-1",
+            md5_hash="gh2",
+            handwrite_inner_name="grp-hw-old.bin",
+        ),
+    )
+    await asyncio.sleep(0)
+    assert published_events == []
+
+    # Replacing handwrite_inner_name publishes BlobCleanupEvent for the old key
+    await summary_service.update_summary(
+        USER_EMAIL,
+        UpdateSummaryDTO(
+            id=summary.id,
+            handwrite_inner_name="hw-new.bin",
+            handwrite_md5="md5-new",
+        ),
+    )
+    await summary_service.update_group(
+        USER_EMAIL,
+        UpdateSummaryGroupDTO(
+            id=group.id,
+            unique_identifier="grp-hw-1",
+            md5_hash="gh3",
+            handwrite_inner_name="grp-hw-new.bin",
+        ),
+    )
+    await asyncio.sleep(0)
+    assert published_events == [
+        BlobCleanupEvent(storage_keys={"hw-old.bin"}),
+        BlobCleanupEvent(storage_keys={"grp-hw-old.bin"}),
+    ]
+    published_events.clear()
+
+    # Near-miss: an active summary older than the retention window must not be purged
+    active_old = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="sum-active-old",
+            content="Old active summary",
+            handwrite_inner_name="hw-active-old.bin",
+        ),
+    )
+    assert active_old.id is not None
+
+    # Soft-deleting does not immediately purge or publish blob cleanup
+    await summary_service.delete_summary(USER_EMAIL, summary.id)
+    await summary_service.delete_group(USER_EMAIL, group.id)
+    await asyncio.sleep(0)
+    assert published_events == []
+    assert await summary_service.purge_expired_summaries() == 0
+
+    # Set summary at exact cutoff, active_old older than cutoff, and group 1ms inside retention window
+    cutoff_ms = int(time.time() * 1000) - RECYCLE_RETENTION_MS
+    async with session_manager.session() as session:
+        await session.execute(
+            update(SummaryDO)
+            .where(SummaryDO.id == summary.id)
+            .values(update_time=cutoff_ms)
+        )
+        await session.execute(
+            update(SummaryDO)
+            .where(SummaryDO.id == active_old.id)
+            .values(update_time=cutoff_ms - 10_000)
+        )
+        await session.execute(
+            update(SummaryDO)
+            .where(SummaryDO.id == group.id)
+            .values(update_time=cutoff_ms + 1)
+        )
+        await session.commit()
+
+    purged_count = await summary_service.purge_expired_summaries(
+        older_than_ms=cutoff_ms
+    )
+    await asyncio.sleep(0)
+    assert purged_count == 1
+    assert published_events == [BlobCleanupEvent(storage_keys={"hw-new.bin"})]
+
+    # Expired soft-deleted summary is hard-deleted; active old summary and 1ms-newer soft-deleted group survive
+    with pytest.raises(SummaryNotFound):
+        await summary_service.get_summary(USER_EMAIL, summary.id)
+    assert await summary_service.get_summary(USER_EMAIL, active_old.id) is not None
+    assert await summary_service.get_summary(USER_EMAIL, group.id) is not None

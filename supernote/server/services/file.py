@@ -2,11 +2,15 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import select
 
 from supernote.models.base import BooleanEnum
 from supernote.server.constants import (
     CACHE_BUCKET,
     CATEGORY_CONTAINERS,
+    RECYCLE_RETENTION_MS,
     USER_DATA_BUCKET,
 )
 from supernote.server.exceptions import (
@@ -20,6 +24,7 @@ from supernote.server.exceptions import (
 from supernote.server.utils.paths import get_conversion_pdf_path
 
 from ..db.models.file import RecycleFileDO, UserFileDO
+from ..db.models.summary import SummaryDO
 from ..db.session import DatabaseSessionManager
 from ..events import (
     LocalEventBus,
@@ -35,8 +40,6 @@ from .user import UserService
 from .vfs import VirtualFileSystem
 
 logger = logging.getLogger(__name__)
-
-RECYCLE_RETENTION_MS = 30 * 24 * 3600 * 1000  # 30 days
 
 
 __all__ = [
@@ -502,12 +505,11 @@ class FileService:
             storage_key=storage_key,
         )
 
-        superseded_storage_key: str | None = None
-        if old_storage_key and old_storage_key != storage_key:
-            unreferenced = await vfs.get_unreferenced_storage_keys({old_storage_key})
-            if old_storage_key in unreferenced:
-                superseded_storage_key = old_storage_key
-
+        superseded_storage_key = (
+            old_storage_key
+            if old_storage_key and old_storage_key != storage_key
+            else None
+        )
         superseded_md5 = old_md5 if old_md5 and old_md5 != md5 else None
 
         return _FileUpsertResult(
@@ -522,14 +524,7 @@ class FileService:
     ) -> None:
         """Delete unreferenced superseded primary blob and stale conversion artifacts."""
         if result.superseded_storage_key:
-            try:
-                await self.blob_storage.delete(
-                    USER_DATA_BUCKET, result.superseded_storage_key
-                )
-            except (FileNotFoundError, OSError) as e:
-                logger.warning(
-                    f"Failed to delete superseded blob {result.superseded_storage_key}: {e}"
-                )
+            await self.cleanup_unreferenced_blobs({result.superseded_storage_key})
 
         if result.superseded_md5:
             await self._delete_conversion_blobs(
@@ -1111,6 +1106,45 @@ class FileService:
         cutoff_ms = int(time.time() * 1000) - RECYCLE_RETENTION_MS
         await self.purge_recycle(user_id=user_id, older_than_ms=cutoff_ms)
 
+    @staticmethod
+    async def _filter_unreferenced_summary_keys(
+        session: Any, candidate_keys: set[str]
+    ) -> set[str]:
+        """Return the subset of candidate keys not referenced by any SummaryDO handwriting blob."""
+        if not candidate_keys:
+            return set()
+        summary_stmt = (
+            select(SummaryDO.handwrite_inner_name)
+            .where(SummaryDO.handwrite_inner_name.in_(candidate_keys))
+            .group_by(SummaryDO.handwrite_inner_name)
+        )
+        surviving_summary_keys = {
+            k for k in (await session.execute(summary_stmt)).scalars().all() if k
+        }
+        return candidate_keys - surviving_summary_keys
+
+    async def cleanup_unreferenced_blobs(self, candidate_keys: set[str]) -> None:
+        """Delete candidate keys from USER_DATA_BUCKET that are not referenced by any file or summary row."""
+        clean_keys = {k for k in candidate_keys if k}
+        if not clean_keys:
+            return
+
+        # USER_DATA_BUCKET stores both VFS files (UserFileDO.storage_key) and
+        # summary handwriting strokes (SummaryDO.handwrite_inner_name); only delete
+        # keys that are unreferenced across both tables.
+        async with self.session_manager.session() as session:
+            vfs = VirtualFileSystem(session)
+            unreferenced_file_keys = await vfs.get_unreferenced_storage_keys(clean_keys)
+            blobs_to_delete = await self._filter_unreferenced_summary_keys(
+                session, unreferenced_file_keys
+            )
+
+        for blob_key in blobs_to_delete:
+            try:
+                await self.blob_storage.delete(USER_DATA_BUCKET, blob_key)
+            except (FileNotFoundError, OSError) as e:
+                logger.warning(f"Failed to delete blob {blob_key}: {e}")
+
     async def purge_recycle(
         self,
         user_id: int,
@@ -1128,20 +1162,13 @@ class FileService:
             if not purged_nodes:
                 return
 
-            # Physical storage blobs in the user data bucket must only be deleted
-            # when no surviving file records reference the storage key.
             candidate_keys = {
                 n.storage_key
                 for n in purged_nodes
                 if n.is_folder == "N" and n.storage_key
             }
-            blobs_to_delete = await vfs.get_unreferenced_storage_keys(candidate_keys)
 
-        for blob_key in blobs_to_delete:
-            try:
-                await self.blob_storage.delete(USER_DATA_BUCKET, blob_key)
-            except (FileNotFoundError, OSError) as e:
-                logger.warning(f"Failed to delete blob {blob_key}: {e}")
+        await self.cleanup_unreferenced_blobs(candidate_keys)
 
         for node in purged_nodes:
             if node.is_folder == "N" and node.md5:

@@ -6,10 +6,15 @@ import time
 from pathlib import Path
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import delete, update
 
-from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
+from supernote.server.constants import (
+    CACHE_BUCKET,
+    RECYCLE_RETENTION_MS,
+    USER_DATA_BUCKET,
+)
 from supernote.server.db.models.file import RecycleFileDO
+from supernote.server.db.models.summary import SummaryDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import (
     Event,
@@ -21,7 +26,7 @@ from supernote.server.events import (
     VfsItemMovedEvent,
 )
 from supernote.server.services.blob import BlobStorage
-from supernote.server.services.file import RECYCLE_RETENTION_MS, FileService
+from supernote.server.services.file import FileService
 from supernote.server.services.user import UserService
 from supernote.server.services.vfs import VirtualFileSystem
 from supernote.server.utils.paths import get_conversion_pdf_path
@@ -835,3 +840,66 @@ async def test_file_service_publishes_vfs_domain_events(
             md5=md5,
         )
     ]
+
+
+async def test_file_overwrite_and_purge_preserve_summary_referenced_blob(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    session_manager: DatabaseSessionManager,
+    test_user_id: int,
+    test_users: list[str],
+) -> None:
+    """Near-miss: overwriting or purging a file must not delete a blob still referenced by SummaryDO."""
+    user = test_users[0]
+    content_v1 = b"shared with summary v1"
+    md5_v1 = hashlib.md5(content_v1).hexdigest()
+    content_v2 = b"shared with summary v2"
+    md5_v2 = hashlib.md5(content_v2).hexdigest()
+
+    await blob_storage.put(USER_DATA_BUCKET, "shared_sum_key_v1", content_v1)
+    await blob_storage.put(USER_DATA_BUCKET, "shared_sum_key_v2", content_v2)
+
+    async with session_manager.session() as session:
+        session.add_all(
+            [
+                SummaryDO(
+                    user_id=test_user_id,
+                    unique_identifier="sum-ref-v1",
+                    handwrite_inner_name="shared_sum_key_v1",
+                ),
+                SummaryDO(
+                    user_id=test_user_id,
+                    unique_identifier="sum-ref-v2",
+                    handwrite_inner_name="shared_sum_key_v2",
+                ),
+            ]
+        )
+        await session.commit()
+
+    await file_service.finish_upload(
+        user, "cross_ref.txt", "/", md5_v1, "shared_sum_key_v1"
+    )
+    # Overwrite with v2 -> v1 blob must survive because SummaryDO still references it
+    entity_v2 = await file_service.finish_upload(
+        user, "cross_ref.txt", "/", md5_v2, "shared_sum_key_v2"
+    )
+    assert await blob_storage.exists(USER_DATA_BUCKET, "shared_sum_key_v1") is True
+
+    # Soft-delete and purge v2 -> v2 blob must survive because SummaryDO still references it
+    await file_service.delete_item(user, entity_v2.id)
+    recycled = await file_service.list_recycle(user)
+    await file_service.delete_from_recycle(user, [recycled[0].id])
+    assert await blob_storage.exists(USER_DATA_BUCKET, "shared_sum_key_v2") is True
+
+    # Once SummaryDO rows are removed, cleanup_unreferenced_blobs deletes both keys
+    async with session_manager.session() as session:
+        await session.execute(
+            delete(SummaryDO).where(SummaryDO.user_id == test_user_id)
+        )
+        await session.commit()
+
+    await file_service.cleanup_unreferenced_blobs(
+        {"shared_sum_key_v1", "shared_sum_key_v2"}
+    )
+    assert await blob_storage.exists(USER_DATA_BUCKET, "shared_sum_key_v1") is False
+    assert await blob_storage.exists(USER_DATA_BUCKET, "shared_sum_key_v2") is False

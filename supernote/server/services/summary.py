@@ -4,7 +4,7 @@ import time
 import uuid
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, and_, func, select
+from sqlalchemy import ColumnElement, Select, and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.base import BooleanEnum
@@ -19,9 +19,11 @@ from supernote.models.summary import (
     UpdateSummaryDTO,
     UpdateSummaryGroupDTO,
 )
+from supernote.server.constants import RECYCLE_RETENTION_MS
 from supernote.server.db.models.summary import SummaryDO, SummaryTagDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import (
+    BlobCleanupEvent,
     LocalEventBus,
     SummaryDeletedEvent,
     SummaryTagDeletedEvent,
@@ -230,6 +232,8 @@ class SummaryService:
             if not summary_do:
                 raise SummaryNotFound(f"Summary with ID {dto.id} not found")
 
+            old_inner_name = summary_do.handwrite_inner_name
+
             if dto.parent_unique_identifier is not None:
                 summary_do.parent_unique_identifier = dto.parent_unique_identifier
             if dto.content is not None:
@@ -263,9 +267,11 @@ class SummaryService:
             if dto.author is not None:
                 summary_do.author = dto.author
 
+            new_inner_name = summary_do.handwrite_inner_name
             await session.commit()
             await session.refresh(summary_do)
             summary_item = _to_summary_item(summary_do)
+
         if self.event_bus is not None:
             await self.event_bus.publish(
                 SummaryUpsertedEvent(
@@ -274,10 +280,17 @@ class SummaryService:
                     is_new=False,
                 )
             )
+            # When handwrite_inner_name is overwritten in-place on an existing summary,
+            # the superseded key is no longer tracked on SummaryDO (unlike soft-delete,
+            # which retains the row and blob for RECYCLE_RETENTION_MS).
+            if old_inner_name and old_inner_name != new_inner_name:
+                await self.event_bus.publish(
+                    BlobCleanupEvent(storage_keys={old_inner_name})
+                )
         return True
 
     async def delete_summary(self, user_email: str, summary_id: int) -> bool:
-        """Soft delete a summary (and child summaries when deleting a group)."""
+        """Soft delete a summary (retaining its row and blob for RECYCLE_RETENTION_MS before hard purge)."""
         user_id = await self.user_service.get_user_id(user_email)
         async with self.session_manager.session() as session:
             summary_do = await self._get_summary(session, user_id, summary_id)
@@ -417,6 +430,8 @@ class SummaryService:
                 if not group_do or not group_do.is_summary_group:
                     raise SummaryNotFound(f"Group with ID {dto.id} not found")
 
+            old_inner_name = group_do.handwrite_inner_name
+
             group_do.md5_hash = dto.md5_hash
             if dto.name is not None:
                 group_do.name = dto.name
@@ -433,9 +448,11 @@ class SummaryService:
             if dto.last_modified_time is not None:
                 group_do.last_modified_time = dto.last_modified_time
 
+            new_inner_name = group_do.handwrite_inner_name
             await session.commit()
             await session.refresh(group_do)
             summary_item = _to_summary_item(group_do)
+
         if self.event_bus is not None:
             await self.event_bus.publish(
                 SummaryUpsertedEvent(
@@ -444,11 +461,46 @@ class SummaryService:
                     is_new=False,
                 )
             )
+            # Overwriting handwrite_inner_name in-place supersedes the previous key;
+            # soft-deleted groups instead retain their blob for RECYCLE_RETENTION_MS.
+            if old_inner_name and old_inner_name != new_inner_name:
+                await self.event_bus.publish(
+                    BlobCleanupEvent(storage_keys={old_inner_name})
+                )
         return True
 
     async def delete_group(self, user_email: str, group_id: int) -> bool:
         """Delete a summary group and its child summaries (soft delete)."""
         return await self.delete_summary(user_email, group_id)
+
+    async def purge_expired_summaries(self, older_than_ms: int | None = None) -> int:
+        """Hard-delete soft-deleted summaries older than the retention window and publish blob cleanup events."""
+        cutoff_ms = (
+            older_than_ms
+            if older_than_ms is not None
+            else int(time.time() * 1000) - RECYCLE_RETENTION_MS
+        )
+        async with self.session_manager.session() as session:
+            stmt = select(SummaryDO.id, SummaryDO.handwrite_inner_name).where(
+                SummaryDO.is_deleted.is_(True),
+                SummaryDO.update_time <= cutoff_ms,
+            )
+            rows = (await session.execute(stmt)).all()
+            if not rows:
+                return 0
+
+            expired_ids = [row_id for row_id, _ in rows]
+            candidate_keys = {
+                inner_name for _, inner_name in rows if inner_name is not None
+            }
+            await session.execute(
+                delete(SummaryDO).where(SummaryDO.id.in_(expired_ids))
+            )
+            await session.commit()
+
+        if self.event_bus and candidate_keys:
+            await self.event_bus.publish(BlobCleanupEvent(storage_keys=candidate_keys))
+        return len(expired_ids)
 
     async def count_groups(self, user_email: str) -> int:
         """Count total non-deleted summary groups for a user."""

@@ -19,6 +19,7 @@ from ..db.models.note_processing import NotePageContentDO, SystemTaskDO
 from ..db.models.summary import SummaryDO
 from ..db.session import DatabaseSessionManager
 from ..events import (
+    BlobCleanupEvent,
     Event,
     LocalEventBus,
     NoteDeletedEvent,
@@ -118,6 +119,7 @@ class ProcessorService:
         self.event_bus.subscribe(NoteUpdatedEvent, self.handle_note_updated)
         self.event_bus.subscribe(NoteDeletedEvent, self.handle_note_deleted)
         self.event_bus.subscribe(SyncCompletedEvent, self.handle_sync_completed)
+        self.event_bus.subscribe(BlobCleanupEvent, self.handle_blob_cleanup)
 
         # Start workers
         for i in range(self.concurrency):
@@ -223,16 +225,17 @@ class ProcessorService:
             result = await session.execute(stmt)
             page_ids = result.scalars().all()
 
-            # Delete DB records (including parent summary group rows)
-            parent_uuids_stmt = select(SummaryDO.parent_unique_identifier).where(
-                SummaryDO.file_id == file_id,
-                SummaryDO.parent_unique_identifier.is_not(None),
-            )
-            parent_uuids = [
-                u
-                for u in (await session.execute(parent_uuids_stmt)).scalars().all()
-                if u
-            ]
+            # Collect parent group UUIDs and any handwriting blob keys attached to
+            # the note's summaries or their now-empty parent summary groups so
+            # unreferenced blobs can be cleaned up after the SummaryDO rows are deleted.
+            summary_rows_stmt = select(
+                SummaryDO.parent_unique_identifier,
+                SummaryDO.handwrite_inner_name,
+            ).where(SummaryDO.file_id == file_id)
+            summary_rows = (await session.execute(summary_rows_stmt)).all()
+            parent_uuids = {u for u, _ in summary_rows if u}
+            candidate_blob_keys = {k for _, k in summary_rows if k}
+
             await session.execute(
                 delete(NotePageContentDO).where(NotePageContentDO.file_id == file_id)
             )
@@ -241,13 +244,41 @@ class ProcessorService:
             )
             await session.execute(delete(SummaryDO).where(SummaryDO.file_id == file_id))
             if parent_uuids:
-                await session.execute(
-                    delete(SummaryDO).where(
-                        SummaryDO.unique_identifier.in_(parent_uuids),
-                        SummaryDO.is_summary_group.is_(True),
-                    )
+                surviving_parent_stmt = (
+                    select(SummaryDO.parent_unique_identifier)
+                    .where(SummaryDO.parent_unique_identifier.in_(parent_uuids))
+                    .group_by(SummaryDO.parent_unique_identifier)
                 )
+                surviving_parents = {
+                    u
+                    for u in (await session.execute(surviving_parent_stmt))
+                    .scalars()
+                    .all()
+                    if u
+                }
+                empty_parent_uuids = parent_uuids - surviving_parents
+                if empty_parent_uuids:
+                    group_blobs_stmt = select(SummaryDO.handwrite_inner_name).where(
+                        SummaryDO.unique_identifier.in_(empty_parent_uuids),
+                        SummaryDO.is_summary_group.is_(True),
+                        SummaryDO.handwrite_inner_name.is_not(None),
+                    )
+                    candidate_blob_keys.update(
+                        k
+                        for k in (await session.execute(group_blobs_stmt))
+                        .scalars()
+                        .all()
+                        if k
+                    )
+                    await session.execute(
+                        delete(SummaryDO).where(
+                            SummaryDO.unique_identifier.in_(empty_parent_uuids),
+                            SummaryDO.is_summary_group.is_(True),
+                        )
+                    )
             await session.commit()
+
+        await self.file_service.cleanup_unreferenced_blobs(candidate_blob_keys)
 
         # Delete Blobs (PNGs)
         for page_id in page_ids:
@@ -262,6 +293,12 @@ class ProcessorService:
                 )
 
         logger.info(f"Cleanup complete for deleted note: {file_id}")
+
+    async def handle_blob_cleanup(self, event: Event) -> None:
+        """Clean up unreferenced user data blobs asynchronously."""
+        if not isinstance(event, BlobCleanupEvent):
+            return
+        await self.file_service.cleanup_unreferenced_blobs(event.storage_keys)
 
     async def recover_tasks(self) -> None:
         """Check DB for incomplete tasks on startup."""
@@ -294,6 +331,7 @@ class ProcessorService:
                 if self.is_processing_enabled():
                     await self.recover_stalled_tasks()
                     await self.recover_missing_tasks()
+                    await self.summary_service.purge_expired_summaries()
             except asyncio.CancelledError:
                 break
             except Exception as e:
