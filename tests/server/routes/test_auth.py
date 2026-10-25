@@ -11,7 +11,7 @@ from supernote.client.exceptions import ApiException, UnauthorizedException
 from supernote.client.login_client import LoginClient
 from supernote.client.web import WebClient
 from supernote.models.equipment import UserEquipmentVO
-from supernote.models.user import UserCheckVO
+from supernote.models.user import UserCheckVO, UserRegisterDTO
 from supernote.server.config import ServerConfig
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.exceptions import SupernoteError
@@ -128,6 +128,40 @@ async def test_bind_equipment(
         user_id=user_id,
         status="Y",
     )
+
+    # Re-binding to the same user succeeds idempotently
+    same_user_resp = await client.post(
+        "/api/terminal/user/bindEquipment",
+        json={
+            "account": "test@example.com",
+            "equipmentNo": "EQ123",
+            "name": "Device",
+            "totalCapacity": "1000",
+        },
+    )
+    assert same_user_resp.status == 200
+    assert (await same_user_resp.json())["success"] is True
+
+    # Binding to a different user while already bound is rejected
+    await user_service.register(
+        UserRegisterDTO(
+            email="other@example.com",
+            password=hashlib.md5(b"password").hexdigest(),
+        )
+    )
+    other_user_resp = await client.post(
+        "/api/terminal/user/bindEquipment",
+        json={
+            "account": "other@example.com",
+            "equipmentNo": "EQ123",
+            "name": "Device",
+            "totalCapacity": "1000",
+        },
+    )
+    assert other_user_resp.status == 400
+    other_data = await other_user_resp.json()
+    assert other_data["success"] is False
+    assert "already bound" in other_data["errorMsg"]
 
 
 async def test_user_query(

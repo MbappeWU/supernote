@@ -234,7 +234,10 @@ async def handle_bind_equipment(request: web.Request) -> web.Response:
         return e.to_response()
 
     user_service: UserService = request.app["user_service"]
-    await user_service.bind_equipment(bind_req.account, bind_req.equipment_no)
+    try:
+        await user_service.bind_equipment(bind_req.account, bind_req.equipment_no)
+    except ValueError as e:
+        return web.json_response(create_error_response(str(e)).to_dict(), status=400)
     return web.json_response(BaseResponse().to_dict())
 
 

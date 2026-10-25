@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import jwt
 from mashumaro.mixins.json import DataClassJSONMixin
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -564,19 +564,18 @@ class UserService:
             return
 
         async with self._session_manager.session() as session:
-            # Upsert
-            existing = await session.execute(
-                select(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
-            )
-            if existing.scalar_one_or_none():
-                # Device already exists, update binding to current user.
+            existing = (
                 await session.execute(
-                    update(DeviceDO)
-                    .where(DeviceDO.equipment_no == equipment_no)
-                    .values(user_id=user.id)
+                    select(DeviceDO).where(DeviceDO.equipment_no == equipment_no)
                 )
-            else:
-                session.add(DeviceDO(user_id=user.id, equipment_no=equipment_no))
+            ).scalar_one_or_none()
+            if existing:
+                if existing.user_id == user.id:
+                    return
+                raise ValueError(
+                    f"Equipment {equipment_no} is already bound to another account"
+                )
+            session.add(DeviceDO(user_id=user.id, equipment_no=equipment_no))
             await session.commit()
 
     async def unlink_equipment(self, equipment_no: str) -> None:
