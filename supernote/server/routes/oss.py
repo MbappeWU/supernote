@@ -4,15 +4,17 @@ import asyncio
 import logging
 import mimetypes
 from collections.abc import AsyncGenerator
+from http import HTTPStatus
 from pathlib import Path
 
 from aiohttp import BodyPartReader, web
 
 from supernote.models.base import create_error_response
 from supernote.models.system import FileChunkParams, FileChunkVO, UploadFileVO
-from supernote.server.constants import USER_DATA_BUCKET
+from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.blob import STREAM_CHUNK_SIZE, BlobStorage
+from supernote.server.services.conversion import ConversionService
 from supernote.server.services.file import FileService
 from supernote.server.utils.paths import get_file_chunk_path
 from supernote.server.utils.url_signer import UrlSigner
@@ -249,6 +251,72 @@ def _build_download_headers(
     return headers
 
 
+async def _stream_blob_response(
+    request: web.Request,
+    blob_storage: BlobStorage,
+    bucket: str,
+    storage_key: str,
+    file_name: str,
+    file_size: int,
+) -> web.StreamResponse:
+    """Stream a blob from storage with HTTP Range and Content-Disposition support."""
+    range_header = request.headers.get("Range")
+
+    start = 0
+    end = file_size - 1
+
+    if range_header:
+        # Simplistic Range parsing: bytes=start-end
+        try:
+            unit, ranges = range_header.split("=")
+            if unit == "bytes":
+                r = ranges.split("-")
+                if r[0]:
+                    start = int(r[0])
+                if len(r) > 1 and r[1]:
+                    end = int(r[1])
+
+                # Check bounds
+                if start >= file_size:
+                    return web.json_response(
+                        create_error_response("Invalid range").to_dict(),
+                        status=HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                    )
+
+                if end >= file_size:
+                    end = file_size - 1
+        except ValueError:
+            return web.json_response(
+                create_error_response("Invalid Range header").to_dict(),
+                status=HTTPStatus.BAD_REQUEST,
+            )
+
+    status = HTTPStatus.PARTIAL_CONTENT if range_header else HTTPStatus.OK
+    headers = _build_download_headers(
+        file_name=file_name,
+        file_size=file_size,
+        start=start,
+        end=end,
+        is_range=bool(range_header),
+        inline=request.query.get("inline") in ("1", "true"),
+    )
+
+    response = web.StreamResponse(status=status, headers=headers)
+    await response.prepare(request)
+
+    try:
+        stream = blob_storage.get(bucket, storage_key, start=start, end=end)
+        async for chunk in stream:
+            await response.write(chunk)
+    except FileNotFoundError:
+        return web.json_response(
+            create_error_response("Blob not found").to_dict(),
+            status=HTTPStatus.NOT_FOUND,
+        )
+
+    return response
+
+
 @routes.get("/api/oss/download")
 @public_route
 async def handle_oss_download(request: web.Request) -> web.StreamResponse:
@@ -270,13 +338,14 @@ async def handle_oss_download(request: web.Request) -> web.StreamResponse:
     if not user_email:
         return web.json_response(
             create_error_response("Missing user identity in signature").to_dict(),
-            status=403,
+            status=HTTPStatus.FORBIDDEN,
         )
 
     file_id_str = request.query.get("path")
     if not file_id_str:
         return web.json_response(
-            create_error_response("Missing path").to_dict(), status=400
+            create_error_response("Missing path").to_dict(),
+            status=HTTPStatus.BAD_REQUEST,
         )
 
     # Resolve file metadata
@@ -286,25 +355,29 @@ async def handle_oss_download(request: web.Request) -> web.StreamResponse:
         info = await file_service.get_file_info_by_id(user_email, id_val)
         if not info:
             return web.json_response(
-                create_error_response("File not found").to_dict(), status=404
+                create_error_response("File not found").to_dict(),
+                status=HTTPStatus.NOT_FOUND,
             )
         if info.is_folder:
             return web.json_response(
-                create_error_response("Not a file").to_dict(), status=400
+                create_error_response("Not a file").to_dict(),
+                status=HTTPStatus.BAD_REQUEST,
             )
         storage_key = info.storage_key
         if not storage_key:
             return web.json_response(
-                create_error_response("File content not found").to_dict(), status=404
+                create_error_response("File content not found").to_dict(),
+                status=HTTPStatus.NOT_FOUND,
             )
         file_name = info.name
         file_size = info.size
     except ValueError:
-        # Treat as direct storage key (conversions flow)
+        # Treat as direct storage key in USER_DATA_BUCKET (summary handwriting flow)
         storage_key = file_id_str
         if not await file_service.blob_storage.exists(USER_DATA_BUCKET, storage_key):
             return web.json_response(
-                create_error_response("Blob not found").to_dict(), status=404
+                create_error_response("Blob not found").to_dict(),
+                status=HTTPStatus.NOT_FOUND,
             )
         metadata = await file_service.blob_storage.get_metadata(
             USER_DATA_BUCKET, storage_key
@@ -312,59 +385,128 @@ async def handle_oss_download(request: web.Request) -> web.StreamResponse:
         file_size = metadata.size
         file_name = Path(storage_key).name
 
-    # Handle Range Header
-    range_header = request.headers.get("Range")
-
-    start = 0
-    end = file_size - 1
-
-    if range_header:
-        # Simplistic Range parsing: bytes=start-end
-        try:
-            unit, ranges = range_header.split("=")
-            if unit == "bytes":
-                r = ranges.split("-")
-                if r[0]:
-                    start = int(r[0])
-                if len(r) > 1 and r[1]:
-                    end = int(r[1])
-
-                # Check bounds
-                if start >= file_size:
-                    return web.json_response(
-                        create_error_response("Invalid range").to_dict(), status=416
-                    )
-
-                if end >= file_size:
-                    end = file_size - 1
-        except ValueError:
-            return web.json_response(
-                create_error_response("Invalid Range header").to_dict(), status=400
-            )
-
-    status = 206 if range_header else 200
-    headers = _build_download_headers(
+    return await _stream_blob_response(
+        request=request,
+        blob_storage=file_service.blob_storage,
+        bucket=USER_DATA_BUCKET,
+        storage_key=storage_key,
         file_name=file_name,
         file_size=file_size,
-        start=start,
-        end=end,
-        is_range=bool(range_header),
-        inline=request.query.get("inline") in ("1", "true"),
     )
 
-    response = web.StreamResponse(status=status, headers=headers)
-    await response.prepare(request)
+
+@routes.get("/api/oss/png/{file_id}/{page_no}")
+@public_route
+async def handle_oss_png_download(request: web.Request) -> web.StreamResponse:
+    """Handle converted note page PNG download from CACHE_BUCKET.
+
+    Endpoint: GET /api/oss/png/{file_id}/{page_no}
+    """
+    url_signer: UrlSigner = request.app["url_signer"]
+    conversion_service: ConversionService = request.app["conversion_service"]
+    blob_storage: BlobStorage = request.app["blob_storage"]
+    try:
+        payload = await url_signer.verify(request.path_qs, consume=False)
+    except SupernoteError as err:
+        return err.to_response()
+
+    user_email = payload.get("user")
+    if not user_email:
+        return web.json_response(
+            create_error_response("Missing user identity in signature").to_dict(),
+            status=HTTPStatus.FORBIDDEN,
+        )
 
     try:
-        stream = file_service.blob_storage.get(
-            USER_DATA_BUCKET, storage_key, start=start, end=end
+        file_id = int(request.match_info["file_id"])
+        page_no = int(request.match_info["page_no"])
+    except (KeyError, ValueError):
+        return web.json_response(
+            create_error_response("Invalid file_id or page_no").to_dict(),
+            status=HTTPStatus.BAD_REQUEST,
         )
-        async for chunk in stream:
-            await response.write(chunk)
 
+    try:
+        blob = await conversion_service.get_note_png_page(user_email, file_id, page_no)
+    except SupernoteError as err:
+        return err.to_response()
+    if not blob:
+        return web.json_response(
+            create_error_response("Page PNG not found").to_dict(),
+            status=HTTPStatus.NOT_FOUND,
+        )
+
+    try:
+        metadata = await blob_storage.get_metadata(CACHE_BUCKET, blob.storage_key)
     except FileNotFoundError:
         return web.json_response(
-            create_error_response("Blob not found").to_dict(), status=404
+            create_error_response("Page PNG not found").to_dict(),
+            status=HTTPStatus.NOT_FOUND,
         )
 
-    return response
+    return await _stream_blob_response(
+        request=request,
+        blob_storage=blob_storage,
+        bucket=CACHE_BUCKET,
+        storage_key=blob.storage_key,
+        file_name=blob.file_name,
+        file_size=metadata.size,
+    )
+
+
+@routes.get("/api/oss/pdf/{file_id}")
+@public_route
+async def handle_oss_pdf_download(request: web.Request) -> web.StreamResponse:
+    """Handle converted note PDF download from CACHE_BUCKET.
+
+    Endpoint: GET /api/oss/pdf/{file_id}
+    """
+    url_signer: UrlSigner = request.app["url_signer"]
+    conversion_service: ConversionService = request.app["conversion_service"]
+    blob_storage: BlobStorage = request.app["blob_storage"]
+    try:
+        payload = await url_signer.verify(request.path_qs, consume=False)
+    except SupernoteError as err:
+        return err.to_response()
+
+    user_email = payload.get("user")
+    if not user_email:
+        return web.json_response(
+            create_error_response("Missing user identity in signature").to_dict(),
+            status=HTTPStatus.FORBIDDEN,
+        )
+
+    try:
+        file_id = int(request.match_info["file_id"])
+    except (KeyError, ValueError):
+        return web.json_response(
+            create_error_response("Invalid file_id").to_dict(),
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    try:
+        blob = await conversion_service.get_note_pdf(user_email, file_id)
+    except SupernoteError as err:
+        return err.to_response()
+    if not blob:
+        return web.json_response(
+            create_error_response("Note PDF not found").to_dict(),
+            status=HTTPStatus.NOT_FOUND,
+        )
+
+    try:
+        metadata = await blob_storage.get_metadata(CACHE_BUCKET, blob.storage_key)
+    except FileNotFoundError:
+        return web.json_response(
+            create_error_response("Note PDF not found").to_dict(),
+            status=HTTPStatus.NOT_FOUND,
+        )
+
+    return await _stream_blob_response(
+        request=request,
+        blob_storage=blob_storage,
+        bucket=CACHE_BUCKET,
+        storage_key=blob.storage_key,
+        file_name=blob.file_name,
+        file_size=metadata.size,
+    )

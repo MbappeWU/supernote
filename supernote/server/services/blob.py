@@ -122,6 +122,7 @@ class LocalBlobStorage(BlobStorage):
             or len(prefix_dir.relative_to(self.root).parts) != 2
             or not blob_path.is_relative_to(prefix_dir)
             or blob_path == prefix_dir
+            or blob_path != prefix_dir / key
         ):
             raise ValueError(f"Invalid blob path: {bucket}/{key}")
         return blob_path

@@ -14,7 +14,7 @@ from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.services.file import FileService
 from supernote.server.services.processor_modules import ProcessorModule
 from supernote.server.utils.hashing import get_md5_hash
-from supernote.server.utils.paths import get_page_png_path
+from supernote.server.utils.paths import get_page_png_path, is_valid_page_id
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +124,10 @@ class PageHashingModule(ProcessorModule):
                 page_info = metadata.pages[i]
                 page_id = page_info.get("PAGEID")
 
-                if not page_id:
-                    logger.warning(f"Page {i} of file {file_id} has no PAGEID.")
+                if not isinstance(page_id, str) or not is_valid_page_id(page_id):
+                    logger.warning(
+                        f"Page {i} of file {file_id} has missing or invalid PAGEID."
+                    )
                     continue
 
                 current_page_ids.add(page_id)

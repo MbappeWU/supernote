@@ -1,21 +1,27 @@
 import uuid
 from unittest.mock import patch
 
+import pytest
+
 from supernote.server.utils.paths import (
     generate_inner_name,
     get_conversion_pdf_path,
-    get_conversion_png_path,
     get_file_chunk_path,
     get_page_png_path,
     get_summary_group_id,
     get_summary_id,
     get_transcript_id,
+    is_valid_page_id,
     parse_file_chunk_name,
 )
 
 
 def test_get_page_png_path() -> None:
     assert get_page_png_path(123, "page_1") == "123/pages/page_1.png"
+    assert is_valid_page_id("P20260101120000")
+    assert not is_valid_page_id("../../102/pages/victim")
+    with pytest.raises(ValueError, match="Invalid page_id"):
+        get_page_png_path(123, "../../102/pages/victim")
 
 
 def test_get_file_chunk_path() -> None:
@@ -43,13 +49,6 @@ def test_get_summary_group_id() -> None:
 
 def test_get_transcript_id() -> None:
     assert get_transcript_id("file_key") == "file_key-transcript"
-
-
-def test_get_conversion_png_path() -> None:
-    assert (
-        get_conversion_png_path(1, 2, 3, "md5hash")
-        == "conversions/1/2/page_3_md5hash.png"
-    )
 
 
 def test_get_conversion_pdf_path() -> None:

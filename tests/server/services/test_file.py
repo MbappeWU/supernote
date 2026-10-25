@@ -8,19 +8,15 @@ from pathlib import Path
 import pytest
 from sqlalchemy import update
 
-from supernote.server.constants import USER_DATA_BUCKET
+from supernote.server.constants import CACHE_BUCKET, USER_DATA_BUCKET
 from supernote.server.db.models.file import RecycleFileDO
-from supernote.server.db.models.note_processing import NotePageContentDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import Event, LocalEventBus, NoteDeletedEvent
 from supernote.server.services.blob import BlobStorage
 from supernote.server.services.file import RECYCLE_RETENTION_MS, FileService
 from supernote.server.services.user import UserService
 from supernote.server.services.vfs import VirtualFileSystem
-from supernote.server.utils.paths import (
-    get_conversion_pdf_path,
-    get_conversion_png_path,
-)
+from supernote.server.utils.paths import get_conversion_pdf_path
 
 
 @pytest.fixture
@@ -350,7 +346,7 @@ async def test_overwrite_file_cleans_up_stale_conversion_blobs(
     test_user_id: int,
     test_users: list[str],
 ) -> None:
-    """Stale conversions/ PNG and PDF blobs from the previous file MD5 are cleaned up upon overwrite."""
+    """Stale conversions/ PDF blob from the previous file MD5 is cleaned up upon overwrite."""
     user = test_users[0]
     content_v1 = b"note content v1"
     md5_v1 = hashlib.md5(content_v1).hexdigest()
@@ -360,22 +356,11 @@ async def test_overwrite_file_cleans_up_stale_conversion_blobs(
         user, "converted.note", "/", md5_v1, "conv_blob_v1"
     )
 
-    png_0_v1 = get_conversion_png_path(
-        user_id=test_user_id, file_id=entity_v1.id, page_index=0, file_md5=md5_v1
-    )
-    png_1_v1 = get_conversion_png_path(
-        user_id=test_user_id, file_id=entity_v1.id, page_index=1, file_md5=md5_v1
-    )
     pdf_v1 = get_conversion_pdf_path(
         user_id=test_user_id, file_id=entity_v1.id, file_md5=md5_v1
     )
-    await blob_storage.put(USER_DATA_BUCKET, png_0_v1, b"png page 0")
-    await blob_storage.put(USER_DATA_BUCKET, png_1_v1, b"png page 1")
-    await blob_storage.put(USER_DATA_BUCKET, pdf_v1, b"pdf bytes")
-
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_0_v1) is True
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_1_v1) is True
-    assert await blob_storage.exists(USER_DATA_BUCKET, pdf_v1) is True
+    await blob_storage.put(CACHE_BUCKET, pdf_v1, b"pdf bytes")
+    assert await blob_storage.exists(CACHE_BUCKET, pdf_v1) is True
 
     # Overwrite with v2 (different MD5)
     content_v2 = b"note content v2"
@@ -386,9 +371,7 @@ async def test_overwrite_file_cleans_up_stale_conversion_blobs(
         user, "converted.note", "/", md5_v2, "conv_blob_v2"
     )
 
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_0_v1) is False
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_1_v1) is False
-    assert await blob_storage.exists(USER_DATA_BUCKET, pdf_v1) is False
+    assert await blob_storage.exists(CACHE_BUCKET, pdf_v1) is False
 
 
 async def test_overwrite_same_md5_deletes_superseded_blob_but_preserves_conversions(
@@ -407,22 +390,17 @@ async def test_overwrite_same_md5_deletes_superseded_blob_but_preserves_conversi
         user, "same_md5.note", "/", md5, "same_md5_blob_1"
     )
 
-    png_0 = get_conversion_png_path(
-        user_id=test_user_id, file_id=entity.id, page_index=0, file_md5=md5
-    )
     pdf_key = get_conversion_pdf_path(
         user_id=test_user_id, file_id=entity.id, file_md5=md5
     )
-    await blob_storage.put(USER_DATA_BUCKET, png_0, b"png 0")
-    await blob_storage.put(USER_DATA_BUCKET, pdf_key, b"pdf")
+    await blob_storage.put(CACHE_BUCKET, pdf_key, b"pdf")
 
     await blob_storage.put(USER_DATA_BUCKET, "same_md5_blob_2", content)
     await file_service.finish_upload(user, "same_md5.note", "/", md5, "same_md5_blob_2")
 
     assert await blob_storage.exists(USER_DATA_BUCKET, "same_md5_blob_1") is False
     assert await blob_storage.exists(USER_DATA_BUCKET, "same_md5_blob_2") is True
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_0) is True
-    assert await blob_storage.exists(USER_DATA_BUCKET, pdf_key) is True
+    assert await blob_storage.exists(CACHE_BUCKET, pdf_key) is True
 
 
 async def test_overwrite_file_with_soft_deleted_copy_in_recycle_preserves_shared_blob(
@@ -457,50 +435,6 @@ async def test_overwrite_file_with_soft_deleted_copy_in_recycle_preserves_shared
     assert await blob_storage.exists(USER_DATA_BUCKET, "shared_recycle_key") is True
 
 
-async def test_overwrite_file_cleans_up_sparse_conversion_blobs(
-    file_service: FileService,
-    blob_storage: BlobStorage,
-    session_manager: DatabaseSessionManager,
-    test_user_id: int,
-    test_users: list[str],
-) -> None:
-    """Stale conversion PNGs at higher page indices are cleaned up even if page 0 was not cached."""
-    user = test_users[0]
-    content_v1 = b"sparse note v1"
-    md5_v1 = hashlib.md5(content_v1).hexdigest()
-    await blob_storage.put(USER_DATA_BUCKET, "sparse_blob_v1", content_v1)
-
-    entity_v1 = await file_service.finish_upload(
-        user, "sparse.note", "/", md5_v1, "sparse_blob_v1"
-    )
-
-    async with session_manager.session() as session:
-        for idx in range(3):
-            session.add(
-                NotePageContentDO(
-                    file_id=entity_v1.id,
-                    page_index=idx,
-                    page_id=f"P{idx}",
-                    content_hash=f"h{idx}",
-                )
-            )
-        await session.commit()
-
-    # Only page 2 was cached in conversions/ (page 0 and page 1 missing)
-    png_2_v1 = get_conversion_png_path(
-        user_id=test_user_id, file_id=entity_v1.id, page_index=2, file_md5=md5_v1
-    )
-    await blob_storage.put(USER_DATA_BUCKET, png_2_v1, b"png page 2")
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_2_v1) is True
-
-    content_v2 = b"sparse note v2"
-    md5_v2 = hashlib.md5(content_v2).hexdigest()
-    await blob_storage.put(USER_DATA_BUCKET, "sparse_blob_v2", content_v2)
-
-    await file_service.finish_upload(user, "sparse.note", "/", md5_v2, "sparse_blob_v2")
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_2_v1) is False
-
-
 async def test_purge_recycle_cleans_up_conversion_blobs(
     file_service: FileService,
     blob_storage: BlobStorage,
@@ -516,22 +450,17 @@ async def test_purge_recycle_cleans_up_conversion_blobs(
     entity = await file_service.finish_upload(
         user, "purge_conv.note", "/", md5, "purge_conv_blob"
     )
-    png_0 = get_conversion_png_path(
-        user_id=test_user_id, file_id=entity.id, page_index=0, file_md5=md5
-    )
     pdf_key = get_conversion_pdf_path(
         user_id=test_user_id, file_id=entity.id, file_md5=md5
     )
-    await blob_storage.put(USER_DATA_BUCKET, png_0, b"png 0")
-    await blob_storage.put(USER_DATA_BUCKET, pdf_key, b"pdf")
+    await blob_storage.put(CACHE_BUCKET, pdf_key, b"pdf")
 
     await file_service.delete_item(user, entity.id)
     recycled = await file_service.list_recycle(user)
     await file_service.delete_from_recycle(user, [recycled[0].id])
 
     assert await blob_storage.exists(USER_DATA_BUCKET, "purge_conv_blob") is False
-    assert await blob_storage.exists(USER_DATA_BUCKET, png_0) is False
-    assert await blob_storage.exists(USER_DATA_BUCKET, pdf_key) is False
+    assert await blob_storage.exists(CACHE_BUCKET, pdf_key) is False
 
 
 async def test_query_file_list_and_get_folders_by_ids_resolve_parent_path_once(

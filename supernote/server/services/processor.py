@@ -424,21 +424,42 @@ class ProcessorService:
             except Exception as e:
                 logger.error(f"Worker {worker_id} encountered error: {e}")
 
-    async def process_file(self, file_id: int) -> None:
-        """Orchestrate the processing pipeline for a single file."""
+    async def process_file(
+        self,
+        file_id: int,
+        task_types: set[TaskType] | None = None,
+    ) -> bool:
+        """Orchestrate the processing pipeline (or a subset of task_types) for a single file."""
         logger.info(f"Processing file {file_id}...")
 
         if not self.global_pre_modules:
             logger.error("Modules not fully registered. Skipping processing.")
-            return
+            return False
+
+        pre_modules = [
+            m
+            for m in self.global_pre_modules
+            if task_types is None or m.task_type in task_types
+        ]
+        page_modules = [
+            m
+            for m in self.page_modules
+            if task_types is None or m.task_type in task_types
+        ]
+        post_modules = [
+            m
+            for m in self.global_post_modules
+            if task_types is None or m.task_type in task_types
+        ]
 
         # Pipeline Stage: Global Pre-processing (Hashing)
-        for module in self.global_pre_modules:
+        for module in pre_modules:
             if not await module.run(file_id, self.session_manager):
                 logger.error(f"Pre-module {module.name} failed. Aborting pipeline.")
-                return
+                return False
 
-        if self.page_modules:
+        all_pages_ok = True
+        if page_modules:
             # Identify Pages
             async with self.session_manager.session() as session:
                 # We want both index and ID. Index is needed for order, ID for tasks/storage.
@@ -456,22 +477,30 @@ class ProcessorService:
                 # Pipeline Stage: Per-Page Processing (Parallel across pages with limit)
                 sem = asyncio.Semaphore(self.page_concurrency)
 
-                async def throttled_process_page(page_index: int, page_id: str):
+                async def throttled_process_page(page_index: int, page_id: str) -> bool:
                     async with sem:
-                        await self._process_page(file_id, page_index, page_id)
+                        return await self._process_page(
+                            file_id, page_index, page_id, modules=page_modules
+                        )
 
                 tasks = [
                     throttled_process_page(page_index, page_id)
                     for page_index, page_id in pages
                     if page_id  # Strict Check: Everything must have a page_id
                 ]
-                await asyncio.gather(*tasks)
+                page_results = await asyncio.gather(*tasks)
+                all_pages_ok = all(page_results)
 
         # Pipeline Stage: Global Post-processing (Summary)
-        for module in self.global_post_modules:
-            await module.run(file_id, self.session_manager)
+        post_ok = True
+        for module in post_modules:
+            if not await module.run(file_id, self.session_manager):
+                post_ok = False
 
-        await self._publish_processing_completed(file_id)
+        if task_types is None:
+            await self._publish_processing_completed(file_id)
+
+        return all_pages_ok and post_ok
 
     async def _publish_processing_completed(self, file_id: int) -> None:
         """Publish NoteProcessingCompletedEvent after pipeline stages complete."""
@@ -494,10 +523,17 @@ class ProcessorService:
             )
         )
 
-    async def _process_page(self, file_id: int, page_index: int, page_id: str) -> None:
-        """Process all modules for a single page sequentially."""
+    async def _process_page(
+        self,
+        file_id: int,
+        page_index: int,
+        page_id: str,
+        modules: list[ProcessorModule] | None = None,
+    ) -> bool:
+        """Process modules for a single page sequentially."""
+        active_modules = modules if modules is not None else self.page_modules
         try:
-            for module in self.page_modules:
+            for module in active_modules:
                 # We enforce page_id as the task key
                 success = await module.run(
                     file_id,
@@ -509,12 +545,14 @@ class ProcessorService:
                     logger.warning(
                         f"Page {page_id} (idx {page_index}) processing stalled at {module.name} for file {file_id}"
                     )
-                    break
+                    return False
+            return True
         except Exception as e:
             logger.error(
                 f"Unhandled error processing page {page_id} (idx {page_index}) for file {file_id}: {e}",
                 exc_info=True,
             )
+            return False
 
     async def list_system_tasks(
         self,
