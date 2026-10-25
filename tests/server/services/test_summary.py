@@ -30,7 +30,10 @@ async def summary_service(
 ) -> SummaryService:
     """Create a SummaryService bound to the test session manager with a registered test user."""
     await user_service.register(UserRegisterDTO(email=USER_EMAIL, password="a" * 32))
-    return SummaryService(user_service=user_service, session_manager=session_manager)
+    return SummaryService(
+        user_service=user_service,
+        session_manager=session_manager,
+    )
 
 
 async def test_tag_crud_and_not_found_errors(
@@ -319,3 +322,53 @@ async def test_pagination_and_unpaginated_queries(
             )
             == []
         )
+
+
+async def test_delete_group_cascades_to_child_summaries(
+    summary_service: SummaryService,
+) -> None:
+    """Verify delete_group cascades soft-deletion to child summaries in that group while preserving others."""
+    group = await summary_service.add_group(
+        USER_EMAIL,
+        AddSummaryGroupDTO(
+            unique_identifier="grp-cascade-1",
+            name="Cascade Group",
+            md5_hash="gh1",
+        ),
+    )
+    other_group = await summary_service.add_group(
+        USER_EMAIL,
+        AddSummaryGroupDTO(
+            unique_identifier="grp-other-1",
+            name="Other Group",
+            md5_hash="gh2",
+        ),
+    )
+    assert group.id is not None and other_group.id is not None
+
+    child = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="child-sum-1",
+            parent_unique_identifier="grp-cascade-1",
+            content="Child summary",
+        ),
+    )
+    other_child = await summary_service.add_summary(
+        USER_EMAIL,
+        AddSummaryDTO(
+            unique_identifier="other-sum-1",
+            parent_unique_identifier="grp-other-1",
+            content="Other summary",
+        ),
+    )
+    assert child.id is not None and other_child.id is not None
+
+    await summary_service.delete_group(USER_EMAIL, group.id)
+    assert [
+        g.id
+        for g in await summary_service.list_groups(USER_EMAIL, QuerySummaryGroupDTO())
+    ] == [other_group.id]
+    assert [s.id for s in await summary_service.list_summaries(USER_EMAIL)] == [
+        other_child.id
+    ]

@@ -223,13 +223,25 @@ class SummaryService:
             return True
 
     async def delete_summary(self, user_email: str, summary_id: int) -> bool:
-        """Soft delete a summary."""
+        """Soft delete a summary (and child summaries when deleting a group)."""
         user_id = await self.user_service.get_user_id(user_email)
         async with self.session_manager.session() as session:
             summary_do = await self._get_summary(session, user_id, summary_id)
             if not summary_do:
                 raise SummaryNotFound(f"Summary with ID {summary_id} not found")
+
             summary_do.is_deleted = True
+
+            if summary_do.is_summary_group:
+                child_stmt = select(SummaryDO).where(
+                    SummaryDO.user_id == user_id,
+                    SummaryDO.parent_unique_identifier == summary_do.unique_identifier,
+                    SummaryDO.is_deleted.is_(False),
+                )
+                children = list((await session.execute(child_stmt)).scalars().all())
+                for child in children:
+                    child.is_deleted = True
+
             await session.commit()
             return True
 
@@ -353,9 +365,7 @@ class SummaryService:
             return True
 
     async def delete_group(self, user_email: str, group_id: int) -> bool:
-        """Delete a summary group (soft delete)."""
-        # Note: In a real implementation, we might want to check if the group is empty
-        # or recursively delete children. For now, we follow the leaf summary pattern.
+        """Delete a summary group and its child summaries (soft delete)."""
         return await self.delete_summary(user_email, group_id)
 
     async def count_groups(self, user_email: str) -> int:
