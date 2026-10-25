@@ -18,14 +18,17 @@ from supernote.server.utils.paths import get_page_png_path
 
 logger = logging.getLogger(__name__)
 
+# Use zlib compression level 1 (fastest) to minimize CPU overhead during background PNG rendering.
+PNG_COMPRESS_LEVEL = 1
+
 
 def _convert_helper(path: str, page_index: int) -> bytes:
     # Use loose policy to attempt parsing even if signature is unknown
-    notebook = load_notebook(path, policy="loose")  # type: ignore[no-untyped-call]
+    notebook = load_notebook(path, policy="loose", page_number=page_index)
     converter = ImageConverter(notebook)  # type: ignore[no-untyped-call]
     img = converter.convert(page_index)  # type: ignore[no-untyped-call]
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", compress_level=PNG_COMPRESS_LEVEL)
     return buf.getvalue()
 
 

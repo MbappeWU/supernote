@@ -320,3 +320,25 @@ def test_pdf_converter_links() -> None:
     pdf_bytes = pdf_converter.convert(0, enable_link=True)
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes.startswith(b"%PDF-")
+
+
+def test_single_page_load_and_convert() -> None:
+    """Verify loading a single page with page_number loads only that page's bitmaps and produces identical PNG output."""
+    multi_page_path = next(p for p in NOTE_PATHS if p.name == "1to10.note")
+    full_nb = load_notebook(str(multi_page_path))
+    full_converter = ImageConverter(full_nb)
+
+    target_page = 3
+    single_nb = load_notebook(str(multi_page_path), page_number=target_page)
+    single_converter = ImageConverter(single_nb)
+
+    full_img = full_converter.convert(target_page)
+    single_img = single_converter.convert(target_page)
+
+    assert full_img.tobytes() == single_img.tobytes()
+
+    with pytest.raises(ValueError, match="out of range"):
+        load_notebook(str(multi_page_path), page_number=999)
+
+    with pytest.raises(ValueError, match="loaded with only page_number=3"):
+        single_converter.convert(0)

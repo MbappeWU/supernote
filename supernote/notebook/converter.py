@@ -54,6 +54,10 @@ def build_visibility_overlay(
     }
 
 
+_NON_TRANSPARENT_LUT = [0 if x == color.TRANSPARENT else 1 for x in range(256)]
+_TRANSPARENT_LUT = [1 if x == color.TRANSPARENT else 0 for x in range(256)]
+
+
 class ImageConverter:
     SPECIAL_WHITE_STYLE_BLOCK_SIZE = 0x140E
 
@@ -109,16 +113,19 @@ class ImageConverter:
     ):
         default_palette = color.DEFAULT_COLORPALETTE
         page = utils.WorkaroundPageWrapper.from_page(page)
+        visibility = self._get_layer_visibility(page)
         imgs = {}
         layers = page.get_layers()
         for layer in layers:
             layer_name = layer.get_name()
+            if not self._is_layer_visible(layer_name, visibility, visibility_overlay):
+                imgs[layer_name] = None
+                continue
             binary = layer.get_content()
             if binary is None:
                 imgs[layer_name] = None
                 continue
             binary_size = len(binary)
-            decoder = self.find_decoder(layer, highres_grayscale)
             page_style = page.get_style()
             all_blank = (
                 layer_name == "BGLAYER"
@@ -126,6 +133,10 @@ class ImageConverter:
                 and page_style == "style_white"
                 and binary_size == self.SPECIAL_WHITE_STYLE_BLOCK_SIZE
             )
+            if all_blank:
+                imgs[layer_name] = None
+                continue
+            decoder = self.find_decoder(layer, highres_grayscale)
             custom_bg = (
                 layer_name == "BGLAYER"
                 and page_style is not None
@@ -149,9 +160,10 @@ class ImageConverter:
         """flatten all layers if any"""
 
         def flatten(fg, bg):
-            mask = fg.copy().convert("L")
-            mask = mask.point(lambda x: 0 if x == color.TRANSPARENT else 1, mode="1")
-            return Image.composite(fg, bg, mask)
+            mask_src = fg if fg.mode == "L" else fg.convert("L")
+            mask = mask_src.point(_NON_TRANSPARENT_LUT, mode="1")
+            bg.paste(fg, None, mask)
+            return bg
 
         horizontal = page.is_horizontal()
         page_width, page_height = (self.note.get_width(), self.note.get_height())
@@ -163,16 +175,8 @@ class ImageConverter:
         visibility = self._get_layer_visibility(page)
         layer_order = page.get_layer_order()
         for name in reversed(layer_order):
-            is_visible = visibility.get(name)
-            if visibility_overlay is not None:
-                overlay = visibility_overlay.get(name)
-                if overlay == VisibilityOverlay.INVISIBLE or (
-                    overlay == VisibilityOverlay.DEFAULT and not is_visible
-                ):
-                    continue
-            else:
-                if not is_visible:
-                    continue
+            if not self._is_layer_visible(name, visibility, visibility_overlay):
+                continue
             img_layer = imgs.get(name)
             if img_layer is not None:
                 if name == "BGLAYER":
@@ -181,16 +185,30 @@ class ImageConverter:
                 flatten_img = flatten(img_layer, flatten_img)
         return flatten_img
 
+    @staticmethod
+    def _is_layer_visible(layer_name, visibility, visibility_overlay=None):
+        is_visible = bool(visibility.get(layer_name))
+        if visibility_overlay is None:
+            return is_visible
+        overlay = visibility_overlay.get(layer_name)
+        if overlay == VisibilityOverlay.INVISIBLE:
+            return False
+        if overlay == VisibilityOverlay.VISIBLE:
+            return True
+        return is_visible
+
     def _whiten_transparent(self, img):
+        if img.mode in ("L", "RGB"):
+            return img
         img = img.convert("RGBA")
-        newImg = Image.new("RGBA", img.size, color.RGB_WHITE)
+        newImg = Image.new("RGB", img.size, color.RGB_WHITE)
         newImg.paste(img, mask=img)
         return newImg
 
     def _make_transparent(self, img):
         transparent_img = Image.new("RGBA", img.size, (255, 255, 255, 0))
-        mask = img.copy().convert("L")
-        mask = mask.point(lambda x: 1 if x == color.TRANSPARENT else 0, mode="1")
+        mask_src = img if img.mode == "L" else img.convert("L")
+        mask = mask_src.point(_TRANSPARENT_LUT, mode="1")
         img = img.convert("RGBA")
         return Image.composite(transparent_img, img, mask)
 
