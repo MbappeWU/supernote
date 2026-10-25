@@ -191,27 +191,34 @@ async def handle_reprocess(request: web.Request) -> web.Response:
 @require_admin
 async def handle_verify_integrity(request: web.Request) -> web.Response:
     """Verify VFS and blob storage integrity for a user (Admin only)."""
-    user_id_str = request.query.get("user_id")
+    email = request.query.get("email")
     file_id_str = request.query.get("file_id")
 
-    if user_id_str is None:
+    if not email:
         return web.json_response(
-            create_error_response("Missing required parameter: user_id").to_dict(),
+            create_error_response("Missing required parameter: email").to_dict(),
             status=400,
         )
 
     try:
-        user_id = int(user_id_str)
         file_id = int(file_id_str) if file_id_str is not None else None
     except ValueError:
         return web.json_response(
-            create_error_response("Invalid user_id or file_id").to_dict(),
+            create_error_response("Invalid file_id").to_dict(),
             status=400,
+        )
+
+    user_service: UserService = request.app["user_service"]
+    user = await user_service.get_user_by_email(email)
+    if user is None:
+        return web.json_response(
+            create_error_response(f"User not found: {email}").to_dict(),
+            status=404,
         )
 
     integrity_service: IntegrityService = request.app["integrity_service"]
     report = await integrity_service.verify_user_storage(
-        user_id=user_id, file_id=file_id
+        user_id=user.id, file_id=file_id
     )
     return web.json_response(report.to_dict())
 

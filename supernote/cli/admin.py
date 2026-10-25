@@ -192,7 +192,7 @@ def reprocess(args):
 
 async def integrity_async(
     url: str | None,
-    user_id: int,
+    email: str,
     file_id: int | None = None,
     as_json: bool = False,
 ) -> None:
@@ -200,9 +200,7 @@ async def integrity_async(
     async with create_session(url) as session:
         admin_client = AdminClient(session.client)
         try:
-            report = await admin_client.verify_integrity(
-                user_id=user_id, file_id=file_id
-            )
+            report = await admin_client.verify_integrity(email=email, file_id=file_id)
         except Exception as e:
             print(f"Failed to verify integrity: {e}")
             sys.exit(1)
@@ -224,7 +222,7 @@ async def integrity_async(
                 print("-" * 75)
                 for issue in report.issues:
                     print(
-                        f"  [{issue.issue_type.value}] user={issue.user_id} "
+                        f"  [{issue.issue_type.value}] "
                         f"file={issue.file_id} ({issue.file_name}): {issue.detail}"
                     )
                 print()
@@ -248,7 +246,7 @@ def integrity(args) -> None:
     asyncio.run(
         integrity_async(
             url=args.url,
-            user_id=args.user_id,
+            email=args.email,
             file_id=args.file_id,
             as_json=args.json,
         )
@@ -413,10 +411,10 @@ def add_parser(subparsers):
         help="Verify VFS and blob storage integrity",
     )
     parser_integrity.add_argument(
-        "--user-id",
-        type=int,
+        "--email",
+        type=str,
         required=True,
-        help="User ID to check",
+        help="Email address of the user to check",
     )
     parser_integrity.add_argument(
         "--file-id",

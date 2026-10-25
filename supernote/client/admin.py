@@ -120,11 +120,11 @@ class AdminClient:
 
     async def verify_integrity(
         self,
-        user_id: int,
+        email: str,
         file_id: int | None = None,
     ) -> IntegrityReportVO:
         """Verify VFS and blob storage integrity for a user."""
-        params: dict[str, int] = {"user_id": user_id}
+        params: dict[str, str | int] = {"email": email}
         if file_id is not None:
             params["file_id"] = file_id
         return await self.client.get_json(

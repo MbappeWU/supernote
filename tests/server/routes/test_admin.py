@@ -9,7 +9,11 @@ from sqlalchemy import delete, select
 from supernote.client.admin import AdminClient
 from supernote.client.auth import ConstantAuth
 from supernote.client.client import Client
-from supernote.client.exceptions import BadRequestException, ForbiddenException
+from supernote.client.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from supernote.models.base import ProcessingStatus
 from supernote.models.user import UserRegisterDTO
 from supernote.server.config import ServerConfig
@@ -318,7 +322,7 @@ async def test_admin_integrity(
     """Test admin integrity endpoint returns report via AdminClient."""
     user_id = await user_service.get_user_id("user@example.com")
     assert user_id is not None
-    user_report = await admin_api_client.verify_integrity(user_id=user_id)
+    user_report = await admin_api_client.verify_integrity(email="user@example.com")
     assert user_report.success is True
     assert user_report.scanned == 8
     assert user_report.ok == 8
@@ -331,10 +335,13 @@ async def test_admin_integrity(
         folder_id = result.scalar_one()
 
     file_report = await admin_api_client.verify_integrity(
-        user_id=user_id, file_id=folder_id
+        email="user@example.com", file_id=folder_id
     )
     assert file_report.scanned == 1
     assert file_report.ok == 1
+
+    with pytest.raises(NotFoundException):
+        await admin_api_client.verify_integrity(email="nonexistent@example.com")
 
 
 async def test_admin_integrity_permission(
@@ -342,22 +349,22 @@ async def test_admin_integrity_permission(
 ) -> None:
     """Test non-admin user cannot access integrity endpoint."""
     with pytest.raises(ForbiddenException):
-        await user_api_client.verify_integrity(user_id=1)
+        await user_api_client.verify_integrity(email="user@example.com")
 
 
 @pytest.mark.parametrize(
     "params",
     [
         {},
-        {"user_id": "abc"},
-        {"user_id": "1", "file_id": "abc"},
+        {"email": ""},
+        {"email": "user@example.com", "file_id": "abc"},
     ],
 )
 async def test_admin_integrity_invalid_params(
     admin_api_client: AdminClient,
     params: dict[str, str],
 ) -> None:
-    """Test missing or invalid user_id / file_id query parameters return 400."""
+    """Test missing or invalid email / file_id query parameters return 400."""
     with pytest.raises(BadRequestException):
         await admin_api_client.client.get("/api/admin/integrity", params=params)
 

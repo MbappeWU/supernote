@@ -87,9 +87,17 @@ def test_add_parser() -> None:
     assert parsed.func == reprocess
 
     parsed = parser.parse_args(
-        ["admin", "integrity", "--user-id", "1", "--file-id", "55", "--json"]
+        [
+            "admin",
+            "integrity",
+            "--email",
+            "user@example.com",
+            "--file-id",
+            "55",
+            "--json",
+        ]
     )
-    assert parsed.user_id == 1
+    assert parsed.email == "user@example.com"
     assert parsed.file_id == 55
     assert parsed.json is True
     assert parsed.func == integrity
@@ -269,11 +277,11 @@ async def test_integrity_success_and_json(
     admin_id = await cli_env.user_service.get_user_id(ADMIN_EMAIL)
     assert admin_id is not None
 
-    await integrity_async(cli_env.url, user_id=admin_id, as_json=False)
+    await integrity_async(cli_env.url, email=ADMIN_EMAIL, as_json=False)
     captured = capsys.readouterr()
     assert "All integrity checks passed." in captured.out
 
-    await integrity_async(cli_env.url, user_id=admin_id, as_json=True)
+    await integrity_async(cli_env.url, email=ADMIN_EMAIL, as_json=True)
     captured = capsys.readouterr()
     assert '"scanned": 8' in captured.out
     assert '"ok": 8' in captured.out
@@ -286,7 +294,7 @@ async def test_integrity_success_and_json(
         ).scalar_one()
 
     await integrity_async(
-        cli_env.url, user_id=admin_id, file_id=folder_id, as_json=True
+        cli_env.url, email=ADMIN_EMAIL, file_id=folder_id, as_json=True
     )
     captured = capsys.readouterr()
     assert '"scanned": 1' in captured.out
@@ -314,7 +322,7 @@ async def test_integrity_issues_detected(
         await session.commit()
 
     with pytest.raises(SystemExit) as exc_info:
-        await integrity_async(cli_env.url, user_id=admin_id, as_json=False)
+        await integrity_async(cli_env.url, email=ADMIN_EMAIL, as_json=False)
     assert exc_info.value.code == 1
 
     captured = capsys.readouterr()
@@ -328,7 +336,7 @@ async def test_integrity_issues_detected(
 
 async def test_integrity_failure(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        await integrity_async("http://127.0.0.1:1", user_id=1)
+        await integrity_async("http://127.0.0.1:1", email=ADMIN_EMAIL)
     assert exc_info.value.code == 1
 
     captured = capsys.readouterr()

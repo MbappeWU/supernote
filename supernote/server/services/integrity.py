@@ -109,7 +109,6 @@ class IntegrityService:
                 )
                 report.issues.append(
                     IntegrityIssueVO(
-                        user_id=user_id,
                         file_id=node.id,
                         file_name=node.file_name,
                         issue_type=IntegrityIssueType.ORPHAN,
@@ -126,7 +125,6 @@ class IntegrityService:
                     )
                     report.issues.append(
                         IntegrityIssueVO(
-                            user_id=user_id,
                             file_id=node.id,
                             file_name=node.file_name,
                             issue_type=IntegrityIssueType.DUPLICATE_ROOT_FOLDER,
@@ -137,12 +135,11 @@ class IntegrityService:
                 report.ok += 1
                 continue
 
-            if not await self._check_blob_integrity(user_id, node, report):
+            if not await self._check_blob_integrity(node, report):
                 continue
 
             if node.file_name.lower().endswith(".note"):
                 if not await self._check_note_pipeline(
-                    user_id,
                     node,
                     db_issues_by_file.get(node.id, []),
                     png_keys_by_file.get(node.id, []),
@@ -168,7 +165,6 @@ class IntegrityService:
                 )
                 report.issues.append(
                     IntegrityIssueVO(
-                        user_id=user_id,
                         file_id=issue_file_id,
                         file_name=summary_name,
                         issue_type=IntegrityIssueType.ORPHAN,
@@ -184,7 +180,6 @@ class IntegrityService:
                 )
                 report.issues.append(
                     IntegrityIssueVO(
-                        user_id=user_id,
                         file_id=issue_file_id,
                         file_name=summary_name,
                         issue_type=IntegrityIssueType.ORPHAN,
@@ -193,7 +188,7 @@ class IntegrityService:
                 )
                 continue
 
-            if not await self._check_summary_blob_integrity(user_id, summary, report):
+            if not await self._check_summary_blob_integrity(summary, report):
                 continue
 
             report.ok += 1
@@ -295,7 +290,6 @@ class IntegrityService:
 
     async def _check_blob_integrity(
         self,
-        user_id: int,
         node: UserFileDO,
         report: IntegrityReportVO,
     ) -> bool:
@@ -307,7 +301,6 @@ class IntegrityService:
             )
             report.issues.append(
                 IntegrityIssueVO(
-                    user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
                     issue_type=IntegrityIssueType.MISSING_BLOB,
@@ -325,7 +318,6 @@ class IntegrityService:
             logger.error(f"Integrity Fail: File {node.id} ({node.file_name}) {detail}")
             report.issues.append(
                 IntegrityIssueVO(
-                    user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
                     issue_type=IntegrityIssueType.MISSING_BLOB,
@@ -341,7 +333,6 @@ class IntegrityService:
             )
             report.issues.append(
                 IntegrityIssueVO(
-                    user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
                     issue_type=IntegrityIssueType.SIZE_MISMATCH,
@@ -357,7 +348,6 @@ class IntegrityService:
             )
             report.issues.append(
                 IntegrityIssueVO(
-                    user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
                     issue_type=IntegrityIssueType.HASH_MISMATCH,
@@ -488,7 +478,6 @@ class IntegrityService:
 
     async def _check_note_pipeline(
         self,
-        user_id: int,
         node: UserFileDO,
         db_issues: list[tuple[IntegrityIssueType, str]],
         png_keys: list[str],
@@ -501,7 +490,6 @@ class IntegrityService:
             passed = False
             report.issues.append(
                 IntegrityIssueVO(
-                    user_id=user_id,
                     file_id=node.id,
                     file_name=node.file_name,
                     issue_type=issue_type,
@@ -516,7 +504,6 @@ class IntegrityService:
                 passed = False
                 report.issues.append(
                     IntegrityIssueVO(
-                        user_id=user_id,
                         file_id=node.id,
                         file_name=node.file_name,
                         issue_type=IntegrityIssueType.MISSING_CACHE_BLOB,
@@ -583,7 +570,6 @@ class IntegrityService:
 
     async def _check_summary_blob_integrity(
         self,
-        user_id: int,
         summary: SummaryDO,
         report: IntegrityReportVO,
     ) -> bool:
@@ -599,7 +585,6 @@ class IntegrityService:
                 )
                 report.issues.append(
                     IntegrityIssueVO(
-                        user_id=user_id,
                         file_id=issue_file_id,
                         file_name=summary_name,
                         issue_type=IntegrityIssueType.MISSING_BLOB,
@@ -622,7 +607,6 @@ class IntegrityService:
             )
             report.issues.append(
                 IntegrityIssueVO(
-                    user_id=user_id,
                     file_id=issue_file_id,
                     file_name=summary_name,
                     issue_type=IntegrityIssueType.MISSING_BLOB,
@@ -645,7 +629,6 @@ class IntegrityService:
             )
             report.issues.append(
                 IntegrityIssueVO(
-                    user_id=user_id,
                     file_id=issue_file_id,
                     file_name=summary_name,
                     issue_type=IntegrityIssueType.HASH_MISMATCH,
