@@ -470,7 +470,6 @@ class IntegrityIssueType(str, BaseEnum):
 class IntegrityIssueVO(DataClassJSONMixin):
     """Details of a single storage integrity issue."""
 
-    user_id: int = field(metadata=field_options(alias="userId"))
     file_id: int = field(metadata=field_options(alias="fileId"))
     file_name: str = field(metadata=field_options(alias="fileName"))
     issue_type: IntegrityIssueType = field(metadata=field_options(alias="issueType"))
