@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import time
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from supernote.server.events import (
     NoteDeletedEvent,
     NoteProcessingCompletedEvent,
     NoteUpdatedEvent,
+    SyncCompletedEvent,
 )
 from supernote.server.services.blob import BlobStorage
 from supernote.server.services.coordination import SqliteCoordinationService
@@ -796,3 +798,93 @@ async def test_recover_missing_tasks_backfills_embedding_model_and_ai_modules(
 
     assert 9101 not in processor_service.processing_files
     assert {9102, 9103, 9104}.issubset(processor_service.processing_files)
+
+
+async def test_sync_completed_event_enqueues_new_and_updated_notes(
+    session_manager: DatabaseSessionManager,
+    processor_service: ProcessorService,
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    test_user_id: int,
+) -> None:
+    """Verify SyncCompletedEvent enqueues new notes and notes whose HASHING checkpoint was invalidated on overwrite."""
+    processor_service.register_modules(
+        hashing=PageHashingModule(file_service=file_service),
+        png=None,
+    )
+
+    await blob_storage.put(USER_DATA_BUCKET, "k_old", b"old-content")
+    await blob_storage.put(USER_DATA_BUCKET, "k_new", b"new-content")
+    old_md5 = hashlib.md5(b"old-content").hexdigest()
+    new_md5 = hashlib.md5(b"new-content").hexdigest()
+
+    # Upload initial note and mark its HASHING checkpoint COMPLETED
+    entity = await file_service.finish_upload(
+        "test@example.com", "updated.note", "/Note", old_md5, inner_name="k_old"
+    )
+    async with session_manager.session() as session:
+        session.add_all(
+            [
+                SystemTaskDO(
+                    file_id=entity.id,
+                    task_type=TaskType.PAGE_HASHING,
+                    key="global",
+                    status="COMPLETED",
+                ),
+                # Up-to-date note -> skip
+                UserFileDO(
+                    id=9201,
+                    user_id=test_user_id,
+                    file_name="unchanged.note",
+                    storage_key="k9201",
+                    md5="m1",
+                    is_active="Y",
+                ),
+                SystemTaskDO(
+                    file_id=9201,
+                    task_type=TaskType.PAGE_HASHING,
+                    key="global",
+                    status="COMPLETED",
+                ),
+                # Brand-new note for test_user_id (no tasks yet) -> enqueue
+                UserFileDO(
+                    id=9203,
+                    user_id=test_user_id,
+                    file_name="new.note",
+                    storage_key="k9203",
+                    md5="m3",
+                    is_active="Y",
+                ),
+                # Unprocessed note belonging to another user -> skip
+                UserFileDO(
+                    id=9204,
+                    user_id=test_user_id + 999,
+                    file_name="other_user.note",
+                    storage_key="k9204",
+                    md5="m4",
+                    is_active="Y",
+                ),
+            ]
+        )
+        await session.commit()
+
+    # Subscribe processor_service to file_service's event_bus and overwrite updated.note:
+    # finish_upload publishes NoteUpdatedEvent(defer_processing=True), which invalidates
+    # the PAGE_HASHING checkpoint without enqueueing the file until SyncCompletedEvent.
+    assert file_service.event_bus is not None
+    file_service.event_bus.subscribe(
+        NoteUpdatedEvent, processor_service.handle_note_updated
+    )
+    await file_service.finish_upload(
+        "test@example.com", "updated.note", "/Note", new_md5, inner_name="k_new"
+    )
+    await asyncio.sleep(0.05)
+    assert entity.id not in processor_service.processing_files
+
+    await processor_service.handle_sync_completed(
+        SyncCompletedEvent(user_id=test_user_id)
+    )
+
+    assert 9201 not in processor_service.processing_files
+    assert 9204 not in processor_service.processing_files
+    assert {entity.id, 9203}.issubset(processor_service.processing_files)

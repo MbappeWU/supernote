@@ -74,6 +74,7 @@ async def test_note_png_caching(
     upload_res = await device_client.upload_content(
         path=f"/{filename}", content=note_content, equipment_no="SN_TEST"
     )
+    await device_client.sync_end(equipment_no="SN_TEST")
     assert upload_res.id is not None
     file_id = int(upload_res.id)
 

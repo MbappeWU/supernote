@@ -42,6 +42,7 @@ from supernote.models.file_device import (
     SynchronousStartLocalVO,
 )
 from supernote.server.config import ServerConfig
+from supernote.server.events import LocalEventBus, SyncCompletedEvent
 from supernote.server.exceptions import SupernoteError
 from supernote.server.services.coordination import CoordinationService
 from supernote.server.services.file import (
@@ -168,6 +169,8 @@ async def handle_sync_end(request: web.Request) -> web.Response:
                 logger.warning(
                     f"Failed opportunistic recycle bin cleanup for user {user_id}: {err}"
                 )
+            event_bus: LocalEventBus = request.app["event_bus"]
+            await event_bus.publish(SyncCompletedEvent(user_id=user_id))
 
         return web.json_response(
             SynchronousEndLocalVO(equipment_no=req_data.equipment_no).to_dict()

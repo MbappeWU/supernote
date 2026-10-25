@@ -19,6 +19,7 @@ class NoteUpdatedEvent(Event):
     file_id: int
     user_id: int
     file_path: str
+    defer_processing: bool = False
 
 
 @dataclass
@@ -36,6 +37,13 @@ class NoteProcessingCompletedEvent(Event):
     file_id: int
     user_id: int
     file_path: str
+
+
+@dataclass
+class SyncCompletedEvent(Event):
+    """Triggered when a device file synchronization session completes."""
+
+    user_id: int
 
 
 EventHandler = Callable[[Event], Awaitable[Any]]
