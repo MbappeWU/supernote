@@ -9,6 +9,7 @@ import socketio
 from aiohttp import web
 
 from supernote.models.socket import (
+    BaseSocketMessageData,
     SocketHandshakeParams,
     SocketIoClientMessage,
     SocketIoCode,
@@ -208,6 +209,28 @@ class SocketIOServerManager:
                 # Client delivery acknowledgment
                 logger.debug("Client ACK received for user=%s (sid=%s)", user_id, sid)
 
+        @self._sio.on(SocketIoEvent.TODO.value)
+        async def on_todo_ack(sid: str, data: str) -> None:
+            if not await self._verify_active_session(sid):
+                return
+
+            user_id = self._sid_to_user.get(sid)
+            if data == SocketIoClientMessage.RECEIVED.value:
+                logger.debug(
+                    "Client to-do ACK received for user=%s (sid=%s)", user_id, sid
+                )
+
+        @self._sio.on(SocketIoEvent.DIGEST.value)
+        async def on_digest_ack(sid: str, data: str) -> None:
+            if not await self._verify_active_session(sid):
+                return
+
+            user_id = self._sid_to_user.get(sid)
+            if data == SocketIoClientMessage.RECEIVED.value:
+                logger.debug(
+                    "Client digest ACK received for user=%s (sid=%s)", user_id, sid
+                )
+
         @self._sio.on(SocketIoEvent.RATTA_PING.value)
         async def on_ratta_ping(sid: str, data: str) -> None:
             if not await self._verify_active_session(sid):
@@ -226,7 +249,7 @@ class SocketIOServerManager:
     async def send_message(
         self,
         user_id: str,
-        message: SocketMessageData,
+        message: BaseSocketMessageData,
     ) -> None:
         """Send a SocketMessageData event to all connected sessions for a given user.
 

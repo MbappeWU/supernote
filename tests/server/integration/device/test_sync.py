@@ -1,11 +1,17 @@
 import shutil
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from aiohttp.test_utils import TestClient
 from sqlalchemy import delete, update
 
 from supernote.client.device import DeviceClient
+from supernote.models.socket import (
+    SocketIoAction,
+    SocketIoMessageType,
+    SocketMessageData,
+)
 from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.db.models.file import RecycleFileDO, UserFileDO
 from supernote.server.db.session import DatabaseSessionManager
@@ -121,34 +127,47 @@ async def test_sync_lock(
     user_id = await user_service.get_user_id("test@example.com")
     lock_key = f"{SYNC_LOCK_KEY_PREFIX}{user_id}"
 
-    # 1. Start sync from SN123 -> stored in CoordinationService
-    resp = await client.post(
-        "/api/file/2/files/synchronous/start",
-        json={"equipmentNo": "SN123"},
-        headers=auth_headers,
-    )
-    assert resp.status == 200
-    assert await coordination_service.get_value(lock_key) == "SN123"
+    with patch.object(
+        client.app["socketio_manager"], "send_message", new_callable=AsyncMock
+    ) as mock_send_message:
+        # 1. Start sync from SN123 -> stored in CoordinationService (no Socket.IO event emitted on start)
+        resp = await client.post(
+            "/api/file/2/files/synchronous/start",
+            json={"equipmentNo": "SN123"},
+            headers=auth_headers,
+        )
+        assert resp.status == 200
+        assert await coordination_service.get_value(lock_key) == "SN123"
+        mock_send_message.assert_not_awaited()
 
-    # 2. Try sync from SN456 (same user), should get 409 without overwriting lock
-    resp = await client.post(
-        "/api/file/2/files/synchronous/start",
-        json={"equipmentNo": "SN456"},
-        headers=auth_headers,
-    )
-    assert resp.status == 409
-    data = await resp.json()
-    assert data["errorCode"] == "E0078"
-    assert await coordination_service.get_value(lock_key) == "SN123"
+        # 2. Try sync from SN456 (same user), should get 409 without overwriting lock
+        resp = await client.post(
+            "/api/file/2/files/synchronous/start",
+            json={"equipmentNo": "SN456"},
+            headers=auth_headers,
+        )
+        assert resp.status == 409
+        data = await resp.json()
+        assert data["errorCode"] == "E0078"
+        assert await coordination_service.get_value(lock_key) == "SN123"
 
-    # 3. End sync from SN123 -> clears lock in CoordinationService
-    resp = await client.post(
-        "/api/file/2/files/synchronous/end",
-        json={"equipmentNo": "SN123", "flag": "true"},
-        headers=auth_headers,
-    )
-    assert resp.status == 200
-    assert await coordination_service.get_value(lock_key) is None
+        # 3. End sync from SN123 -> clears lock in CoordinationService and emits STARTSYNC
+        resp = await client.post(
+            "/api/file/2/files/synchronous/end",
+            json={"equipmentNo": "SN123", "flag": "true"},
+            headers=auth_headers,
+        )
+        assert resp.status == 200
+        assert await coordination_service.get_value(lock_key) is None
+        mock_send_message.assert_awaited_once()
+        assert mock_send_message.await_args is not None
+        end_user, end_msg = mock_send_message.await_args.args
+        assert end_user == "test@example.com"
+        assert isinstance(end_msg, SocketMessageData)
+        assert end_msg.msg_type == SocketIoMessageType.FILE_SYN
+        assert len(end_msg.data) == 1
+        assert end_msg.data[0].message_type == SocketIoAction.STARTSYNC
+        assert end_msg.data[0].equipment_no == "SN123"
 
     # 4. Now SN456 should be able to sync
     resp = await client.post(

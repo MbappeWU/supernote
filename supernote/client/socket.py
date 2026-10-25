@@ -14,10 +14,12 @@ except ImportError:
 
 from supernote.client.exceptions import SupernoteSocketError  # noqa: E402
 from supernote.models.socket import (  # noqa: E402
+    SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoClientMessage,
     SocketIoEvent,
     SocketMessageData,
+    SocketTaskMessageData,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,9 @@ class SupernoteSocketClient:
             )
         self.host = host.rstrip("/")
         self._sio = socketio.AsyncClient()
-        self._message_queue: asyncio.Queue[SocketMessageData] = asyncio.Queue()
+        self._message_queue: asyncio.Queue[
+            SocketMessageData | SocketTaskMessageData | SocketDigestMessageData
+        ] = asyncio.Queue()
         self._status_queue: asyncio.Queue[str | SocketMessageData] = asyncio.Queue()
         self._ping_queue: asyncio.Queue[str] = asyncio.Queue()
         self._lock = asyncio.Lock()
@@ -73,7 +77,7 @@ class SupernoteSocketClient:
             logger.debug("Received to-do: %s", data)
             if isinstance(data, str):
                 try:
-                    msg = SocketMessageData.from_json(data)
+                    msg = SocketTaskMessageData.from_json(data)
                     await self._message_queue.put(msg)
                 except (json.JSONDecodeError, ValueError, TypeError, KeyError):
                     logger.warning("Failed to parse to-do message: %s", data)
@@ -83,7 +87,7 @@ class SupernoteSocketClient:
             logger.debug("Received digest: %s", data)
             if isinstance(data, str):
                 try:
-                    msg = SocketMessageData.from_json(data)
+                    msg = SocketDigestMessageData.from_json(data)
                     await self._message_queue.put(msg)
                 except (json.JSONDecodeError, ValueError, TypeError, KeyError):
                     logger.warning("Failed to parse digest message: %s", data)
@@ -176,11 +180,15 @@ class SupernoteSocketClient:
         """Send a custom ClientMessage string payload to the server without waiting for response."""
         await self._sio.emit(SocketIoEvent.CLIENT_MESSAGE.value, message)
 
-    async def messages(self) -> AsyncIterator[SocketMessageData]:
-        """Stream incoming SocketMessageData sync events continuously as an async iterator.
+    async def messages(
+        self,
+    ) -> AsyncIterator[
+        SocketMessageData | SocketTaskMessageData | SocketDigestMessageData
+    ]:
+        """Stream incoming Socket.IO sync events continuously as an async iterator.
 
         Yields:
-            Parsed SocketMessageData objects emitted by the server.
+            Parsed SocketMessageData, SocketTaskMessageData, or SocketDigestMessageData objects emitted by the server.
         """
         while self._connected or not self._message_queue.empty():
             yield await self._message_queue.get()
