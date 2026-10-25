@@ -378,3 +378,57 @@ async def test_oss_upload_part_consumption_logic(
     assert resp_fail.status == 403
     text = await resp_fail.text()
     assert "Token invalid" in text
+
+
+@pytest.mark.parametrize(
+    ("file_name", "expected_mime", "can_inline"),
+    [
+        ("screenshot.png", "image/png", True),
+        ("document.pdf", "application/pdf", True),
+        ("notes.txt", "text/plain", True),
+        ("data.json", "application/json", True),
+        ("vector.svg", "image/svg+xml", False),
+        ("page.html", "text/html", False),
+        ("notebook.note", "application/octet-stream", False),
+    ],
+)
+async def test_oss_download_content_type_and_disposition(
+    device_client: DeviceClient,
+    client: Client,
+    file_name: str,
+    expected_mime: str,
+    can_inline: bool,
+) -> None:
+    """Verify /api/oss/download sets Content-Type from filename and supports inline disposition for safe types."""
+    content = b"Sample file content"
+    upload_result = await device_client.upload_content(
+        path=f"/{file_name}", content=content, equipment_no="TEST"
+    )
+    assert upload_result.id
+    file_id = int(upload_result.id)
+
+    download_info = await device_client.download_v3(file_id, "TEST")
+    assert download_info
+    parsed = urllib.parse.urlparse(download_info.url)
+    relative_url = f"{parsed.path}?{parsed.query}"
+
+    # Default download (without inline=1) always uses attachment
+    resp_default = await client.get(relative_url, headers={})
+    assert resp_default.status == 200
+    assert resp_default.headers.get("Content-Type") == expected_mime
+    assert (
+        resp_default.headers.get("Content-Disposition")
+        == f'attachment; filename="{file_name}"'
+    )
+    assert await resp_default.read() == content
+
+    # Inline request (?inline=1) uses inline only for safe previewable types
+    resp_inline = await client.get(f"{relative_url}&inline=1", headers={})
+    assert resp_inline.status == 200
+    assert resp_inline.headers.get("Content-Type") == expected_mime
+    expected_disposition = "inline" if can_inline else "attachment"
+    assert (
+        resp_inline.headers.get("Content-Disposition")
+        == f'{expected_disposition}; filename="{file_name}"'
+    )
+    assert await resp_inline.read() == content
