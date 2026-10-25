@@ -63,7 +63,7 @@ class TranscriptRequestDTO(DataClassJSONMixin):
     Used by: get_notebook_transcript (MCP)
     """
 
-    file_id: int = field(metadata=field_options(alias="fileId"))
+    file_id: str = field(metadata=field_options(alias="fileId"))
     """The unique ID of the notebook."""
 
     start_index: int | None = field(
@@ -87,7 +87,7 @@ class SearchResultVO(DataClassJSONMixin):
     Used by: search_notebook_chunks (MCP)
     """
 
-    file_id: int = field(metadata=field_options(alias="fileId"))
+    file_id: str = field(metadata=field_options(alias="fileId"))
     file_name: str = field(metadata=field_options(alias="fileName"))
     page_index: int = field(metadata=field_options(alias="pageIndex"))
     page_id: str = field(metadata=field_options(alias="pageId"))
@@ -151,7 +151,7 @@ class NotebookVO(DataClassJSONMixin):
     Used by: list_notebooks (MCP)
     """
 
-    file_id: int = field(metadata=field_options(alias="fileId"))
+    file_id: str = field(metadata=field_options(alias="fileId"))
     file_name: str = field(metadata=field_options(alias="fileName"))
     create_time: int = field(metadata=field_options(alias="createTime"))
     update_time: int = field(metadata=field_options(alias="updateTime"))

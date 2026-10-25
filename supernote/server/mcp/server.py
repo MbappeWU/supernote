@@ -18,6 +18,7 @@ from supernote.server.mcp.models import (
     SearchResponseVO,
     SearchResultVO,
     SupernoteAccessToken,
+    TranscriptRequestDTO,
     TranscriptResponseVO,
 )
 from supernote.server.services.coordination import CoordinationService
@@ -117,7 +118,7 @@ async def list_notebooks(
     )
     vo_list = [
         NotebookVO(
-            file_id=n.file_id,
+            file_id=str(n.file_id),
             file_name=n.file_name,
             create_time=n.create_time,
             update_time=n.update_time,
@@ -181,7 +182,7 @@ async def search_notebook_chunks(
 
     vo_list = [
         SearchResultVO(
-            file_id=r.file_id,
+            file_id=str(r.file_id),
             file_name=r.file_name,
             page_index=r.page_index,
             page_id=r.page_id,
@@ -197,7 +198,7 @@ async def search_notebook_chunks(
 
 async def get_notebook_transcript(
     ctx: Context,
-    file_id: int,
+    file_id: str,
     start_index: int | None = None,
     end_index: int | None = None,
 ) -> dict[str, Any]:
@@ -222,16 +223,29 @@ async def get_notebook_transcript(
             ErrorCode.UNAUTHORIZED,
         ).to_dict()
 
-    transcript = await search_service.get_transcript(
-        user_id=user_id,
+    dto = TranscriptRequestDTO(
         file_id=file_id,
         start_index=start_index,
         end_index=end_index,
     )
+    try:
+        parsed_file_id = int(dto.file_id)
+    except ValueError:
+        return create_error_response(
+            f"Invalid file_id '{dto.file_id}': must be a numeric ID string.",
+            ErrorCode.BAD_REQUEST,
+        ).to_dict()
+
+    transcript = await search_service.get_transcript(
+        user_id=user_id,
+        file_id=parsed_file_id,
+        start_index=dto.start_index,
+        end_index=dto.end_index,
+    )
 
     if transcript is None:
         return create_error_response(
-            f"No transcript found for notebook {file_id}.", ErrorCode.NOT_FOUND
+            f"No transcript found for notebook {dto.file_id}.", ErrorCode.NOT_FOUND
         ).to_dict()
 
     return TranscriptResponseVO(transcript=transcript).to_dict()

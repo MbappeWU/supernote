@@ -132,9 +132,9 @@ async def test_mcp_list_notebooks(
         assert call_result.content
         content = call_result.content[0]
         assert isinstance(content, TextContent)
-        res_data = json.loads(content.text)
+        res_data = json.loads(content.text, parse_int=lambda s: int(float(s)))
         assert len(res_data["notebooks"]) == 1
-        assert res_data["notebooks"][0]["fileId"] == notebook_file_id
+        assert res_data["notebooks"][0]["fileId"] == str(notebook_file_id)
         assert res_data["notebooks"][0]["fileName"] == "test_notes.note"
 
 
@@ -157,9 +157,10 @@ async def test_mcp_search_notebook_chunks(
         assert call_result.content
         content = call_result.content[0]
         assert isinstance(content, TextContent)
-        res_data = json.loads(content.text)
+        res_data = json.loads(content.text, parse_int=lambda s: int(float(s)))
         assert "results" in res_data
         assert len(res_data["results"]) > 0
+        assert res_data["results"][0]["fileId"] == str(notebook_file_id)
         assert res_data["results"][0].get("textPreview") == "This is a test note."
 
 
@@ -173,9 +174,23 @@ async def test_mcp_get_notebook_transcript(
     token = auth_headers["x-access-token"]
     headers = {"Authorization": f"Bearer {token}"}
     async with mcp_session(mcp_url, headers) as session:
+        list_result = await session.call_tool(
+            "list_notebooks",
+            arguments={"name_filter": "test_notes"},
+            meta={"token": token},
+        )
+        assert list_result.content
+        list_content = list_result.content[0]
+        assert isinstance(list_content, TextContent)
+        # Simulate IEEE-754 double-precision JSON parsing (JavaScript JSON.parse)
+        list_data = json.loads(list_content.text, parse_int=lambda s: int(float(s)))
+        file_id_str = list_data["notebooks"][0]["fileId"]
+        assert isinstance(file_id_str, str)
+        assert file_id_str == str(notebook_file_id)
+
         transcript_result = await session.call_tool(
             "get_notebook_transcript",
-            arguments={"file_id": notebook_file_id},
+            arguments={"file_id": file_id_str},
             meta={"token": token},
         )
         assert transcript_result.content
