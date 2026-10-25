@@ -299,16 +299,32 @@ class UserService:
         timestamp: str,
     ) -> bool:
         if not timestamp:
+            logger.warning("Login failed for %s: missing challenge timestamp", account)
+            return False
+
+        try:
+            client_ts_ms = int(timestamp)
+        except ValueError:
+            logger.warning("Login failed for %s: invalid timestamp format", account)
             return False
 
         random_code = await self._coordination_service.pop_value(
-            f"challenge:{account}:{timestamp}"
+            f"challenge:{account}:{client_ts_ms}"
         )
         if not random_code:
+            logger.warning(
+                "Login failed for %s: challenge expired or not found (timestamp=%d)",
+                account,
+                client_ts_ms,
+            )
             return False
 
         expected_hash = hash_with_salt(password_md5, random_code)
-        return hmac.compare_digest(expected_hash, client_hash)
+        if not hmac.compare_digest(expected_hash, client_hash):
+            logger.warning("Login failed for %s: password hash mismatch", account)
+            return False
+
+        return True
 
     async def login(
         self,
