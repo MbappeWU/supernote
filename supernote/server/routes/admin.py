@@ -193,8 +193,14 @@ async def handle_verify_integrity(request: web.Request) -> web.Response:
     """Verify VFS and blob storage integrity for a user or full disk (Admin only)."""
     email = request.query.get("email")
     file_id_str = request.query.get("file_id")
-    full_disk_str = request.query.get("full_disk", "")
-    full_disk = full_disk_str.lower() in ("1", "true", "yes")
+    full_disk_str = request.query.get("full_disk")
+
+    if full_disk_str is not None and full_disk_str not in ("true", "false"):
+        return web.json_response(
+            create_error_response(f"Invalid full_disk: {full_disk_str}").to_dict(),
+            status=400,
+        )
+    full_disk = full_disk_str == "true"
 
     integrity_service: IntegrityService = request.app["integrity_service"]
 

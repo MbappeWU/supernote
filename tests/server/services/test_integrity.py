@@ -113,7 +113,7 @@ async def test_integrity_orphans(
     db_session: AsyncSession,
 ) -> None:
     """Verify integrity check detects orphaned files."""
-    # Create an orphaned VFS entry for the default test user
+    # Create an orphaned VFS entry and a file missing storage_key for the default test user
     file_do = UserFileDO(
         user_id=test_user_id,
         file_name="orphan.txt",
@@ -121,11 +121,22 @@ async def test_integrity_orphans(
         directory_id=9999,  # Invalid
         is_active="Y",
     )
-    db_session.add(file_do)
+    missing_key_do = UserFileDO(
+        user_id=test_user_id,
+        file_name="no_key.txt",
+        is_folder="N",
+        directory_id=0,
+        storage_key=None,
+        is_active="Y",
+    )
+    db_session.add_all([file_do, missing_key_do])
     await db_session.commit()
 
     report = await integrity_service.verify_user_storage(test_user_id)
-    assert report.issue_counts == {IntegrityIssueType.ORPHAN: 1}
+    assert report.issue_counts == {
+        IntegrityIssueType.ORPHAN: 1,
+        IntegrityIssueType.MISSING_BLOB: 1,
+    }
 
 
 async def test_integrity_hash_mismatch(
@@ -223,11 +234,18 @@ async def test_integrity_pipeline_issues(
                 key="page_P1",
                 status=ProcessingStatus.COMPLETED,
             ),
+            SystemTaskDO(
+                file_id=note_do.id,
+                task_type=TaskType.EMBEDDING_GENERATION.value,
+                key="page_P1",
+                status=ProcessingStatus.COMPLETED,
+            ),
             NotePageContentDO(
                 file_id=note_do.id,
                 page_index=0,
                 page_id="P1",
                 text_content=None,
+                embedding=None,
             ),
         ]
     )
@@ -242,16 +260,17 @@ async def test_integrity_pipeline_issues(
         IntegrityIssueType.TASK_FAILED: 1,
         IntegrityIssueType.MISSING_CACHE_BLOB: 1,
         IntegrityIssueType.MISSING_PAGE_CONTENT: 1,
+        IntegrityIssueType.MISSING_PAGE_EMBEDDING: 1,
     }
 
-    # Now populate the PNG cache blob at the unprefixed page_id path and OCR text
+    # Now populate the PNG cache blob at the unprefixed page_id path, OCR text, and embedding
     await blob_storage.put(
         CACHE_BUCKET, get_page_png_path(note_do.id, "P1"), b"png-bytes"
     )
     await db_session.execute(
         update(NotePageContentDO)
         .where(NotePageContentDO.file_id == note_do.id)
-        .values(text_content="extracted text")
+        .values(text_content="extracted text", embedding=b"\x00\x01")
     )
     await db_session.execute(
         update(SystemTaskDO)
@@ -544,12 +563,21 @@ async def test_verify_full_disk_two_way_checks(
         page_id="P1",
         text_content="page text",
     )
-    db_session.add_all([valid_recycle_entry, valid_page])
+    valid_png_task = SystemTaskDO(
+        file_id=active_note.id,
+        task_type=TaskType.PNG_CONVERSION.value,
+        key="page_P2",
+        status=ProcessingStatus.COMPLETED,
+    )
+    db_session.add_all([valid_recycle_entry, valid_page, valid_png_task])
     await db_session.commit()
 
     assert note_meta.content_md5 is not None
     await blob_storage.put(
         CACHE_BUCKET, get_page_png_path(active_note.id, "P1"), b"png"
+    )
+    await blob_storage.put(
+        CACHE_BUCKET, get_page_png_path(active_note.id, "P2"), b"png2"
     )
     await blob_storage.put(
         CACHE_BUCKET,
@@ -590,6 +618,13 @@ async def test_verify_full_disk_two_way_checks(
                 size=10,
                 is_folder="N",
             ),
+            RecycleFileDO(
+                file_id=888889,
+                user_id=999999,
+                file_name="ghost_user_recycle.txt",
+                size=10,
+                is_folder="N",
+            ),
             NotePageContentDO(
                 file_id=888888,
                 page_index=0,
@@ -608,9 +643,9 @@ async def test_verify_full_disk_two_way_checks(
 
     dirty_report = await integrity_service.verify_full_disk()
     assert dirty_report.ok == 11
-    assert dirty_report.scanned == 11 + 7
+    assert dirty_report.scanned == 11 + 8
     assert dirty_report.issue_counts == {
-        IntegrityIssueType.ORPHAN: 5,
+        IntegrityIssueType.ORPHAN: 6,
         IntegrityIssueType.UNREFERENCED_BLOB: 2,
     }
     assert {
