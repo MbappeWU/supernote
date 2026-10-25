@@ -11,6 +11,7 @@ from aiohttp import web
 
 from supernote.models.socket import (
     BaseSocketMessageData,
+    ScheduleMessageTemplate,
     SocketHandshakeParams,
     SocketIoAction,
     SocketIoClientMessage,
@@ -19,9 +20,14 @@ from supernote.models.socket import (
     SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
+    SocketTaskMessageData,
 )
 from supernote.server.config import ServerConfig
-from supernote.server.events import Event, LocalEventBus, SyncCompletedEvent
+from supernote.server.events import (
+    LocalEventBus,
+    ScheduleUpdatedEvent,
+    SyncCompletedEvent,
+)
 from supernote.server.services.user import UserService
 from supernote.server.socket_auth import verify_handshake_signature
 
@@ -70,22 +76,21 @@ class _CompatAsyncServer(socketio.AsyncServer):
     async def _handle_eio_connect(self, eio_sid: str, environ: dict) -> None:
         await super()._handle_eio_connect(eio_sid, environ)
 
-        eio_sock = self.eio.sockets.get(eio_sid)
-        if eio_sock is not None:
-            original_receive = eio_sock.receive
+        eio_sock = self.eio.sockets[eio_sid]
+        original_receive = eio_sock.receive
 
-            async def _receive_with_eio3_ping(
-                pkt: engineio.packet.Packet,
-            ) -> None:
-                if pkt.packet_type == engineio.packet.PING:
-                    eio_sock.schedule_ping()
-                    await eio_sock.send(
-                        engineio.packet.Packet(engineio.packet.PONG, pkt.data)
-                    )
-                    return
-                await original_receive(pkt)
+        async def _receive_with_eio3_ping(
+            pkt: engineio.packet.Packet,
+        ) -> None:
+            if pkt.packet_type == engineio.packet.PING:
+                eio_sock.schedule_ping()
+                await eio_sock.send(
+                    engineio.packet.Packet(engineio.packet.PONG, pkt.data)
+                )
+                return
+            await original_receive(pkt)
 
-            setattr(eio_sock, "receive", _receive_with_eio3_ping)
+        setattr(eio_sock, "receive", _receive_with_eio3_ping)
 
         await self._handle_connect(eio_sid, "/", None)
 
@@ -110,6 +115,7 @@ class SocketIOServerManager:
             engineio_logger=False,
         )
         self._sid_to_user: dict[str, str] = {}
+        self._sid_to_user_id: dict[str, int] = {}
         self._sid_to_token: dict[str, str] = {}
         self._setup_handlers()
         self._setup_event_bus_subscriptions()
@@ -142,15 +148,18 @@ class SocketIOServerManager:
         if token and await self.user_service.verify_token(token):
             return True
 
-        user_id = self._sid_to_user.pop(sid, None)
+        user_email = self._sid_to_user.pop(sid, None)
+        numeric_user_id = self._sid_to_user_id.pop(sid, None)
         self._sid_to_token.pop(sid, None)
         logger.warning(
             "Socket.IO session no longer valid for user=%s (sid=%s); disconnecting",
-            user_id,
+            user_email,
             sid,
         )
-        if user_id:
-            await self._sio.leave_room(sid, f"user_{user_id}")
+        if user_email:
+            await self._sio.leave_room(sid, f"user_email_{user_email}")
+        if numeric_user_id is not None:
+            await self._sio.leave_room(sid, f"user_id_{numeric_user_id}")
         await self._send_error(sid, HTTPStatus.FORBIDDEN, "token verification failed")
         await self._sio.disconnect(sid)
         return False
@@ -179,28 +188,34 @@ class SocketIOServerManager:
                 )
                 return False
 
-            # Associate session ID with user_id and join user room
-            user_id = session.email
-            self._sid_to_user[sid] = user_id
+            # Associate session ID with distinct email and numeric user_id rooms
+            user_email = session.email
+            self._sid_to_user[sid] = user_email
+            self._sid_to_user_id[sid] = session.user_id
             self._sid_to_token[sid] = params.token
-            user_room = f"user_{user_id}"
-            await self._sio.enter_room(sid, user_room)
+            email_room = f"user_email_{user_email}"
+            id_room = f"user_id_{session.user_id}"
+            await self._sio.enter_room(sid, email_room)
+            await self._sio.enter_room(sid, id_room)
             logger.info(
                 "Socket.IO connection established for user=%s (sid=%s, room=%s)",
-                user_id,
+                user_email,
                 sid,
-                user_room,
+                email_room,
             )
             return True
 
         @self._sio.event
         async def disconnect(sid: str) -> None:
             user_id = self._sid_to_user.pop(sid, None)
+            self._sid_to_user_id.pop(sid, None)
             self._sid_to_token.pop(sid, None)
             logger.info("Socket.IO disconnected for user=%s (sid=%s)", user_id, sid)
 
         @self._sio.on(SocketIoEvent.CLIENT_MESSAGE.value)
-        async def on_client_message(sid: str, data: str) -> None:
+        async def on_client_message(
+            sid: str, data: object = None, *_args: object
+        ) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -221,7 +236,7 @@ class SocketIOServerManager:
                 logger.debug("Client ACK received for user=%s (sid=%s)", user_id, sid)
 
         @self._sio.on(SocketIoEvent.TODO.value)
-        async def on_todo_ack(sid: str, data: str) -> None:
+        async def on_todo_ack(sid: str, data: object = None, *_args: object) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -232,7 +247,7 @@ class SocketIOServerManager:
                 )
 
         @self._sio.on(SocketIoEvent.DIGEST.value)
-        async def on_digest_ack(sid: str, data: str) -> None:
+        async def on_digest_ack(sid: str, data: object = None, *_args: object) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -243,7 +258,7 @@ class SocketIOServerManager:
                 )
 
         @self._sio.on(SocketIoEvent.RATTA_PING.value)
-        async def on_ratta_ping(sid: str, data: str) -> None:
+        async def on_ratta_ping(sid: str, data: object = None, *_args: object) -> None:
             if not await self._verify_active_session(sid):
                 return
 
@@ -262,20 +277,21 @@ class SocketIOServerManager:
         if self.event_bus is None:
             return
         self.event_bus.subscribe(SyncCompletedEvent, self._handle_sync_completed)
+        self.event_bus.subscribe(ScheduleUpdatedEvent, self._handle_schedule_updated)
         # TODO: Subscribe to future LocalEventBus domain events for:
         # - File/folder mutations (ADDFOLDER, DOWNLOADFILE, MODIFYFOLDER, MODIFYFILE, MOVEFOLDER,
         #   MOVEFILE, COPYFOLDER, COPYFILE, DELETEFOLDER, DELETEFILE) -> SocketMessageData (FILE-SYN)
-        # - Schedule/task mutations (QUERY) -> SocketTaskMessageData (TASK-SYN)
         # - Summary/digest/tag mutations (ADD_DIGEST, UPDATE_DIGEST, DELETE_DIGEST, QUERY)
         #   -> SocketDigestMessageData (DIGEST-SYN)
 
-    async def _handle_sync_completed(self, event: Event) -> None:
+    async def _handle_sync_completed(self, event: SyncCompletedEvent) -> None:
         """Emit a STARTSYNC FILE-SYN notification when a device completes a sync session."""
-        if not isinstance(event, SyncCompletedEvent) or not event.user_email:
+        target_user: str | int = event.user_email or event.user_id
+        if not target_user:
             return
         now_ms = int(time.time() * 1000)
         await self.send_message(
-            event.user_email,
+            target_user,
             SocketMessageData(
                 code=str(SocketIoCode.SUCCESS.value),
                 msg="Success",
@@ -291,18 +307,49 @@ class SocketIOServerManager:
             ),
         )
 
+    async def _handle_schedule_updated(self, event: ScheduleUpdatedEvent) -> None:
+        """Emit a QUERY TASK-SYN notification when a schedule task group or task is mutated."""
+        now_ms = int(time.time() * 1000)
+        await self.send_message(
+            event.user_id,
+            SocketTaskMessageData(
+                code=str(SocketIoCode.SUCCESS.value),
+                msg="Success",
+                timestamp=now_ms,
+                msg_type=SocketIoMessageType.TASK_SYN,
+                data=[
+                    ScheduleMessageTemplate(
+                        message_type=SocketIoAction.QUERY,
+                        equipment_no=event.equipment_no,
+                        task_list_id=event.task_list_id,
+                        task_id=event.task_id,
+                        timestamp=now_ms,
+                    )
+                ],
+            ),
+        )
+
     async def send_message(
         self,
-        user_id: str,
+        user_id: str | int,
         message: BaseSocketMessageData,
     ) -> None:
         """Send a Socket.IO message envelope to all connected sessions for a given user.
 
         Args:
-            user_id: Target user email or identifier.
+            user_id: Target user email (`str`) or numeric user ID (`int`).
             message: Socket.IO envelope payload to deliver.
         """
-        sids = [sid for sid, uid in list(self._sid_to_user.items()) if uid == user_id]
+        if isinstance(user_id, int):
+            sids = [
+                sid for sid, uid in list(self._sid_to_user_id.items()) if uid == user_id
+            ]
+            user_room = f"user_id_{user_id}"
+        else:
+            sids = [
+                sid for sid, uid in list(self._sid_to_user.items()) if uid == user_id
+            ]
+            user_room = f"user_email_{user_id}"
         for sid in sids:
             await self._verify_active_session(sid)
 
@@ -318,7 +365,6 @@ class SocketIOServerManager:
             msg_type_str, SocketIoEvent.SERVER_MESSAGE
         ).value
 
-        user_room = f"user_{user_id}"
         payload_str = message.to_json()
         logger.debug(
             "Emitting %s to room=%s: %s", resolved_event, user_room, payload_str

@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from supernote.server.db.session import DatabaseSessionManager
+from supernote.server.events import LocalEventBus, ScheduleUpdatedEvent
 from supernote.server.services.schedule import ScheduleService
 
 
@@ -362,3 +363,82 @@ async def test_update_and_batch_update_preserve_last_modified_and_clear_nullable
     assert updated_single is not None
     assert updated_single.title == "Updated via single"
     assert updated_single.update_time == 1710000020000
+
+
+async def test_schedule_service_publishes_domain_events_and_skips_noops(
+    session_manager: DatabaseSessionManager,
+) -> None:
+    """Verify ScheduleService publishes ScheduleUpdatedEvent on mutations and skips failed/no-op calls."""
+    event_bus = LocalEventBus()
+    published: list[ScheduleUpdatedEvent] = []
+
+    async def on_schedule_updated(event: ScheduleUpdatedEvent) -> None:
+        published.append(event)
+
+    event_bus.subscribe(ScheduleUpdatedEvent, on_schedule_updated)
+    service = ScheduleService(session_manager, event_bus=event_bus)
+    user_id = 707
+
+    # Non-existent mutations and empty batch updates must NOT publish events
+    assert await service.update_group(user_id, "missing-group", "Title") is None
+    assert await service.delete_group(user_id, "missing-group") is False
+    assert await service.clear_group_tasks(user_id, "missing-group") is False
+    assert await service.update_task(user_id, "missing-task", title="X") is None
+    assert await service.delete_task(user_id, "missing-task") is False
+    assert await service.batch_update_tasks(user_id, []) is True
+    assert await service.batch_update_tasks(user_id, [{"title": "No Task ID"}]) is True
+    await asyncio.sleep(0)
+    assert published == []
+
+    # Create group -> publishes group event
+    group = await service.create_group(user_id, "Event Group")
+    await asyncio.sleep(0)
+    assert published == [
+        ScheduleUpdatedEvent(
+            user_id=user_id,
+            task_list_id=group.task_list_id,
+            task_id=None,
+            equipment_no=None,
+        )
+    ]
+    published.clear()
+
+    # Clearing an already-empty group is a no-op -> does NOT publish
+    assert await service.clear_group_tasks(user_id, group.task_list_id) is False
+    await asyncio.sleep(0)
+    assert published == []
+
+    # Create task -> publishes task event
+    task = await service.create_task(user_id, group.task_list_id, "Task A")
+    await asyncio.sleep(0)
+    assert published == [
+        ScheduleUpdatedEvent(
+            user_id=user_id,
+            task_list_id=group.task_list_id,
+            task_id=task.task_id,
+            equipment_no=None,
+        )
+    ]
+    published.clear()
+
+    # Batch update with no allowed fields is a no-op -> does NOT publish
+    assert (
+        await service.batch_update_tasks(
+            user_id, [{"task_id": task.task_id, "unknown_field": "x"}]
+        )
+        is True
+    )
+    await asyncio.sleep(0)
+    assert published == []
+
+    # Clearing a non-empty group -> publishes group event
+    assert await service.clear_group_tasks(user_id, group.task_list_id) is True
+    await asyncio.sleep(0)
+    assert published == [
+        ScheduleUpdatedEvent(
+            user_id=user_id,
+            task_list_id=group.task_list_id,
+            task_id=None,
+            equipment_no=None,
+        )
+    ]

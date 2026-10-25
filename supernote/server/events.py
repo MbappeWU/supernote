@@ -48,13 +48,22 @@ class SyncCompletedEvent(Event):
     equipment_no: str | None = None
 
 
+@dataclass
+class ScheduleUpdatedEvent(Event):
+    """Triggered when a schedule task group or task is created, updated, or deleted."""
+
+    user_id: int
+    task_list_id: str | None = None
+    task_id: str | None = None
+    equipment_no: str | None = None
+
+
 # TODO: Define and publish additional domain events on LocalEventBus for Socket.IO notification dispatch:
 # - File/folder lifecycle events (create folder, upload finish, rename, move, copy, delete, recycle restore) -> FILE-SYN
-# - Schedule/task lifecycle events (create/update/delete task group or task, update sort) -> TASK-SYN
 # - Summary/digest/tag lifecycle events (add/update/delete summary group, summary item, or tag) -> DIGEST-SYN
 
 
-EventHandler = Callable[[Event], Awaitable[Any]]
+EventHandler = Callable[[Any], Awaitable[Any]]
 
 
 class LocalEventBus:
@@ -62,8 +71,11 @@ class LocalEventBus:
 
     def __init__(self) -> None:
         self._subscribers: dict[type[Event], list[EventHandler]] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
-    def subscribe(self, event_type: type[Event], handler: EventHandler) -> None:
+    def subscribe[E: Event](
+        self, event_type: type[E], handler: Callable[[E], Awaitable[Any]]
+    ) -> None:
         """Subscribe a handler to an event type."""
         if event_type not in self._subscribers:
             self._subscribers[event_type] = []
@@ -77,7 +89,9 @@ class LocalEventBus:
             for handler in self._subscribers[event_type]:
                 # We fire and forget using create_task to ensure background execution
                 # and not block the caller (e.g., the API response).
-                asyncio.create_task(self._safe_execute(handler, event))
+                task = asyncio.create_task(self._safe_execute(handler, event))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
     async def _safe_execute(self, handler: EventHandler, event: Event) -> None:
         """Execute handler and log exceptions."""

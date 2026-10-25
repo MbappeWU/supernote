@@ -212,7 +212,7 @@ def create_app(config: ServerConfig) -> web.Application:
     app["file_service"] = file_service
     app["integrity_service"] = IntegrityService(session_manager, blob_storage)
     app["url_signer"] = UrlSigner(config.auth.secret_key, coordination_service)
-    app["schedule_service"] = ScheduleService(session_manager)
+    app["schedule_service"] = ScheduleService(session_manager, event_bus)
     ocr_model = create_ocr_model(config)
     summary_model = create_summary_model(config)
     embedding_model = create_embedding_model(config)

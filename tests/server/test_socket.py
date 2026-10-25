@@ -17,8 +17,10 @@ from supernote.models.socket import (
     SocketDigestMessageData,
     SocketHandshakeParams,
     SocketIoAction,
+    SocketIoCode,
     SocketIoDigestDataType,
     SocketIoEvent,
+    SocketIoFileType,
     SocketIoMessageTemplate,
     SocketIoMessageType,
     SocketMessageData,
@@ -26,7 +28,11 @@ from supernote.models.socket import (
 )
 from supernote.server.app import create_app
 from supernote.server.config import ServerConfig
-from supernote.server.events import LocalEventBus, SyncCompletedEvent
+from supernote.server.events import (
+    LocalEventBus,
+    SyncCompletedEvent,
+)
+from supernote.server.services.schedule import ScheduleService
 from supernote.server.services.user import JWT_ALGORITHM, UserService
 from supernote.server.socket import SocketIOServerManager
 from supernote.server.socket_auth import compute_handshake_signature
@@ -157,7 +163,7 @@ async def test_socketio_multi_user_message_isolation(
             SocketIoMessageTemplate(
                 message_type=SocketIoAction.ADDFILE,
                 equipment_no="SN123",
-                file_type="note",
+                file_type=SocketIoFileType.FILE,
                 id=101,
                 original_name="NoteA.note",
             )
@@ -236,9 +242,11 @@ async def test_socketio_client_received_ack(
     await socket_client.connect(params_a)
     assert socket_client.is_connected
 
-    # Send client delivery ACK
+    # Send client delivery ACK and unhandled message on ClientMessage channel
     await socket_client.send_client_message("Received")
+    await socket_client.send_client_message("other")
 
+    await socket_client.ping(timeout=5.0)
     await socket_client.disconnect()
 
 
@@ -383,10 +391,224 @@ async def test_socketio_revoked_session_disconnected_on_heartbeat_and_send(
 
 
 @pytest.mark.asyncio
+async def test_socketio_schedule_service_events_publish_task_syn(
+    socketio_server: TestServer,
+    socket_client: SupernoteSocketClient,
+) -> None:
+    """Verify ScheduleService mutations publish ScheduleUpdatedEvent and emit TASK-SYN messages."""
+    user_service: UserService = socketio_server.app["user_service"]
+    schedule_service: ScheduleService = socketio_server.app["schedule_service"]
+    manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
+    event_bus: LocalEventBus = socketio_server.app["event_bus"]
+    user_email = "test@example.com"
+    user_id = await user_service.get_user_id(user_email)
+
+    token = await user_service.create_session(user_email)
+    await socket_client.connect(_make_handshake_params(token))
+
+    # Sending to stringified numeric ID must NOT collide with numeric user_id room
+    await manager.send_message(
+        str(user_id),
+        SocketTaskMessageData(
+            msg="wrong namespace",
+            data=[ScheduleMessageTemplate(message_type=SocketIoAction.QUERY)],
+        ),
+    )
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(anext(socket_client.messages()), timeout=0.05)
+
+    # Create task group -> emits TASK-SYN QUERY with task_list_id
+    group = await schedule_service.create_group(user_id, "Work Tasks")
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=None,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Update task group -> emits TASK-SYN QUERY with task_list_id
+    await schedule_service.update_group(user_id, group.task_list_id, "Work Updated")
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=None,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Create task -> emits TASK-SYN QUERY with task_list_id and task_id
+    task = await schedule_service.create_task(
+        user_id, group_id=group.task_list_id, title="Write tests"
+    )
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=task.task_id,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Update task -> emits TASK-SYN QUERY with task_list_id and task_id
+    await schedule_service.update_task(
+        user_id, task.task_id, title="Write thorough tests"
+    )
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=task.task_id,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Batch update tasks -> emits TASK-SYN QUERY with task_list_id
+    await schedule_service.batch_update_tasks(
+        user_id, [{"task_id": task.task_id, "sort": 1}]
+    )
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=None,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Delete task -> emits TASK-SYN QUERY with task_list_id and task_id
+    await schedule_service.delete_task(user_id, task.task_id)
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=task.task_id,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Add a second task and clear group tasks -> emits TASK-SYN QUERY with task_list_id
+    task2 = await schedule_service.create_task(
+        user_id, group_id=group.task_list_id, title="Task to clear"
+    )
+    msg_task2 = await anext(socket_client.messages())
+    assert isinstance(msg_task2, SocketTaskMessageData)
+    assert msg_task2.data[0].task_id == task2.task_id
+
+    await schedule_service.clear_group_tasks(user_id, group.task_list_id)
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=None,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Delete group -> emits TASK-SYN QUERY with task_list_id
+    await schedule_service.delete_group(user_id, group.task_list_id)
+    msg = await anext(socket_client.messages())
+    assert isinstance(msg, SocketTaskMessageData)
+    assert msg == SocketTaskMessageData(
+        code=str(SocketIoCode.SUCCESS.value),
+        msg="Success",
+        timestamp=msg.timestamp,
+        msg_type=SocketIoMessageType.TASK_SYN,
+        data=[
+            ScheduleMessageTemplate(
+                message_type=SocketIoAction.QUERY,
+                equipment_no=None,
+                task_list_id=group.task_list_id,
+                task_id=None,
+                timestamp=msg.data[0].timestamp,
+            )
+        ],
+    )
+
+    # Publishing SyncCompletedEvent with empty user_id and user_email is ignored
+    await event_bus.publish(SyncCompletedEvent(user_id=0, user_email=""))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(anext(socket_client.messages()), timeout=0.05)
+
+    # Standalone manager without event_bus initializes cleanly
+    standalone_manager = SocketIOServerManager(
+        socketio_server.app["config"], user_service, event_bus=None
+    )
+    assert standalone_manager.event_bus is None
+
+    await socket_client.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_socketio_eio3_device_handshake_and_ping_compat(
     socketio_server: TestServer,
 ) -> None:
-    """Verify real Supernote device EIO=3 (Socket.IO v2) WebSocket handshake and client PING/PONG."""
+    """Verify real Supernote device EIO=3 (Socket.IO v2) WebSocket handshake, ACKs, and client PING/PONG."""
     user_service: UserService = socketio_server.app["user_service"]
     manager: SocketIOServerManager = socketio_server.app["socketio_manager"]
     user_id = "test@example.com"
@@ -394,16 +616,17 @@ async def test_socketio_eio3_device_handshake_and_ping_compat(
     token = await user_service.create_session(user_id)
     params = _make_handshake_params(token)
 
-    ws_url = (
-        f"http://{socketio_server.host}:{socketio_server.port}/socket.io/"
-        f"?EIO=3&transport=websocket"
-        f"&token={params.token}&type={params.type}"
-        f"&random={params.random}&sign={params.sign}"
-    )
+    def _ws_url(p: SocketHandshakeParams) -> str:
+        return (
+            f"http://{socketio_server.host}:{socketio_server.port}/socket.io/"
+            f"?EIO=3&transport=websocket"
+            f"&token={p.token}&type={p.type}"
+            f"&random={p.random}&sign={p.sign}"
+        )
 
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(ws_url) as ws:
-            # 1. Server sends Engine.IO OPEN ('0{...}') followed immediately by
+        async with session.ws_connect(_ws_url(params)) as ws:
+            # Server sends Engine.IO OPEN ('0{...}') followed immediately by
             # Socket.IO default-namespace CONNECT ('40{...}') without waiting
             # for a client '40' packet.
             eio_open = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
@@ -412,12 +635,21 @@ async def test_socketio_eio3_device_handshake_and_ping_compat(
             sio_connect = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
             assert sio_connect.startswith("40")
 
-            # 2. Client-initiated Engine.IO v3 PING ('2') receives PONG ('3')
+            # Duplicate Socket.IO default-namespace CONNECT ('40') from client is ignored
+            await ws.send_str("40")
+
+            # Client-initiated Engine.IO v3 PING ('2') receives PONG ('3')
             await ws.send_str("2")
             eio_pong = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
             assert eio_pong == "3"
 
-            # 3. Server-to-device notification is delivered over the default namespace
+            # Client ACKs and unhandled payloads on to-do and digest channels
+            await ws.send_str('42["to-do","Received"]')
+            await ws.send_str('42["to-do","other"]')
+            await ws.send_str('42["digest","Received"]')
+            await ws.send_str('42["digest","other"]')
+
+            # Server-to-device notification is delivered over the default namespace
             msg_data = SocketMessageData(
                 code="0",
                 msg="eio3 sync notification",
@@ -428,6 +660,24 @@ async def test_socketio_eio3_device_handshake_and_ping_compat(
             event_frame = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
             assert event_frame.startswith('42["ServerMessage",')
             assert "eio3 sync notification" in event_frame
+
+            # Revoking the session causes subsequent to-do ACK to return 403 error and disconnect
+            await user_service.logout(token)
+            await ws.send_str('42["to-do","Received"]')
+            err_frame = await asyncio.wait_for(ws.receive_str(), timeout=2.0)
+            assert err_frame.startswith('42["ServerMessage",')
+            assert "token verification failed" in err_frame
+
+        # Also verify revoked session on digest ACK channel
+        token2 = await user_service.create_session(user_id)
+        async with session.ws_connect(_ws_url(_make_handshake_params(token2))) as ws2:
+            await asyncio.wait_for(ws2.receive_str(), timeout=2.0)
+            await asyncio.wait_for(ws2.receive_str(), timeout=2.0)
+            await user_service.logout(token2)
+            await ws2.send_str('42["digest","Received"]')
+            err_frame2 = await asyncio.wait_for(ws2.receive_str(), timeout=2.0)
+            assert err_frame2.startswith('42["ServerMessage",')
+            assert "token verification failed" in err_frame2
 
 
 @pytest.mark.asyncio
@@ -480,15 +730,15 @@ async def test_socketio_client_channels_and_error_handling_via_server(
 
     # Malformed payloads emitted by server on to-do and digest channels log warnings without crashing
     await manager.sio.emit(
-        SocketIoEvent.TODO.value, "{not-valid-json", room=f"user_{user_id}"
+        SocketIoEvent.TODO.value, "{not-valid-json", room=f"user_email_{user_id}"
     )
     await manager.sio.emit(
-        SocketIoEvent.DIGEST.value, "{not-valid-json", room=f"user_{user_id}"
+        SocketIoEvent.DIGEST.value, "{not-valid-json", room=f"user_email_{user_id}"
     )
 
     # Unexpected ping reply payload logs a warning
     await manager.sio.emit(
-        SocketIoEvent.RATTA_PING.value, "unexpected-pong", room=f"user_{user_id}"
+        SocketIoEvent.RATTA_PING.value, "unexpected-pong", room=f"user_email_{user_id}"
     )
     await socket_client.ping(timeout=1.0)
     assert "Unexpected ping reply payload: unexpected-pong" in caplog.text
@@ -497,7 +747,7 @@ async def test_socketio_client_channels_and_error_handling_via_server(
 
     # Non-'true' plain-string ServerMessage causes check_status to raise SupernoteSocketError
     await manager.sio.emit(
-        SocketIoEvent.SERVER_MESSAGE.value, "false", room=f"user_{user_id}"
+        SocketIoEvent.SERVER_MESSAGE.value, "false", room=f"user_email_{user_id}"
     )
     with pytest.raises(SupernoteSocketError, match="Unexpected status check reply"):
         await socket_client.check_status(timeout=1.0)
