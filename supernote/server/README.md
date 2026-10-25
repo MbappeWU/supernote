@@ -25,6 +25,24 @@ The server is configured via `config/config.yaml` or environment variables.
 
 For a comprehensive reference, see the [ServerConfig documentation](https://allenporter.github.io/supernote/supernote/server.html#ServerConfig).
 
+#### Full vs. Bare Sync Mode (Memory Footprint)
+
+| Mode | Idle RAM | Peak Active RAM | Description |
+| :--- | :---: | :---: | :--- |
+| **Bare Sync Server** | **~133 MB** | **~135 MB** | Device sync only; disables Web UI, background PNG rendering, and MCP server. |
+| **Full Knowledge Hub (Default)** | **~160 MB** | **~310 MB** | Enables Web UI, notebook page rendering, MCP server, and optional AI pipeline. |
+
+To run in **Bare Sync Mode** (ideal for low-memory VPS instances or Raspberry Pi setups where only device synchronization is needed), disable `mcp_enabled` and `web_enabled` in `config/config.yaml`:
+```yaml
+mcp_enabled: false
+web_enabled: false
+```
+Or via environment variables:
+```bash
+export SUPERNOTE_MCP_ENABLED=false
+export SUPERNOTE_WEB_ENABLED=false
+```
+
 #### AI Configuration
 Configure AI providers and per-capability models (`ocr`, `summary`, `embedding`) in `config/config.yaml` (omitting any capability you want disabled):
 ```yaml

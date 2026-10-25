@@ -2,7 +2,7 @@
 
 **A lightweight, self-hosted private cloud server and optional AI intelligence layer for your Ratta Supernote.**
 
-This toolkit is a self-hosted, SQLite-based implementation of the **Supernote Private Cloud** protocol. It provides a simple and resource-efficient sync server with a minimal resource footprint (typically ~160MB idle memory, and 300–400MB to process large notebooks). It implements **100% of the community [Supernote OpenAPI Specification](api-spec/openapi.yaml)**, and can optionally be enhanced with an **AI-driven synthesis engine**—transforming your handwritten notes into structured, searchable knowledge using Google Gemini or local OpenAI-compatible models (such as Ollama).
+This toolkit is a self-hosted, SQLite-based implementation of the **Supernote Private Cloud** protocol. It provides a simple and resource-efficient sync server with a minimal resource footprint (~135MB flat in bare sync mode, or ~160MB idle and ~310MB peak when rendering and processing large notebooks). It implements **100% of the community [Supernote OpenAPI Specification](api-spec/openapi.yaml)**, and can optionally be enhanced with an **AI-driven synthesis engine**—transforming your handwritten notes into structured, searchable knowledge using Google Gemini or local OpenAI-compatible models (such as Ollama).
 
 <p align="center">
   <img src="docs/static-assets/hero-overview.jpg" alt="Supernote Overview" width="800">
@@ -15,7 +15,7 @@ This toolkit is a self-hosted, SQLite-based implementation of the **Supernote Pr
 
 This project is designed to be **fully compatible** with the official Supernote Private Cloud protocol, serving as a lightweight alternative that operates on a single SQLite database and runs comfortably on low-power NAS setups and home lab servers:
 
-- **⚡ Lightweight Sync**: Runs on a simple, efficient Python/Asyncio stack with SQLite. Consumes ~160MB of idle memory (recommending 300–400MB for notebook processing).
+- **⚡ Lightweight Sync**: Runs on a simple, efficient Python/Asyncio stack with SQLite. Consumes ~135MB in bare sync mode, or ~160MB idle (~310MB peak) with the Web UI, MCP server, and background notebook processing enabled.
 - **📋 OpenAPI Spec Compliant**: Implements **100% of the community [Supernote OpenAPI specification](api-spec/openapi.yaml)**.
 - **🛡️ Private & Secure**: You own your database and files. Runs locally on your NAS or local server with no external data leakage.
 - **🖥️ Sleek Web UI**: Browse notes, manage tasks, and export iCalendar (`.ics`) task feeds for Home Assistant, Apple Calendar, Google Calendar, and Outlook.
@@ -54,7 +54,7 @@ You can run the server either as a **Lite Sync Server (Zero-Config)** or with th
 Choose one of the options below to start the server.
 
 #### Option A: Lite Sync Server (Zero-Config)
-No API keys or external services required. Runs locally with SQLite.
+No API keys or external services required. Runs locally with SQLite (~160MB idle, ~310MB peak when rendering notebook previews).
 
 *   **Using Python**:
     ```bash
@@ -72,6 +72,15 @@ No API keys or external services required. Runs locally with SQLite.
       -v $(pwd)/storage:/data \
       --name supernote-server \
       supernote
+    ```
+*   **Bare Sync Mode (~135MB flat RAM)**: To run a minimal headless sync server without the Web UI, background PNG rasterization, or MCP server, disable `web_enabled` and `mcp_enabled` via environment variables or `config.yaml`:
+    ```bash
+    SUPERNOTE_MCP_ENABLED=false SUPERNOTE_WEB_ENABLED=false supernote serve
+    ```
+    ```yaml
+    # config/config.yaml
+    mcp_enabled: false
+    web_enabled: false
     ```
 
 #### Option B: AI & Knowledge Hub (With Gemini)
@@ -275,7 +284,7 @@ While the official Supernote Private Cloud by Ratta provides a production-grade 
 | Capability | Official Private Cloud (Ratta) | Supernote Private Cloud (This Project) |
 |------------|-------------------------------|-----------------------------|
 | **Core Sync** | ✅ Robust & Validated | ✅ Fully Compatible (100% OpenAPI compliant) |
-| **Memory Footprint**| ⚠️ High (~2 GB+ RAM required) | **⚡ Low (~160MB idle, 300–400MB active)** |
+| **Memory Footprint**| ⚠️ High (~2 GB+ RAM required) | **⚡ Low (~135MB bare sync, ~160MB idle / ~310MB active full)** |
 | **AI Analysis** | Basic OCR (Device-side) | **Optional: AI-powered Transcriptions & Synthesis (Gemini or Local Models)** |
 | **Search** | Path/Filename | **Optional: Semantic Concept Search** |
 | **Stack** | Java / Spring Boot + Redis + MariaDB | Python / Asyncio + SQLite |
