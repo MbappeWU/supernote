@@ -165,6 +165,13 @@ class VfsItemDeletedEvent(Event):
     equipment_no: str | None = None
 
 
+@dataclass
+class BlobCleanupEvent(Event):
+    """Requests asynchronous removal of candidate storage keys in USER_DATA_BUCKET if no file or summary rows reference them."""
+
+    storage_keys: set[str]
+
+
 EventHandler = Callable[[Any], Awaitable[Any]]
 
 

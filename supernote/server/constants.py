@@ -47,3 +47,6 @@ DEFAULT_PAGE_CONCURRENCY = 2
 # Task status database write retry settings
 DB_WRITE_MAX_RETRIES = 5
 DB_WRITE_RETRY_BACKOFF_SECONDS = 0.1
+
+# Retention window for soft-deleted recycle bin items and summaries (30 days)
+RECYCLE_RETENTION_MS = 30 * 24 * 3600 * 1000
