@@ -16,6 +16,7 @@ The following endpoints are supported:
 - /api/official/system/base/param
 """
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 from mashumaro import field_options
@@ -488,29 +489,7 @@ class IntegrityReportVO(BaseResponse):
     """
 
     scanned: int = 0
-    """Total number of active VFS nodes scanned."""
-
-    missing_blob: int = field(metadata=field_options(alias="missingBlob"), default=0)
-    """Number of files with a missing storage key or missing physical blob."""
-
-    size_mismatch: int = field(metadata=field_options(alias="sizeMismatch"), default=0)
-    """Number of files whose VFS size differs from the physical blob size."""
-
-    hash_mismatch: int = field(metadata=field_options(alias="hashMismatch"), default=0)
-    """Number of files whose VFS MD5 differs from the physical blob MD5."""
-
-    orphans: int = 0
-    """Number of nodes referencing a non-existent or inactive parent folder."""
-
-    folder_anomalies: int = field(
-        metadata=field_options(alias="folderAnomalies"), default=0
-    )
-    """Number of duplicate case-variant root folders detected."""
-
-    pipeline_issues: int = field(
-        metadata=field_options(alias="pipelineIssues"), default=0
-    )
-    """Number of .note files with failed tasks or missing pipeline/cache artifacts."""
+    """Total number of active nodes scanned."""
 
     ok: int = 0
     """Number of nodes that passed all integrity checks."""
@@ -520,3 +499,8 @@ class IntegrityReportVO(BaseResponse):
 
     remediations: list[str] = field(default_factory=list)
     """Suggested remediation steps for detected integrity issues."""
+
+    @property
+    def issue_counts(self) -> dict[IntegrityIssueType, int]:
+        """Count of detected issues grouped by IntegrityIssueType."""
+        return dict(Counter(issue.issue_type for issue in self.issues))

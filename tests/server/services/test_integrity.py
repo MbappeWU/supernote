@@ -88,15 +88,12 @@ async def test_integrity_check(
     # good.txt: missing blob
     # bad_size.txt: size mismatch
 
-    assert report.orphans == 0
-    assert report.missing_blob == 1
-    assert report.size_mismatch == 1
     # Scanned: 8 (default folders) + Docs + good + bad_size = 11
     assert report.scanned == 11
     assert report.ok == 9  # Some default folders are ok
-    assert {i.issue_type for i in report.issues} == {
-        IntegrityIssueType.MISSING_BLOB,
-        IntegrityIssueType.SIZE_MISMATCH,
+    assert report.issue_counts == {
+        IntegrityIssueType.MISSING_BLOB: 1,
+        IntegrityIssueType.SIZE_MISMATCH: 1,
     }
     assert {i.file_name for i in report.issues} == {"good.txt", "bad_size.txt"}
     assert len(report.remediations) == 2
@@ -105,7 +102,7 @@ async def test_integrity_check(
         user_id, file_id=good_file.id
     )
     assert file_report.scanned == 1
-    assert file_report.missing_blob == 1
+    assert file_report.issue_counts == {IntegrityIssueType.MISSING_BLOB: 1}
     assert len(file_report.issues) == 1
     assert file_report.issues[0].file_id == good_file.id
 
@@ -128,7 +125,7 @@ async def test_integrity_orphans(
     await db_session.commit()
 
     report = await integrity_service.verify_user_storage(test_user_id)
-    assert report.orphans == 1
+    assert report.issue_counts == {IntegrityIssueType.ORPHAN: 1}
 
 
 async def test_integrity_hash_mismatch(
@@ -161,7 +158,7 @@ async def test_integrity_hash_mismatch(
 
     # Verify
     report = await integrity_service.verify_user_storage(test_user_id)
-    assert report.hash_mismatch == 1
+    assert report.issue_counts == {IntegrityIssueType.HASH_MISMATCH: 1}
     # 8 Default folders are OK
     assert report.ok == 8
     # Scanned: 8 (default folders) + bad_hash.txt = 9
@@ -176,10 +173,8 @@ async def test_integrity_basic(
     """Verify basic integrity check with no issues."""
     report = await integrity_service.verify_user_storage(test_user_id)
 
-    assert report.orphans == 0
-    assert report.missing_blob == 0
-    assert report.size_mismatch == 0
-    assert report.hash_mismatch == 0
+    assert report.issues == []
+    assert report.issue_counts == {}
     assert report.scanned == 8  # Default folders
     assert report.ok == 8
 
@@ -242,14 +237,11 @@ async def test_integrity_pipeline_issues(
         test_user_id, file_id=note_do.id
     )
     assert file_report.scanned == 1
-    assert file_report.pipeline_issues == 1
     assert file_report.ok == 0
-
-    issue_types = {issue.issue_type for issue in file_report.issues}
-    assert issue_types == {
-        IntegrityIssueType.TASK_FAILED,
-        IntegrityIssueType.MISSING_CACHE_BLOB,
-        IntegrityIssueType.MISSING_PAGE_CONTENT,
+    assert file_report.issue_counts == {
+        IntegrityIssueType.TASK_FAILED: 1,
+        IntegrityIssueType.MISSING_CACHE_BLOB: 1,
+        IntegrityIssueType.MISSING_PAGE_CONTENT: 1,
     }
 
     # Now populate the PNG cache blob at the unprefixed page_id path and OCR text
@@ -274,7 +266,6 @@ async def test_integrity_pipeline_issues(
     healthy_report = await integrity_service.verify_user_storage(
         test_user_id, file_id=note_do.id
     )
-    assert healthy_report.pipeline_issues == 0
     assert healthy_report.ok == 1
     assert healthy_report.issues == []
 
@@ -296,7 +287,7 @@ async def test_integrity_duplicate_root_folder(
     await db_session.commit()
 
     report = await integrity_service.verify_user_storage(test_user_id)
-    assert report.folder_anomalies == 1
+    assert report.issue_counts == {IntegrityIssueType.DUPLICATE_ROOT_FOLDER: 1}
     assert len(report.issues) == 1
     assert report.issues[0].issue_type == IntegrityIssueType.DUPLICATE_ROOT_FOLDER
     assert report.issues[0].file_name == "Export"
@@ -439,8 +430,10 @@ async def test_integrity_summary_missing_blob_and_hash_mismatch(
 
     report = await integrity_service.verify_user_storage(test_user_id)
     assert report.scanned == 11  # 8 default folders + 3 summaries
-    assert report.missing_blob == 2
-    assert report.hash_mismatch == 1
+    assert report.issue_counts == {
+        IntegrityIssueType.MISSING_BLOB: 2,
+        IntegrityIssueType.HASH_MISMATCH: 1,
+    }
     assert report.ok == 8
     assert [(i.file_name, i.issue_type) for i in report.issues] == [
         ("Missing Blob Summary", IntegrityIssueType.MISSING_BLOB),
@@ -488,7 +481,7 @@ async def test_integrity_summary_orphans(
 
     report = await integrity_service.verify_user_storage(test_user_id)
     assert report.scanned == 10  # 8 default folders + 2 active summaries
-    assert report.orphans == 2
+    assert report.issue_counts == {IntegrityIssueType.ORPHAN: 2}
     assert report.ok == 8
     assert [(i.file_id, i.file_name, i.issue_type) for i in report.issues] == [
         (
