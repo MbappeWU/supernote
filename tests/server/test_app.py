@@ -207,6 +207,10 @@ async def test_static_frontend_url_history_routing(client: TestClient) -> None:
     assert "export function parseUrlHash" in main_js
     assert "export function buildUrlHash" in main_js
     assert "syncBreadcrumbsForDirectory" in main_js
+    assert "restoreViewerState" in main_js
+    assert "restoreDirectoryState" in main_js
+    assert "closeViewer" in main_js
+    assert "closeSystemPanel" in main_js
     assert "fetchPathInfo" in main_js
     assert "#/system" in main_js
     assert "#/tasks" in main_js

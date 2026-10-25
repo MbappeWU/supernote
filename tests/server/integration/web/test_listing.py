@@ -389,9 +389,11 @@ async def test_path_query_nested_folder_and_file(
     )
     assert folder_resp.status == 200
     folder_data = await folder_resp.json()
-    assert folder_data["success"] is True
-    assert folder_data["path"] == "Note/Work/Projects"
-    assert folder_data["idPath"] == f"{note_id}/{work_id}/{projects_id}"
+    assert folder_data == {
+        "success": True,
+        "path": "Note/Work/Projects",
+        "idPath": f"{note_id}/{work_id}/{projects_id}",
+    }
 
     # Query file with string ID (matching client.js fetchPathInfo when refreshing FileViewer)
     file_resp = await client.post(
@@ -401,9 +403,25 @@ async def test_path_query_nested_folder_and_file(
     )
     assert file_resp.status == 200
     file_data = await file_resp.json()
-    assert file_data["success"] is True
-    assert file_data["path"] == "Note/Work/Projects/Roadmap.note"
-    assert file_data["idPath"] == f"{note_id}/{work_id}/{projects_id}/{file_vo.id}"
+    assert file_data == {
+        "success": True,
+        "path": "Note/Work/Projects/Roadmap.note",
+        "idPath": f"{note_id}/{work_id}/{projects_id}/{file_vo.id}",
+    }
+
+    # Query non-existent/deleted ID returns empty path and idPath
+    missing_resp = await client.post(
+        "/api/file/path/query",
+        json={"id": "999999999"},
+        headers=auth_headers,
+    )
+    assert missing_resp.status == 200
+    missing_data = await missing_resp.json()
+    assert missing_data == {
+        "success": True,
+        "path": "",
+        "idPath": "",
+    }
 
 
 async def test_list_query_flattening(

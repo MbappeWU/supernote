@@ -191,21 +191,41 @@ createApp({
         const recentNotes = computed(() => files.value.filter(f => f.extension === 'note'));
 
         // URL Routing Synchronization
+        const ROUTING_QUERY_KEYS = ['dir', 'folder', 'file', 'tab', 'view'];
         let urlSyncDepth = 0;
         let activeSyncSeq = 0;
         let lastSyncedHash = '';
+        let inAppHistoryDepth = 0;
+        let viewerOpenedFromHistory = false;
+        let systemOpenedFromHistory = false;
 
-        async function syncBreadcrumbsForDirectory(dirId) {
-            if (!dirId || String(dirId) === '0') {
+        async function syncBreadcrumbsForDirectory(dirId, seq = activeSyncSeq) {
+            const targetId = String(dirId || '0');
+            if (targetId === '0') {
                 breadcrumbs.value = [{ id: '0', name: 'Cloud' }];
-                return;
+                return true;
             }
             try {
-                const info = await fetchPathInfo(dirId);
-                breadcrumbs.value = buildCrumbsFromPathInfo(info);
+                const info = await fetchPathInfo(targetId);
+                if (seq !== activeSyncSeq || String(currentDirectoryId.value) !== targetId) {
+                    return true;
+                }
+                const crumbs = buildCrumbsFromPathInfo(info);
+                if (crumbs.length <= 1) {
+                    return false;
+                }
+                breadcrumbs.value = crumbs;
+                return true;
             } catch (e) {
                 console.error("Failed to resolve directory breadcrumbs:", e);
+                return true;
             }
+        }
+
+        function hasRoutingQueryParams(searchStr) {
+            if (!searchStr) return false;
+            const params = new URLSearchParams(searchStr);
+            return ROUTING_QUERY_KEYS.some(key => params.has(key));
         }
 
         function updateUrl(replace = false) {
@@ -218,12 +238,117 @@ createApp({
                 showSystemPanel.value
             );
             lastSyncedHash = targetHash;
-            if (window.location.hash !== targetHash) {
+            const stripQuery = hasRoutingQueryParams(window.location.search);
+            const targetUrl = stripQuery ? `${window.location.pathname}${targetHash}` : targetHash;
+            if (window.location.hash !== targetHash || stripQuery) {
                 if (replace) {
-                    window.history.replaceState(null, '', targetHash);
+                    window.history.replaceState(null, '', targetUrl);
                 } else {
-                    window.history.pushState(null, '', targetHash);
+                    inAppHistoryDepth++;
+                    window.history.pushState(null, '', targetUrl);
                 }
+            }
+        }
+
+        async function restoreSystemView(isInitial, seq) {
+            showSystemPanel.value = true;
+            if (activeTab.value === 'system') {
+                activeTab.value = 'files';
+            }
+            if (!isInitial && files.value.length > 0) return;
+            const targetDirId = String(currentDirectoryId.value || '0');
+            await Promise.all([
+                loadDirectory(targetDirId),
+                syncBreadcrumbsForDirectory(targetDirId, seq)
+            ]);
+        }
+
+        async function restoreViewerState(targetFileId, seq) {
+            const existingFile = files.value.find(f => String(f.id) === targetFileId);
+            if (existingFile) {
+                selectedFile.value = existingFile;
+                view.value = 'viewer';
+                const currentLastCrumbId = String(breadcrumbs.value[breadcrumbs.value.length - 1]?.id || '0');
+                if (currentLastCrumbId !== String(currentDirectoryId.value)) {
+                    await syncBreadcrumbsForDirectory(currentDirectoryId.value, seq);
+                }
+                return;
+            }
+
+            try {
+                const info = await fetchPathInfo(targetFileId);
+                if (seq !== activeSyncSeq) return;
+                const allCrumbs = buildCrumbsFromPathInfo(info);
+                if (allCrumbs.length <= 1) {
+                    selectedFile.value = {
+                        id: targetFileId,
+                        name: `Notebook ${targetFileId}`,
+                        extension: 'note'
+                    };
+                    view.value = 'viewer';
+                    return;
+                }
+
+                const fileCrumb = allCrumbs[allCrumbs.length - 1];
+                const folderCrumbs = allCrumbs.slice(0, -1);
+                const parentDirId = String(folderCrumbs[folderCrumbs.length - 1].id);
+                const ext = fileCrumb.name.includes('.')
+                    ? fileCrumb.name.split('.').pop().toLowerCase()
+                    : 'note';
+
+                breadcrumbs.value = folderCrumbs;
+                currentDirectoryId.value = parentDirId;
+                selectedFile.value = {
+                    id: targetFileId,
+                    name: fileCrumb.name,
+                    extension: ext
+                };
+                view.value = 'viewer';
+
+                await loadDirectory(parentDirId);
+                if (seq !== activeSyncSeq) return;
+                const loadedFile = files.value.find(f => String(f.id) === targetFileId);
+                if (loadedFile) {
+                    selectedFile.value = loadedFile;
+                }
+            } catch (e) {
+                if (seq !== activeSyncSeq) return;
+                console.error("Failed to resolve file path info:", e);
+                selectedFile.value = {
+                    id: targetFileId,
+                    name: `Notebook ${targetFileId}`,
+                    extension: 'note'
+                };
+                view.value = 'viewer';
+            }
+        }
+
+        async function restoreDirectoryState(targetDirId, isInitial, seq) {
+            view.value = 'grid';
+            selectedFile.value = null;
+            selectedIds.value = [];
+
+            const dirChanged = String(currentDirectoryId.value) !== targetDirId;
+            const lastCrumbId = String(breadcrumbs.value[breadcrumbs.value.length - 1]?.id || '0');
+            if (!dirChanged && !isInitial && files.value.length > 0) {
+                if (lastCrumbId !== targetDirId) {
+                    await syncBreadcrumbsForDirectory(targetDirId, seq);
+                }
+                return;
+            }
+
+            currentDirectoryId.value = targetDirId;
+            const [, dirExists] = await Promise.all([
+                loadDirectory(targetDirId),
+                syncBreadcrumbsForDirectory(targetDirId, seq)
+            ]);
+            if (seq !== activeSyncSeq) return;
+            if (!dirExists && targetDirId !== '0') {
+                currentDirectoryId.value = '0';
+                breadcrumbs.value = [{ id: '0', name: 'Cloud' }];
+                lastSyncedHash = '#/files';
+                window.history.replaceState(null, '', '#/files');
+                await loadDirectory('0');
             }
         }
 
@@ -233,94 +358,37 @@ createApp({
                 return;
             }
             lastSyncedHash = currentHash;
+            if (!isInitial && inAppHistoryDepth > 0) {
+                inAppHistoryDepth--;
+            }
 
             const seq = ++activeSyncSeq;
             const parsed = parseUrlHash(currentHash);
             urlSyncDepth++;
             try {
                 if (parsed.tab === 'system' || parsed.showSystem) {
-                    showSystemPanel.value = true;
-                    if (activeTab.value === 'system') {
-                        activeTab.value = 'files';
-                    }
-                    if (isInitial || files.value.length === 0) {
-                        const targetDirId = String(currentDirectoryId.value || '0');
-                        await Promise.all([
-                            loadDirectory(targetDirId),
-                            syncBreadcrumbsForDirectory(targetDirId)
-                        ]);
-                    }
-                } else if (parsed.tab === 'tasks') {
-                    showSystemPanel.value = false;
+                    await restoreSystemView(isInitial, seq);
+                    return;
+                }
+                showSystemPanel.value = false;
+                systemOpenedFromHistory = false;
+
+                if (parsed.tab === 'tasks') {
                     activeTab.value = 'tasks';
                     view.value = 'grid';
                     selectedFile.value = null;
-                } else {
-                    showSystemPanel.value = false;
-                    activeTab.value = 'files';
-                    if (parsed.view === 'viewer' && parsed.fileId) {
-                        const targetFileId = String(parsed.fileId);
-                        view.value = 'viewer';
-                        const existingFile = files.value.find(f => String(f.id) === targetFileId);
-                        if (existingFile) {
-                            selectedFile.value = existingFile;
-                            const currentLastCrumbId = String(breadcrumbs.value[breadcrumbs.value.length - 1]?.id || '0');
-                            if (currentLastCrumbId !== String(currentDirectoryId.value)) {
-                                await syncBreadcrumbsForDirectory(currentDirectoryId.value);
-                            }
-                        } else {
-                            selectedFile.value = {
-                                id: targetFileId,
-                                name: `Notebook ${targetFileId}`,
-                                extension: 'note'
-                            };
-                            try {
-                                const info = await fetchPathInfo(targetFileId);
-                                if (seq !== activeSyncSeq) return;
-                                const allCrumbs = buildCrumbsFromPathInfo(info);
-                                if (allCrumbs.length > 1) {
-                                    const fileCrumb = allCrumbs[allCrumbs.length - 1];
-                                    const folderCrumbs = allCrumbs.slice(0, -1);
-                                    const parentDirId = String(folderCrumbs[folderCrumbs.length - 1].id);
-                                    const ext = fileCrumb.name.includes('.')
-                                        ? fileCrumb.name.split('.').pop().toLowerCase()
-                                        : 'note';
-                                    breadcrumbs.value = folderCrumbs;
-                                    currentDirectoryId.value = parentDirId;
-                                    selectedFile.value = {
-                                        id: targetFileId,
-                                        name: fileCrumb.name,
-                                        extension: ext
-                                    };
-                                    await loadDirectory(parentDirId);
-                                    if (seq !== activeSyncSeq) return;
-                                    const loadedFile = files.value.find(f => String(f.id) === targetFileId);
-                                    if (loadedFile) {
-                                        selectedFile.value = loadedFile;
-                                    }
-                                }
-                            } catch (e) {
-                                console.error("Failed to resolve file path info:", e);
-                            }
-                        }
-                    } else {
-                        view.value = 'grid';
-                        selectedFile.value = null;
-                        selectedIds.value = [];
-                        const targetDirId = String(parsed.dirId || '0');
-                        const dirChanged = String(currentDirectoryId.value) !== targetDirId;
-                        const lastCrumbId = String(breadcrumbs.value[breadcrumbs.value.length - 1]?.id || '0');
-                        if (dirChanged || isInitial || files.value.length === 0) {
-                            currentDirectoryId.value = targetDirId;
-                            await Promise.all([
-                                loadDirectory(targetDirId),
-                                syncBreadcrumbsForDirectory(targetDirId)
-                            ]);
-                        } else if (lastCrumbId !== targetDirId) {
-                            await syncBreadcrumbsForDirectory(targetDirId);
-                        }
-                    }
+                    viewerOpenedFromHistory = false;
+                    return;
                 }
+
+                activeTab.value = 'files';
+                if (parsed.view === 'viewer' && parsed.fileId) {
+                    await restoreViewerState(String(parsed.fileId), seq);
+                    return;
+                }
+
+                viewerOpenedFromHistory = false;
+                await restoreDirectoryState(String(parsed.dirId || '0'), isInitial, seq);
             } finally {
                 await nextTick();
                 urlSyncDepth--;
@@ -332,11 +400,59 @@ createApp({
         });
 
         // Methods
+        function switchTab(tab) {
+            showSystemPanel.value = false;
+            systemOpenedFromHistory = false;
+            activeTab.value = tab;
+            if (tab === 'files' || tab === 'explorer') {
+                view.value = 'grid';
+                selectedFile.value = null;
+                viewerOpenedFromHistory = false;
+            }
+        }
+
+        function openSystemPanel() {
+            systemOpenedFromHistory = true;
+            showSystemPanel.value = true;
+        }
+
+        function closeSystemPanel() {
+            if (systemOpenedFromHistory && inAppHistoryDepth > 0) {
+                systemOpenedFromHistory = false;
+                window.history.back();
+                return;
+            }
+            systemOpenedFromHistory = false;
+            urlSyncDepth++;
+            showSystemPanel.value = false;
+            nextTick(() => {
+                urlSyncDepth--;
+                updateUrl(true);
+            });
+        }
+
+        function closeViewer() {
+            if (viewerOpenedFromHistory && inAppHistoryDepth > 0) {
+                viewerOpenedFromHistory = false;
+                window.history.back();
+                return;
+            }
+            viewerOpenedFromHistory = false;
+            urlSyncDepth++;
+            view.value = 'grid';
+            selectedFile.value = null;
+            nextTick(() => {
+                urlSyncDepth--;
+                updateUrl(true);
+            });
+        }
+
         async function openItem(item) {
             if (item.isDirectory) {
                 activeTab.value = 'files';
                 view.value = 'grid';
                 selectedFile.value = null;
+                viewerOpenedFromHistory = false;
                 currentDirectoryId.value = String(item.id);
                 const existingIndex = breadcrumbs.value.findIndex(c => String(c.id) === String(item.id));
                 if (existingIndex > -1) {
@@ -347,6 +463,7 @@ createApp({
                 selectedIds.value = [];
                 await loadDirectory(item.id);
             } else {
+                viewerOpenedFromHistory = true;
                 selectedFile.value = item;
                 view.value = 'viewer';
             }
@@ -356,6 +473,7 @@ createApp({
             activeTab.value = 'files';
             view.value = 'grid';
             selectedFile.value = null;
+            viewerOpenedFromHistory = false;
             currentDirectoryId.value = String(folder.id);
             selectedIds.value = [];
             await Promise.all([
@@ -370,6 +488,7 @@ createApp({
             const target = crumbs[crumbs.length - 1];
             view.value = 'grid';
             selectedFile.value = null;
+            viewerOpenedFromHistory = false;
             currentDirectoryId.value = String(target.id);
             selectedIds.value = [];
             await loadDirectory(target.id);
@@ -545,6 +664,10 @@ createApp({
             isLoading,
             error,
             breadcrumbs,
+            switchTab,
+            openSystemPanel,
+            closeSystemPanel,
+            closeViewer,
             openItem,
             navigateFolder,
             navigateTo,

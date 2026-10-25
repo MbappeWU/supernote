@@ -6,18 +6,20 @@ export function useFileSystem() {
     const currentDirectoryId = ref("0");
     const isLoading = ref(false);
     const error = ref(null);
+    let activeLoadSeq = 0;
 
     async function loadDirectory(directoryId) {
+        const seq = ++activeLoadSeq;
         isLoading.value = true;
         error.value = null;
         try {
-            // If directoryId is not provided, use existing currentDirectoryId
-            const targetId = directoryId !== undefined ? directoryId : currentDirectoryId.value;
-
+            const targetId = directoryId !== undefined ? String(directoryId) : String(currentDirectoryId.value);
             const result = await fetchFiles(targetId);
+            if (seq !== activeLoadSeq) return;
             files.value = result;
             currentDirectoryId.value = targetId;
         } catch (e) {
+            if (seq !== activeLoadSeq) return;
             console.error(e);
             if (e.message === "Unauthorized") {
                 error.value = "Unauthorized";
@@ -25,7 +27,9 @@ export function useFileSystem() {
                 error.value = "Failed to load directory";
             }
         } finally {
-            isLoading.value = false;
+            if (seq === activeLoadSeq) {
+                isLoading.value = false;
+            }
         }
     }
 
