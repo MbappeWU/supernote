@@ -197,15 +197,19 @@ supernote cloud download /Note.note # Download to local machine
 You can use the built-in notebook parser or async client directly in your own Python applications:
 
 ```python
-from supernote.notebook import parse_notebook
+from pathlib import Path
+from supernote.notebook import PdfConverter, load_notebook
 
-note = parse_notebook("journal.note")
-note.to_pdf("journal.pdf")  # Multi-layer PDF conversion
+note = load_notebook("journal.note")
+pdf_bytes = PdfConverter(note).convert(-1)  # Multi-page PDF conversion
+Path("journal.pdf").write_bytes(pdf_bytes)
 ```
 
 ```python
 from supernote.client import Supernote
-# See library docstrings for usage examples
+
+async with await Supernote.login("user@example.com", "password", host="http://localhost:8080") as sn:
+    files = await sn.device.list_folder("/")
 ```
 
 The notebook parser originally started as a fork of [supernote-tool](https://github.com/jya-dev/supernote-tool) with lighter dependencies and modern type hints. All credit goes to the original authors for providing the foundational parser utility.
