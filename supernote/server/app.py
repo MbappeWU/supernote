@@ -231,7 +231,6 @@ def create_app(config: ServerConfig) -> web.Application:
     search_service = SearchService(session_manager, embedding_model)
     app["search_service"] = search_service
 
-    app["sync_locks"] = {}  # user -> (equipment_no, expiry_time)
     app["rate_limiter"] = RateLimiter(coordination_service)
 
     processor_service = ProcessorService(

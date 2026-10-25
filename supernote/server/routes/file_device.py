@@ -1,5 +1,4 @@
 import logging
-import time
 import urllib.parse
 
 from aiohttp import web
@@ -73,12 +72,17 @@ def _to_entries_vo(entity: FileEntity) -> EntriesVO:
 
 
 SYNC_LOCK_TIMEOUT = 300  # 5 minutes
+SYNC_LOCK_KEY_PREFIX = "sync:lock:"
 SYNC_INITIALIZED_KEY_PREFIX = "sync:initialized:"
 # CoordinationService requires a numeric expiry (defaults to 1 year if omitted);
 # use a 100-year TTL so initial-sync completion persists for the lifetime of the account.
 SYNC_INITIALIZED_TTL = 100 * 365 * 24 * 3600
 # The Android client (FullSyncTask) sends flag="Y" on normal completion and flag="N" on exception.
 SYNC_FAILED_FLAG = "N"
+
+
+def _sync_lock_key(user_id: int) -> str:
+    return f"{SYNC_LOCK_KEY_PREFIX}{user_id}"
 
 
 def _sync_initialized_key(user_id: int) -> str:
@@ -92,10 +96,10 @@ async def handle_sync_start(request: web.Request) -> web.Response:
     # Response: SynchronousStartLocalVO
     req_data = SynchronousStartLocalDTO.from_dict(await request.json())
     user_email = request["user"]
-    sync_locks = request.app["sync_locks"]
     file_service: FileService = request.app["file_service"]
     user_service: UserService = request.app["user_service"]
     coordination_service: CoordinationService = request.app["coordination_service"]
+    equipment_no = req_data.equipment_no or ""
 
     try:
         user_id = await user_service.get_user_id(user_email)
@@ -108,22 +112,23 @@ async def handle_sync_start(request: web.Request) -> web.Response:
         else:
             syn_type = (await coordination_service.get_value(sync_init_key)) == "1"
 
-        now = time.time()
-        if user_email in sync_locks:
-            owner_eq, expiry = sync_locks[user_email]
-            if now < expiry and owner_eq != req_data.equipment_no:
-                logger.info(
-                    f"Sync conflict: user {user_email} already syncing from {owner_eq}"
-                )
-                return web.json_response(
-                    create_error_response(
-                        error_msg="Another device is synchronizing",
-                        error_code="E0078",
-                    ).to_dict(),
-                    status=409,
-                )
+        lock_key = _sync_lock_key(user_id)
+        owner_eq = await coordination_service.get_value(lock_key)
+        if owner_eq and owner_eq != equipment_no:
+            logger.info(
+                f"Sync conflict: user {user_email} already syncing from {owner_eq}"
+            )
+            return web.json_response(
+                create_error_response(
+                    error_msg="Another device is synchronizing",
+                    error_code="E0078",
+                ).to_dict(),
+                status=409,
+            )
 
-        sync_locks[user_email] = (req_data.equipment_no, now + SYNC_LOCK_TIMEOUT)
+        await coordination_service.set_value(
+            lock_key, equipment_no, ttl=SYNC_LOCK_TIMEOUT
+        )
 
         return web.json_response(
             SynchronousStartLocalVO(
@@ -148,16 +153,15 @@ async def handle_sync_end(request: web.Request) -> web.Response:
         user_service: UserService = request.app["user_service"]
         file_service: FileService = request.app["file_service"]
         coordination_service: CoordinationService = request.app["coordination_service"]
+        user_id = await user_service.get_user_id(user_email)
 
-        # Release lock
-        sync_locks = request.app["sync_locks"]
-        if user_email in sync_locks:
-            owner_eq, _ = sync_locks[user_email]
-            if owner_eq == req_data.equipment_no:
-                del sync_locks[user_email]
+        # Release lock if held by this equipment
+        lock_key = _sync_lock_key(user_id)
+        owner_eq = await coordination_service.get_value(lock_key)
+        if owner_eq == (req_data.equipment_no or ""):
+            await coordination_service.delete_value(lock_key)
 
         if req_data.flag != SYNC_FAILED_FLAG:
-            user_id = await user_service.get_user_id(user_email)
             await coordination_service.set_value(
                 _sync_initialized_key(user_id),
                 "1",

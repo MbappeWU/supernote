@@ -9,8 +9,11 @@ from supernote.client.device import DeviceClient
 from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.db.models.file import RecycleFileDO, UserFileDO
 from supernote.server.db.session import DatabaseSessionManager
+from supernote.server.routes.file_device import SYNC_LOCK_KEY_PREFIX, SYNC_LOCK_TIMEOUT
 from supernote.server.services.blob import BlobStorage
+from supernote.server.services.coordination import CoordinationService
 from supernote.server.services.file import RECYCLE_RETENTION_MS, FileService
+from supernote.server.services.user import UserService
 
 
 async def test_sync_start_syn_type(
@@ -109,16 +112,25 @@ async def test_sync_start_syn_type(
     assert data["synType"] is False
 
 
-async def test_sync_lock(client: TestClient, auth_headers: dict[str, str]) -> None:
-    # 1. Start sync from SN123
+async def test_sync_lock(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    coordination_service: CoordinationService,
+    user_service: UserService,
+) -> None:
+    user_id = await user_service.get_user_id("test@example.com")
+    lock_key = f"{SYNC_LOCK_KEY_PREFIX}{user_id}"
+
+    # 1. Start sync from SN123 -> stored in CoordinationService
     resp = await client.post(
         "/api/file/2/files/synchronous/start",
         json={"equipmentNo": "SN123"},
         headers=auth_headers,
     )
     assert resp.status == 200
+    assert await coordination_service.get_value(lock_key) == "SN123"
 
-    # 2. Try sync from SN456 (same user), should get 409
+    # 2. Try sync from SN456 (same user), should get 409 without overwriting lock
     resp = await client.post(
         "/api/file/2/files/synchronous/start",
         json={"equipmentNo": "SN456"},
@@ -127,14 +139,16 @@ async def test_sync_lock(client: TestClient, auth_headers: dict[str, str]) -> No
     assert resp.status == 409
     data = await resp.json()
     assert data["errorCode"] == "E0078"
+    assert await coordination_service.get_value(lock_key) == "SN123"
 
-    # 3. End sync from SN123
+    # 3. End sync from SN123 -> clears lock in CoordinationService
     resp = await client.post(
         "/api/file/2/files/synchronous/end",
         json={"equipmentNo": "SN123", "flag": "true"},
         headers=auth_headers,
     )
     assert resp.status == 200
+    assert await coordination_service.get_value(lock_key) is None
 
     # 4. Now SN456 should be able to sync
     resp = await client.post(
@@ -144,6 +158,8 @@ async def test_sync_lock(client: TestClient, auth_headers: dict[str, str]) -> No
     )
     assert resp.status == 200
     assert (await resp.json())["success"] is True
+    assert await coordination_service.get_value(lock_key) == "SN456"
+    assert SYNC_LOCK_TIMEOUT == 300
 
 
 async def test_sync_end_opportunistic_recycle_cleanup(
