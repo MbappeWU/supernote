@@ -146,3 +146,14 @@ async def test_dependant_skipping(
     assert ocr.calls == []
     assert embedding.calls == []
     assert summary.calls == [(file_id, None, None)]
+
+    tasks = await processor_service.list_system_tasks(file_id=file_id, status="failed")
+    assert len(tasks) == 1
+    assert tasks[0].last_error == "RuntimeError: png failed"
+    assert tasks[0].retry_count == 0
+
+    # Retrying the failed file increments retry_count
+    await processor_service.process_file(file_id)
+    tasks = await processor_service.list_system_tasks(file_id=file_id, status="failed")
+    assert len(tasks) == 1
+    assert tasks[0].retry_count == 1

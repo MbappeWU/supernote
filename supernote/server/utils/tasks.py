@@ -67,6 +67,11 @@ async def update_task_status(
                         status = excluded.status,
                         data = excluded.data,
                         last_error = excluded.last_error,
+                        retry_count = CASE
+                            WHEN excluded.status = 'FAILED' AND f_system_task.status = 'FAILED'
+                            THEN f_system_task.retry_count + 1
+                            ELSE 0
+                        END,
                         update_time = excluded.update_time
                 """
                 )
