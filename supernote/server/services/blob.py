@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 TEMP_FILE_TTL_SECONDS = 86400.0  # 24 hours
 CLEANUP_INTERVAL_SECONDS = 3600.0  # Run opportunistic cleanup at most once per hour
+STREAM_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks to minimize aiofiles thread-pool hops
+
+
+def _compute_file_md5(path: Path) -> str:
+    """Return the MD5 hex digest of a file on disk."""
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "md5").hexdigest()
 
 
 @dataclass
@@ -181,7 +188,7 @@ class LocalBlobStorage(BlobStorage):
                 await f.seek(start)
 
             while True:
-                chunk_size = 8192
+                chunk_size = STREAM_CHUNK_SIZE
                 if bytes_remaining is not None:
                     if bytes_remaining <= 0:
                         break
@@ -219,24 +226,8 @@ class LocalBlobStorage(BlobStorage):
         if not include_md5:
             return BlobMetadata(size=stat.st_size)
 
-        # Compute MD5 and size
-        md5_hasher = hashlib.md5()
-        read_size = 0
-        async with aiofiles.open(path, "rb") as f:
-            while True:
-                chunk = await f.read(8192)
-                if not chunk:
-                    break
-                md5_hasher.update(chunk)
-                read_size += len(chunk)
-
-        if read_size != stat.st_size:
-            # This could happen if file was modified during read
-            raise ValueError(
-                f"File size changed during read: metadata={stat.st_size}, read={read_size}"
-            )
-
-        return BlobMetadata(size=stat.st_size, content_md5=md5_hasher.hexdigest())
+        content_md5 = await asyncio.to_thread(_compute_file_md5, path)
+        return BlobMetadata(size=stat.st_size, content_md5=content_md5)
 
     def get_blob_path(self, bucket: str, key: str) -> Path:
         """Get physical path to the blob."""
