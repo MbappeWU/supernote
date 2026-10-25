@@ -12,7 +12,7 @@ from supernote.models.base import create_error_response
 from supernote.models.system import FileChunkParams, FileChunkVO, UploadFileVO
 from supernote.server.constants import USER_DATA_BUCKET
 from supernote.server.exceptions import SupernoteError
-from supernote.server.services.blob import BlobStorage
+from supernote.server.services.blob import STREAM_CHUNK_SIZE, BlobStorage
 from supernote.server.services.file import FileService
 from supernote.server.utils.paths import get_file_chunk_path
 from supernote.server.utils.url_signer import UrlSigner
@@ -26,7 +26,7 @@ routes = web.RouteTableDef()
 async def _stream_upload_field(field: BodyPartReader) -> AsyncGenerator[bytes]:
     """Stream chunks from a multipart field."""
     while True:
-        chunk = await field.read_chunk()
+        chunk = await field.read_chunk(STREAM_CHUNK_SIZE)
         if not chunk:
             break
         yield chunk
