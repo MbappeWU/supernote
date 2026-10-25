@@ -233,6 +233,29 @@ async def test_summary_idempotency_update(
     meta = json.loads(updated_summary.metadata)
     assert meta[METADATA_SEGMENTS][0]["page_refs"] == [3, 4]
 
+    # Deleting the summary group and rerunning SummaryModule.process recreates active group and summaries
+    assert updated_group.id is not None
+    await summary_service.delete_group(user_email, updated_group.id)
+    assert (
+        await summary_service.get_summary_by_uuid(
+            user_email, get_summary_group_id(storage_key)
+        )
+        is None
+    )
+    await summary_module.process(file_id, session_manager)
+    assert (
+        await summary_service.get_summary_by_uuid(
+            user_email, get_summary_group_id(storage_key)
+        )
+        is not None
+    )
+    assert (
+        await summary_service.get_summary_by_uuid(
+            user_email, get_summary_id(storage_key)
+        )
+        is not None
+    )
+
 
 async def test_summary_transcript_with_dates(
     file_service: FileService,
