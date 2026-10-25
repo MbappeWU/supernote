@@ -1,3 +1,5 @@
+from aiohttp.test_utils import TestClient
+
 from supernote.client.web import WebClient
 from supernote.models.base import BooleanEnum
 from supernote.models.file_web import FileSortOrder, FileSortSequence
@@ -350,6 +352,58 @@ async def test_path_query_flattening(
     assert info.path == "Note"
     # idPath should be "note_id"
     assert info.id_path == f"{note_id}"
+
+
+async def test_path_query_nested_folder_and_file(
+    web_client: WebClient,
+    client: TestClient,
+    auth_headers: dict[str, str],
+) -> None:
+    """Verify /api/file/path/query resolves nested folder and file paths with string IDs for Web UI refresh."""
+    res = await web_client.list_query(directory_id=0)
+    note_folder = next(f for f in res.user_file_vo_list if f.file_name == "Note")
+    note_id = int(note_folder.id)
+
+    work_vo = await web_client.create_folder(parent_id=note_id, name="Work")
+    work_id = int(work_vo.id)
+
+    projects_vo = await web_client.create_folder(parent_id=work_id, name="Projects")
+    projects_id = int(projects_vo.id)
+
+    # Upload a notebook inside /NOTE/Note/Work/Projects
+    await web_client.upload_file(
+        parent_id=projects_id,
+        name="Roadmap.note",
+        content=b"notebook-bytes",
+    )
+    projects_list = await web_client.list_query(directory_id=projects_id)
+    file_vo = next(
+        f for f in projects_list.user_file_vo_list if f.file_name == "Roadmap.note"
+    )
+
+    # Query nested folder with string ID (matching client.js fetchPathInfo)
+    folder_resp = await client.post(
+        "/api/file/path/query",
+        json={"id": str(projects_id)},
+        headers=auth_headers,
+    )
+    assert folder_resp.status == 200
+    folder_data = await folder_resp.json()
+    assert folder_data["success"] is True
+    assert folder_data["path"] == "Note/Work/Projects"
+    assert folder_data["idPath"] == f"{note_id}/{work_id}/{projects_id}"
+
+    # Query file with string ID (matching client.js fetchPathInfo when refreshing FileViewer)
+    file_resp = await client.post(
+        "/api/file/path/query",
+        json={"id": file_vo.id},
+        headers=auth_headers,
+    )
+    assert file_resp.status == 200
+    file_data = await file_resp.json()
+    assert file_data["success"] is True
+    assert file_data["path"] == "Note/Work/Projects/Roadmap.note"
+    assert file_data["idPath"] == f"{note_id}/{work_id}/{projects_id}/{file_vo.id}"
 
 
 async def test_list_query_flattening(
