@@ -16,6 +16,7 @@ from supernote.server.events import Event, LocalEventBus, NoteDeletedEvent
 from supernote.server.services.blob import BlobStorage
 from supernote.server.services.file import RECYCLE_RETENTION_MS, FileService
 from supernote.server.services.user import UserService
+from supernote.server.services.vfs import VirtualFileSystem
 from supernote.server.utils.paths import (
     get_conversion_pdf_path,
     get_conversion_png_path,
@@ -531,3 +532,110 @@ async def test_purge_recycle_cleans_up_conversion_blobs(
     assert await blob_storage.exists(USER_DATA_BUCKET, "purge_conv_blob") is False
     assert await blob_storage.exists(USER_DATA_BUCKET, png_0) is False
     assert await blob_storage.exists(USER_DATA_BUCKET, pdf_key) is False
+
+
+async def test_query_file_list_and_get_folders_by_ids_resolve_parent_path_once(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    create_test_user: None,
+    test_users: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify query_file_list and get_folders_by_ids resolve parent path once instead of per child item."""
+    user = test_users[0]
+    parent_dir = await file_service.create_directory(user, "/Note/Projects")
+    sub_a = await file_service.create_directory(user, "/Note/Projects/Alpha")
+    sub_b = await file_service.create_directory(user, "/Note/Projects/Beta")
+    await file_service.create_directory(user, "/Note/Projects/Alpha/Nested")
+
+    content = b"project note"
+    md5 = hashlib.md5(content).hexdigest()
+    for idx in range(3):
+        key = f"proj_blob_{idx}"
+        await blob_storage.put(USER_DATA_BUCKET, key, content)
+        await file_service.finish_upload(
+            user, f"doc_{idx}.note", "/Note/Projects", md5, key
+        )
+
+    orig_get_full_path = VirtualFileSystem.get_full_path
+    get_full_path_calls: list[int] = []
+
+    async def tracking_get_full_path(
+        self: VirtualFileSystem, user_id: int, node_id: int
+    ) -> str:
+        get_full_path_calls.append(node_id)
+        return await orig_get_full_path(self, user_id, node_id)
+
+    monkeypatch.setattr(VirtualFileSystem, "get_full_path", tracking_get_full_path)
+
+    # 1. query_file_list resolves parent_dir.id once for all 5 children (2 folders + 3 files)
+    items = await file_service.query_file_list(user, parent_dir.id)
+    assert len(items) == 5
+    assert get_full_path_calls == [parent_dir.id]
+    assert {item.full_path for item in items} == {
+        "NOTE/Note/Projects/Alpha",
+        "NOTE/Note/Projects/Beta",
+        "NOTE/Note/Projects/doc_0.note",
+        "NOTE/Note/Projects/doc_1.note",
+        "NOTE/Note/Projects/doc_2.note",
+    }
+
+    # 2. get_folders_by_ids resolves parent_dir.id once for all non-excluded folders
+    get_full_path_calls.clear()
+    folder_details = await file_service.get_folders_by_ids(
+        user, parent_id=parent_dir.id, id_list=[]
+    )
+    assert len(folder_details) == 2
+    assert get_full_path_calls == [parent_dir.id]
+    by_id = {fd.entity.id: fd for fd in folder_details}
+    assert by_id[sub_a.id].entity.full_path == "NOTE/Note/Projects/Alpha"
+    assert by_id[sub_a.id].has_subfolders is True
+    assert by_id[sub_b.id].entity.full_path == "NOTE/Note/Projects/Beta"
+    assert by_id[sub_b.id].has_subfolders is False
+
+
+async def test_search_files_caches_parent_paths(
+    file_service: FileService,
+    blob_storage: BlobStorage,
+    create_test_user: None,
+    test_users: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify search_files memoizes parent directory paths across multiple matching items."""
+    user = test_users[0]
+    folder = await file_service.create_directory(user, "/Note/Archive")
+    content = b"searchable note"
+    md5 = hashlib.md5(content).hexdigest()
+
+    for idx in range(3):
+        key = f"search_blob_{idx}"
+        await blob_storage.put(USER_DATA_BUCKET, key, content)
+        await file_service.finish_upload(
+            user, f"match_{idx}.note", "/Note/Archive", md5, key
+        )
+    await blob_storage.put(USER_DATA_BUCKET, "root_search_blob", content)
+    await file_service.finish_upload(
+        user, "match_root.note", "/", md5, "root_search_blob"
+    )
+
+    orig_get_full_path = VirtualFileSystem.get_full_path
+    get_full_path_calls: list[int] = []
+
+    async def tracking_get_full_path(
+        self: VirtualFileSystem, user_id: int, node_id: int
+    ) -> str:
+        get_full_path_calls.append(node_id)
+        return await orig_get_full_path(self, user_id, node_id)
+
+    monkeypatch.setattr(VirtualFileSystem, "get_full_path", tracking_get_full_path)
+
+    results = await file_service.search_files(user, "match_")
+    assert len(results) == 4
+    # Root directory (0) is pre-seeded, and folder.id is resolved only once for all 3 matches in /Note/Archive
+    assert get_full_path_calls == [folder.id]
+    assert {item.full_path for item in results} == {
+        "match_root.note",
+        "NOTE/Note/Archive/match_0.note",
+        "NOTE/Note/Archive/match_1.note",
+        "NOTE/Note/Archive/match_2.note",
+    }

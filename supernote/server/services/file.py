@@ -903,6 +903,10 @@ class FileService:
 
             # 2. Filter exclusions from id_list
             nodes = [n for n in nodes if n.id not in id_list]
+            if not nodes:
+                return results
+
+            base_path_clean = (await vfs.get_full_path(user_id, parent_id)).strip("/")
 
             # 3. Build FolderDetail with lookahead
             for node in nodes:
@@ -911,7 +915,11 @@ class FileService:
                 has_subfolders = any(c.is_folder == BooleanEnum.YES for c in children)
 
                 # Construct FileEntity
-                full_path = await vfs.get_full_path(user_id, node.id)
+                full_path = (
+                    f"{base_path_clean}/{node.file_name}"
+                    if base_path_clean
+                    else node.file_name
+                )
 
                 entity = FileEntity(
                     id=node.id,
@@ -1034,10 +1042,18 @@ class FileService:
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
             do_list = await vfs.search_files(user_id, keyword)
+            parent_paths: dict[int, str] = {0: ""}
 
             for item in do_list:
-                # Resolve full path using VFS recursion
-                full_path = await vfs.get_full_path(user_id, item.id)
+                dir_id = item.directory_id
+                if dir_id not in parent_paths:
+                    parent_paths[dir_id] = (
+                        await vfs.get_full_path(user_id, dir_id)
+                    ).strip("/")
+                base_path = parent_paths[dir_id]
+                full_path = (
+                    f"{base_path}/{item.file_name}" if base_path else item.file_name
+                )
                 results.append(_to_file_entity(item, full_path))
 
         return results
@@ -1053,11 +1069,21 @@ class FileService:
         async with self.session_manager.session() as session:
             vfs = VirtualFileSystem(session)
             items = await vfs.list_directory(user_id, directory_id)
+            if not items:
+                return []
+
+            base_path_clean = (await vfs.get_full_path(user_id, directory_id)).strip(
+                "/"
+            )
 
             # Mapping to FileEntity
             file_entities: list[FileEntity] = []
             for item in items:
-                full_path = await vfs.get_full_path(user_id, item.id)
+                full_path = (
+                    f"{base_path_clean}/{item.file_name}"
+                    if base_path_clean
+                    else item.file_name
+                )
                 file_entities.append(_to_file_entity(item, full_path))
 
             return file_entities
