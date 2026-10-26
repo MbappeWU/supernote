@@ -1,5 +1,6 @@
 import { ref, onMounted, computed } from 'vue';
 import { useSchedule } from '../composables/useSchedule.js';
+import { showToast } from '../composables/useToast.js';
 
 export default {
     name: 'TaskPanel',
@@ -80,7 +81,7 @@ export default {
                 const nameSlug = groupObj ? groupObj.title.toLowerCase().replace(/[^a-z0-9]/g, '_') : 'supernote_tasks';
                 await downloadIcsFeed(targetGroupId, `${nameSlug}.ics`);
             } catch (e) {
-                alert("Failed to download ICS feed: " + e.message);
+                showToast("Failed to download ICS feed: " + e.message);
             }
         }
 
@@ -91,7 +92,7 @@ export default {
                 copySuccess.value = true;
                 setTimeout(() => { copySuccess.value = false; }, 2500);
             } catch (e) {
-                alert("Failed to copy to clipboard");
+                showToast("Failed to copy to clipboard");
             }
         }
 

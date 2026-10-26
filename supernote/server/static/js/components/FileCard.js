@@ -1,5 +1,6 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { convertNoteToPng, fetchDownloadUrl, downloadFile } from '../api/client.js';
+import { showToast } from '../composables/useToast.js';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']);
 const DOCUMENT_EXTENSIONS = new Set(['epub', 'doc', 'docx', 'txt', 'md', 'csv', 'json', 'yaml', 'yml', 'log']);
@@ -35,7 +36,7 @@ export default {
             try {
                 await downloadFile(props.file.id);
             } catch (e) {
-                alert("Failed to download: " + e.message);
+                showToast("Failed to download: " + e.message);
             } finally {
                 downloading.value = false;
             }
