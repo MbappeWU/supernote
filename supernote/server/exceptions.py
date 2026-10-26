@@ -124,6 +124,21 @@ class SummaryNotFound(SummaryError):
         super().__init__(message, error_code, status_code=404)
 
 
+class ScheduleError(SupernoteError):
+    """Base class for schedule-related errors."""
+
+
+class TaskGroupNotFound(ScheduleError):
+    """Raised when a target schedule task group does not exist."""
+
+    def __init__(
+        self,
+        message: str = ErrorCode.TASK_GROUP_NOT_EXIST.description,
+        error_code: str | ErrorCode = ErrorCode.TASK_GROUP_NOT_EXIST,
+    ):
+        super().__init__(message, error_code, status_code=400)
+
+
 class InvalidSignature(SupernoteError):
     """Raised when a URL signature is invalid or expired."""
 
