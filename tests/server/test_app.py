@@ -189,14 +189,33 @@ async def test_static_frontend_sha256_fallback(client: TestClient) -> None:
     """Verify that index.html and client.js include fallback for SHA-256 in insecure contexts."""
     resp = await client.get("/")
     assert resp.status == 200
+    assert resp.headers.get("Cache-Control") == "no-cache"
     html = await resp.text()
     assert "js-sha256" in html
 
     resp = await client.get("/static/js/api/client.js")
     assert resp.status == 200
+    assert resp.headers.get("Cache-Control") == "no-cache"
     js = await resp.text()
     assert "crypto.subtle" in js
     assert "window.sha256" in js
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/static/js/main.js",
+        "/static/style.css",
+    ],
+)
+async def test_static_frontend_cache_control_no_cache(
+    client: TestClient, path: str
+) -> None:
+    """Verify that index.html and /static/ assets set Cache-Control: no-cache."""
+    resp = await client.get(path)
+    assert resp.status == 200
+    assert resp.headers.get("Cache-Control") == "no-cache"
 
 
 async def test_static_frontend_disabled_when_web_enabled_false(

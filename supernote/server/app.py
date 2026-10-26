@@ -164,6 +164,18 @@ async def jwt_auth_middleware(
     return await handler(request)
 
 
+@web.middleware
+async def static_cache_control_middleware(
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+) -> web.StreamResponse:
+    """Ensure frontend HTML and static assets revalidate across server upgrades."""
+    response = await handler(request)
+    if request.path == "/" or request.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 def create_db_session_manager(db_url: str) -> DatabaseSessionManager:
     return DatabaseSessionManager(db_url)
 
@@ -285,7 +297,10 @@ def create_app(config: ServerConfig) -> web.Application:
 
         @public_route
         async def handle_index(request: web.Request) -> web.FileResponse:
-            return web.FileResponse(static_path / "index.html")
+            return web.FileResponse(
+                static_path / "index.html",
+                headers={"Cache-Control": "no-cache"},
+            )
 
         app.router.add_get("/", handle_index)
         app.router.add_static("/static/", path=static_path, name="static")
@@ -323,6 +338,7 @@ def create_app(config: ServerConfig) -> web.Application:
             app.middlewares.append(metrics_middleware)
         app.middlewares.append(trace_middleware)
         app.middlewares.append(jwt_auth_middleware)
+        app.middlewares.append(static_cache_control_middleware)
 
         logger.info("Running database migrations...")
         await asyncio.to_thread(run_migrations, config.db_url, config=config)
