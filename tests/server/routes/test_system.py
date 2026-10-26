@@ -1,6 +1,7 @@
 import time
 
 import pytest
+from aiohttp.test_utils import TestClient
 
 from supernote.client.client import Client
 from supernote.models.extended import SystemTaskListVO
@@ -12,6 +13,23 @@ from supernote.server.db.session import DatabaseSessionManager
 @pytest.fixture
 def system_tasks_url() -> str:
     return "/api/extended/system/tasks"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/static/js/main.js",
+        "/static/style.css",
+    ],
+)
+async def test_static_and_index_cache_control_headers(
+    client: TestClient, path: str
+) -> None:
+    """Verify GET / and /static/ assets include Cache-Control: no-cache."""
+    resp = await client.get(path)
+    assert resp.status == 200
+    assert resp.headers.get("Cache-Control") == "no-cache"
 
 
 async def test_list_system_tasks(
