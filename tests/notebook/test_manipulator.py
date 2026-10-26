@@ -475,7 +475,7 @@ def test_get_required_metadata_allows_empty_page_list() -> None:
 
 def test_get_required_metadata_rejects_missing_metadata() -> None:
     notebook = load_notebook(str(SAMPLE_NOTE_PATH))
-    notebook.metadata = None
+    object.__setattr__(notebook, "metadata", None)
     with pytest.raises(
         exceptions.ParserException, match="notebook metadata is missing"
     ):
@@ -493,7 +493,7 @@ def test_get_required_metadata_rejects_missing_pages() -> None:
 
 def test_reconstruct_rejects_missing_metadata() -> None:
     notebook = load_notebook(str(SAMPLE_NOTE_PATH))
-    notebook.metadata = None
+    object.__setattr__(notebook, "metadata", None)
     with pytest.raises(
         exceptions.ParserException, match="notebook metadata is missing"
     ):
