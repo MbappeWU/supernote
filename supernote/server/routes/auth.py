@@ -9,7 +9,7 @@ from supernote.models.auth import (
     RandomCodeDTO,
     RandomCodeVO,
 )
-from supernote.models.base import BaseResponse, create_error_response
+from supernote.models.base import BaseResponse, ErrorCode, create_error_response
 from supernote.models.equipment import (
     BindEquipmentDTO,
     BindStatusVO,
@@ -194,6 +194,7 @@ async def handle_login(request: web.Request) -> web.Response:
             f"{LOGIN_KEY_ACCOUNT}:{login_req.account}",
             limit=LIMIT_LOGIN_ACCOUNT_MAX,
             window=LIMIT_LOGIN_ACCOUNT_WINDOW,
+            error_code=ErrorCode.ACCOUNT_LOCKED,
         )
     except RateLimitExceeded as e:
         return e.to_response()
@@ -206,12 +207,6 @@ async def handle_login(request: web.Request) -> web.Response:
         equipment=login_req.equipment,
         ip=request.remote or UNKNOWN_IP,
     )
-    if not result:
-        return web.json_response(
-            create_error_response("Invalid credentials").to_dict(),
-            status=401,
-        )
-
     return web.json_response(result.to_dict())
 
 

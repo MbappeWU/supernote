@@ -244,6 +244,14 @@ class ErrorCode(str, Enum):
         "E0742",
         "The system does not match the superior resources!",
     )
+    ACCOUNT_ALREADY_EXISTS = ("E0002", "Account already exists")
+    ACCOUNT_NOT_EXIST = ("E0018", "Account does not exist")
+    PASSWORD_ERROR = ("E0019", "Password error")
+    VERIFICATION_CODE_ERROR = ("E0022", "Verification code error")
+    ACCOUNT_LOCKED = (
+        "E0045",
+        "The account has been locked, please try again later!",
+    )
     ACCOUNT_CANCELLED = ("E0061", "The account has been cancelled!")
     PHONE_EMPTY = ("E0062", "The phone number is empty!")
     TOO_MANY_SMS = ("E0064", "Too many SMS messages have been sent!")

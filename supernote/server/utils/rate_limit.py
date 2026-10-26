@@ -1,5 +1,6 @@
 import time
 
+from supernote.models.base import ErrorCode
 from supernote.server.exceptions import RateLimitExceeded
 from supernote.server.services.coordination import CoordinationService
 
@@ -24,13 +25,20 @@ class RateLimiter:
     def __init__(self, coordination_service: CoordinationService):
         self._coordination_service = coordination_service
 
-    async def check(self, key: str, limit: int, window: int) -> None:
+    async def check(
+        self,
+        key: str,
+        limit: int,
+        window: int,
+        error_code: str | ErrorCode = ErrorCode.ACCESS_DENIED_SYSTEM,
+    ) -> None:
         """Check if the action is allowed.
 
         Args:
             key: Unique identifier for the action (e.g. "login:ip:127.0.0.1")
             limit: Max allowed attempts per window
             window: Time window in seconds
+            error_code: Error code to include if the rate limit is exceeded
 
         Raises:
             RateLimitExceeded: If the limit is exceeded.
@@ -49,4 +57,6 @@ class RateLimiter:
         count = await self._coordination_service.increment(rate_key, 1, ttl=window + 60)
 
         if count > limit:
-            raise RateLimitExceeded("Rate limit exceeded. Try again later.")
+            raise RateLimitExceeded(
+                "Rate limit exceeded. Try again later.", error_code=error_code
+            )

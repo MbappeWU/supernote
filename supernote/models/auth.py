@@ -96,10 +96,10 @@ class LoginDTO(DataClassJSONMixin):
 class LoginVO(BaseResponse):
     """Response from login endpoints."""
 
-    token: str
+    token: str = ""
     """JWT Access Token."""
 
-    counts: str
+    counts: str = "0"
     """Error count."""
 
     user_name: str | None = field(
@@ -268,7 +268,7 @@ class SmsLoginDTO(DataClassJSONMixin):
 class SmsLoginVO(BaseResponse):
     """Response from access token call."""
 
-    token: str
+    token: str = ""
 
 
 @dataclass
