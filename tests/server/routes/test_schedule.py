@@ -1005,29 +1005,34 @@ async def test_schedule_13_digit_millisecond_timestamp_precision(
     await schedule.delete_task(task_id)
 
 
-async def test_reject_nonexistent_task_list_id_on_create_and_update(
+@pytest.mark.parametrize("invalid_group_id", ["0", "", "nonexistent-group-id"])
+async def test_create_task_rejects_nonexistent_task_list_id(
     authenticated_client: Client,
+    invalid_group_id: str,
 ) -> None:
-    """Verify non-existent taskListId values (including '0' and '') are rejected with 400 (E0328)."""
+    """Verify creating a task with a non-existent taskListId is rejected with 400 (E0328)."""
+    with pytest.raises(BadRequestException, match="E0328"):
+        await authenticated_client.post(
+            "/api/file/schedule/task",
+            json={
+                "taskListId": invalid_group_id,
+                "title": "Invalid Group Task",
+            },
+        )
+
+
+@pytest.mark.parametrize("invalid_group_id", ["0", "", "nonexistent-group-id"])
+async def test_update_task_rejects_nonexistent_task_list_id(
+    authenticated_client: Client,
+    invalid_group_id: str,
+) -> None:
+    """Verify updating a task with a non-existent taskListId is rejected with 400 (E0328)."""
     schedule = ScheduleClient(authenticated_client)
-
-    # 1. Creating a task with invalid taskListId ('0', '', or missing group) raises BadRequestException (E0328)
-    for invalid_group_id in ("0", "", "nonexistent-group-id"):
-        with pytest.raises(BadRequestException, match="E0328"):
-            await authenticated_client.post(
-                "/api/file/schedule/task",
-                json={
-                    "taskListId": invalid_group_id,
-                    "title": "Invalid Group Task",
-                },
-            )
-
-    # 2. Create a valid Inbox task (taskListId=None), then verify updating with '0' is rejected
     inbox_vo = await schedule.create_task(None, "Valid Inbox Task")
     assert inbox_vo.task_id is not None
     task_id = inbox_vo.task_id
 
-    for invalid_group_id in ("0", "", "nonexistent-group-id"):
+    try:
         with pytest.raises(BadRequestException, match="E0328"):
             await authenticated_client.put(
                 "/api/file/schedule/task",
@@ -1038,6 +1043,25 @@ async def test_reject_nonexistent_task_list_id_on_create_and_update(
                 },
             )
 
+        detail = await schedule.get_task(task_id)
+        assert detail.task_list_id is None
+        assert detail.title == "Valid Inbox Task"
+    finally:
+        await schedule.delete_task(task_id)
+
+
+@pytest.mark.parametrize("invalid_group_id", ["0", "", "nonexistent-group-id"])
+async def test_batch_update_tasks_rejects_nonexistent_task_list_id(
+    authenticated_client: Client,
+    invalid_group_id: str,
+) -> None:
+    """Verify batch-updating tasks with a non-existent taskListId is rejected with 400 (E0328)."""
+    schedule = ScheduleClient(authenticated_client)
+    inbox_vo = await schedule.create_task(None, "Valid Inbox Task")
+    assert inbox_vo.task_id is not None
+    task_id = inbox_vo.task_id
+
+    try:
         with pytest.raises(BadRequestException, match="E0328"):
             await authenticated_client.put(
                 "/api/file/schedule/task/list",
@@ -1051,9 +1075,7 @@ async def test_reject_nonexistent_task_list_id_on_create_and_update(
                 },
             )
 
-    # Verify the Inbox task remained untouched in Inbox (taskListId=None)
-    detail = await schedule.get_task(task_id)
-    assert detail.task_list_id is None
-    assert detail.title == "Valid Inbox Task"
-
-    await schedule.delete_task(task_id)
+        detail = await schedule.get_task(task_id)
+        assert detail.task_list_id is None
+    finally:
+        await schedule.delete_task(task_id)
