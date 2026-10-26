@@ -144,7 +144,7 @@ export default {
             <div class="min-w-0 flex-1" @click.stop="$emit('open', file)">
                 <h3 class="font-semibold text-slate-900 dark:text-slate-100 truncate text-sm" :title="file.name">{{ file.name }}</h3>
                 <p class="text-xs text-slate-400 dark:text-slate-500 mt-0.5 font-medium">
-                    <template v-if="file.isDirectory">Folder</template>
+                    <template v-if="file.isDirectory">Folder<span v-if="formatSize(file.size)"> · {{ formatSize(file.size) }}</span></template>
                     <template v-else>{{ file.extension ? file.extension.toUpperCase() : 'FILE' }}<span v-if="formatSize(file.size)"> · {{ formatSize(file.size) }}</span></template>
                 </p>
             </div>

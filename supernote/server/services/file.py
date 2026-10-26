@@ -1264,6 +1264,11 @@ class FileService:
             if not items:
                 return []
 
+            folder_ids = [item.id for item in items if item.is_folder == "Y"]
+            folder_sizes = (
+                await vfs.get_folder_sizes(user_id, folder_ids) if folder_ids else {}
+            )
+
             base_path_clean = (await vfs.get_full_path(user_id, directory_id)).strip(
                 "/"
             )
@@ -1276,6 +1281,9 @@ class FileService:
                     if base_path_clean
                     else item.file_name
                 )
-                file_entities.append(_to_file_entity(item, full_path))
+                entity = _to_file_entity(item, full_path)
+                if entity.is_folder:
+                    entity.size = folder_sizes.get(entity.id, 0)
+                file_entities.append(entity)
 
             return file_entities
