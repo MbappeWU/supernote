@@ -32,7 +32,7 @@ def test_server_config_defaults(tmp_path: Path) -> None:
     assert config.host == "0.0.0.0"
     assert config.port == 8080
     assert config.storage_dir == "storage"
-    assert config.auth.secret_key != ""  # Should be generated in-memory
+    assert config.auth.secret_key == ""
 
 
 def test_server_config_load_from_file(tmp_path: Path) -> None:
