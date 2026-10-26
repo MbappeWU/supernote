@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue';
+import { showToast } from './useToast.js';
 import {
     fetchTaskGroups,
     createTaskGroup,
@@ -52,7 +53,7 @@ export function useSchedule() {
             await createScheduleTask(taskData);
             await loadTasks();
         } catch (e) {
-            alert("Failed to create task: " + e.message);
+            showToast("Failed to create task: " + e.message);
         }
     }
 
@@ -68,7 +69,7 @@ export function useSchedule() {
             task.status = newStatus;
             task.completedTime = newCompletedTime;
         } catch (e) {
-            alert("Failed to update task: " + e.message);
+            showToast("Failed to update task: " + e.message);
         }
     }
 
@@ -77,7 +78,7 @@ export function useSchedule() {
             await updateScheduleTask(taskData);
             await loadTasks();
         } catch (e) {
-            alert("Failed to update task: " + e.message);
+            showToast("Failed to update task: " + e.message);
         }
     }
 
@@ -86,7 +87,7 @@ export function useSchedule() {
             await deleteScheduleTask(taskId);
             tasks.value = tasks.value.filter(t => t.id !== String(taskId));
         } catch (e) {
-            alert("Failed to delete task: " + e.message);
+            showToast("Failed to delete task: " + e.message);
         }
     }
 
@@ -95,7 +96,7 @@ export function useSchedule() {
             await createTaskGroup(title);
             await loadGroups();
         } catch (e) {
-            alert("Failed to create group: " + e.message);
+            showToast("Failed to create group: " + e.message);
         }
     }
 
@@ -114,7 +115,7 @@ export function useSchedule() {
             await loadGroups();
             await loadTasks();
         } catch (e) {
-            alert("Failed to delete group: " + e.message);
+            showToast("Failed to delete group: " + e.message);
         }
     }
 

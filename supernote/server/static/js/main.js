@@ -1,5 +1,6 @@
 import { createApp, ref, onMounted, computed, watch, nextTick } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.js';
 import { useFileSystem } from './composables/useFileSystem.js';
+import { useToast } from './composables/useToast.js';
 import { setToken, getToken, login, logout, fetchProcessingStatus, fetchPathInfo } from './api/client.js';
 import Sidebar from './components/Sidebar.js';
 import DashboardView from './components/DashboardView.js';
@@ -136,6 +137,8 @@ createApp({
         RenameModal
     },
     setup() {
+        const { toasts, showToast, dismissToast } = useToast();
+
         // Auth State
         const isLoggedIn = ref(false);
         const loginError = ref(null);
@@ -514,7 +517,7 @@ createApp({
                 showNewFolderModal.value = false;
                 newFolderName.value = '';
             } catch (e) {
-                alert("Failed to create folder: " + e.message);
+                showToast("Failed to create folder: " + e.message);
             }
         }
 
@@ -529,7 +532,7 @@ createApp({
             try {
                 await uploadFiles(selectedFiles);
             } catch (e) {
-                alert("Upload failed: " + e.message);
+                showToast("Upload failed: " + e.message);
             } finally {
                 event.target.value = '';
             }
@@ -541,7 +544,7 @@ createApp({
                 await deleteSelectedItems(selectedIds.value);
                 selectedIds.value = [];
             } catch (e) {
-                alert("Delete failed: " + e.message);
+                showToast("Delete failed: " + e.message);
             }
         }
 
@@ -555,7 +558,7 @@ createApp({
                 selectedIds.value = [];
                 showMoveModal.value = false;
             } catch (e) {
-                alert("Move failed: " + e.message);
+                showToast("Move failed: " + e.message);
             }
         }
 
@@ -575,7 +578,7 @@ createApp({
                 showRenameModal.value = false;
                 itemToRename.value = null;
             } catch (e) {
-                alert("Rename failed: " + e.message);
+                showToast("Rename failed: " + e.message);
             }
         }
 
@@ -597,7 +600,7 @@ createApp({
                 }
             } catch (e) {
                 loginError.value = e.message;
-                alert(e.message);
+                showToast(e.message);
             }
         }
 
@@ -691,7 +694,10 @@ createApp({
             onConfirmMove,
             triggerRename,
             onConfirmRename,
-            processingStatuses
+            processingStatuses,
+            toasts,
+            showToast,
+            dismissToast
         };
     }
 }).mount('#app');

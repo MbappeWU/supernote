@@ -7,6 +7,7 @@ when deployed behind a reverse proxy, with different proxy modes.
 import dataclasses
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient
@@ -285,3 +286,51 @@ async def test_bootstrap_ephemeral_user(client: TestClient) -> None:
     report = await integrity_service.verify_user_storage(user.id)
     assert report.scanned == 8
     assert report.ok == 8
+
+
+STATIC_DIR = Path(__file__).resolve().parents[2] / "supernote" / "server" / "static"
+
+
+def test_use_toast_composable_exists() -> None:
+    """Verify that the shared useToast composable exists and exports toast helpers."""
+    toast_path = STATIC_DIR / "js" / "composables" / "useToast.js"
+    assert toast_path.is_file(), "useToast.js composable must exist"
+    content = toast_path.read_text(encoding="utf-8")
+    assert "export function useToast" in content
+    assert "export function showToast" in content
+    assert "export function dismissToast" in content
+
+
+def test_index_html_renders_toast_container() -> None:
+    """Verify that index.html includes the non-blocking toast notification stack."""
+    index_path = STATIC_DIR / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    assert 'v-for="toast in toasts"' in html
+    assert "dismissToast(toast.id)" in html
+    assert "toast.message" in html
+
+
+def test_no_blocking_alert_calls_in_static_js() -> None:
+    """Verify that no blocking window.alert() calls remain in static JS files."""
+    js_dir = STATIC_DIR / "js"
+    offending_files: list[str] = []
+    for js_file in sorted(js_dir.rglob("*.js")):
+        content = js_file.read_text(encoding="utf-8")
+        if "alert(" in content:
+            offending_files.append(str(js_file.relative_to(STATIC_DIR)))
+    assert offending_files == [], (
+        f"Found blocking alert() calls in: {', '.join(offending_files)}"
+    )
+
+
+async def test_toast_static_asset_served(client: TestClient) -> None:
+    """Verify that /static/js/composables/useToast.js and index.html are served properly."""
+    resp = await client.get("/static/js/composables/useToast.js")
+    assert resp.status == 200
+    js_text = await resp.text()
+    assert "useToast" in js_text
+
+    index_resp = await client.get("/")
+    assert index_resp.status == 200
+    html_text = await index_resp.text()
+    assert "toast in toasts" in html_text
