@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass, field
 
 import jwt
+from mashumaro import DataClassDictMixin
+from mashumaro.exceptions import MissingField
 from mashumaro.mixins.json import DataClassJSONMixin
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -51,6 +53,16 @@ EMAIL_REGEX = r"^(?!.*\.\.)(?!^\.)[a-zA-Z0-9_.+-]+(?<!\.)@[a-zA-Z0-9][a-zA-Z0-9-
 
 # Validate MD5 hash
 MD5_REGEX = r"^[a-f0-9]{32}$"
+
+
+@dataclass
+class TokenClaims(DataClassDictMixin):
+    sub: str
+    equipment_no: str = ""
+    user_id: int | None = None
+    iat: int | None = None
+    exp: int | None = None
+    jti: str | None = None
 
 
 @dataclass
@@ -148,12 +160,14 @@ class UserService:
             logger.debug("Logout called with invalid JWT")
             return
 
-        user_id = payload.get("user_id")
-        equipment_no = payload.get("equipment_no")
-        if type(user_id) is not int or not isinstance(equipment_no, str):
+        try:
+            claims = TokenClaims.from_dict(payload)
+        except (MissingField, ValueError, TypeError):
+            return
+        if claims.user_id is None:
             return
         await self._coordination_service.delete_value(
-            self._session_key(user_id, equipment_no, token)
+            self._session_key(claims.user_id, claims.equipment_no, token)
         )
 
     @staticmethod
@@ -512,16 +526,16 @@ class UserService:
             await self.revoke_equipment_sessions(user.id, equipment_no)
 
         now = int(time.time())
-        payload = {
-            "sub": user.email,
-            "user_id": user.id,
-            "equipment_no": equipment_no or "",
-            "iat": now,
-            "exp": now + ttl,
-            "jti": secrets.token_hex(8),
-        }
+        claims = TokenClaims(
+            sub=user.email,
+            user_id=user.id,
+            equipment_no=equipment_no or "",
+            iat=now,
+            exp=now + ttl,
+            jti=secrets.token_hex(8),
+        )
         secret_key = await self.get_secret_key()
-        token = jwt.encode(payload, secret_key, algorithm=JWT_ALGORITHM)
+        token = jwt.encode(claims.to_dict(), secret_key, algorithm=JWT_ALGORITHM)
 
         session_state = SessionState(
             token=token,
@@ -546,20 +560,32 @@ class UserService:
             logger.warning("Token verification failed: %s", err)
             return None
 
-        sub = payload.get("sub")
-        user_id = payload.get("user_id")
-        equipment_no = payload.get("equipment_no")
-        if (
-            not isinstance(sub, str)
-            or not sub
-            or type(user_id) is not int
-            or not isinstance(equipment_no, str)
-        ):
+        try:
+            claims = TokenClaims.from_dict(payload)
+        except (MissingField, ValueError, TypeError):
+            logger.warning("Token missing or malformed required claims")
+            return None
+        if not claims.sub:
             logger.warning("Token missing or malformed required claims")
             return None
 
-        session_key = self._session_key(user_id, equipment_no, token)
+        if claims.user_id is None:
+            user = await self.get_user_by_email(claims.sub)
+            if not user or not user.is_active:
+                logger.warning(
+                    "Legacy token user invalid or inactive for sub=%s", claims.sub
+                )
+                return None
+            user_id = user.id
+        else:
+            user_id = claims.user_id
+
+        session_key = self._session_key(user_id, claims.equipment_no, token)
         session_val = await self._coordination_service.get_value(session_key)
+        if not session_val and claims.user_id is None:
+            session_val = await self._migrate_legacy_session(
+                token, user_id, claims, session_key
+            )
         if not session_val:
             logger.warning("Session not found in coordination service: %s", token[:10])
             return None
@@ -572,18 +598,56 @@ class UserService:
 
         if (
             session_state.user_id != user_id
-            or session_state.email != sub
-            or (session_state.equipment_no or "") != equipment_no
+            or session_state.email != claims.sub
+            or (session_state.equipment_no or "") != claims.equipment_no
         ):
             logger.warning("Persisted session state mismatch for user_id=%s", user_id)
             return None
 
-        user = await self._get_user_by_id(user_id)
-        if not user or not user.is_active or user.email != sub:
-            logger.warning("Token user invalid or inactive for user_id=%s", user_id)
-            return None
+        if claims.user_id is not None:
+            user = await self._get_user_by_id(user_id)
+            if not user or not user.is_active or user.email != claims.sub:
+                logger.warning("Token user invalid or inactive for user_id=%s", user_id)
+                return None
 
         return session_state
+
+    async def _migrate_legacy_session(
+        self,
+        token: str,
+        user_id: int,
+        claims: TokenClaims,
+        session_key: str,
+    ) -> str | None:
+        """Migrate a pre-#270 legacy session:{token} entry to session_key if valid."""
+        legacy_key = f"session:{token}"
+        legacy_val = await self._coordination_service.get_value(legacy_key)
+        if not legacy_val:
+            return None
+
+        legacy_email, sep, legacy_eq = legacy_val.partition("|")
+        if (
+            legacy_email != claims.sub
+            or (legacy_eq if sep else "") != claims.equipment_no
+        ):
+            logger.warning("Persisted legacy session mismatch for sub=%s", claims.sub)
+            return None
+
+        session_state = SessionState(
+            token=token,
+            email=claims.sub,
+            user_id=user_id,
+            equipment_no=claims.equipment_no or None,
+        )
+        ttl = (
+            max(1, int(claims.exp - time.time()))
+            if claims.exp is not None
+            else self._config.device_expiration_hours * 3600
+        )
+        serialized = str(session_state.to_json())
+        await self._coordination_service.set_value(session_key, serialized, ttl=ttl)
+        await self._coordination_service.delete_value(legacy_key)
+        return serialized
 
     async def get_user_profile(self, account: str) -> UserVO | None:
         user = await self.get_user_by_email(account)
