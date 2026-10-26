@@ -191,12 +191,17 @@ async def test_static_frontend_sha256_fallback(client: TestClient) -> None:
     assert resp.status == 200
     html = await resp.text()
     assert "js-sha256" in html
+    assert "socket.io" in html
 
     resp = await client.get("/static/js/api/client.js")
     assert resp.status == 200
     js = await resp.text()
     assert "crypto.subtle" in js
     assert "window.sha256" in js
+    assert "connectSocket" in js
+    assert "supernote:task-sync" in js
+    assert "supernote:file-sync" in js
+    assert "supernote:digest-sync" in js
 
 
 async def test_static_frontend_disabled_when_web_enabled_false(
