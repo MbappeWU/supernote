@@ -58,12 +58,15 @@ export function useSchedule() {
 
     async function toggleTaskCompleted(task) {
         const newStatus = task.status === 'completed' ? 'needsAction' : 'completed';
+        const newCompletedTime = newStatus === 'completed' ? Date.now() : 0;
         try {
             await updateScheduleTask({
                 ...task,
-                status: newStatus
+                status: newStatus,
+                completedTime: newCompletedTime
             });
             task.status = newStatus;
+            task.completedTime = newCompletedTime;
         } catch (e) {
             alert("Failed to update task: " + e.message);
         }

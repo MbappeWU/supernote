@@ -43,7 +43,7 @@ export default {
         const newGroupTitle = ref('');
         const taskForm = ref({
             id: null,
-            taskListId: '0',
+            taskListId: null,
             title: '',
             detail: '',
             importance: 'low',
@@ -97,7 +97,7 @@ export default {
 
         // Group Name Map
         const groupNameMap = computed(() => {
-            const map = { '0': 'Inbox' };
+            const map = {};
             taskGroups.value.forEach(g => {
                 map[g.id] = g.title;
             });
@@ -135,7 +135,7 @@ export default {
                 : '';
             taskForm.value = {
                 id: null,
-                taskListId: selectedGroupId.value ? String(selectedGroupId.value) : '0',
+                taskListId: selectedGroupId.value ? String(selectedGroupId.value) : null,
                 title: '',
                 detail: '',
                 importance: 'low',
@@ -156,7 +156,7 @@ export default {
 
             taskForm.value = {
                 id: task.id,
-                taskListId: String(task.taskListId || '0'),
+                taskListId: task.taskListId ? String(task.taskListId) : null,
                 title: task.title,
                 detail: task.detail || '',
                 importance: task.importance || 'low',
@@ -448,7 +448,7 @@ export default {
                             <!-- Badges -->
                             <div class="flex items-center gap-2 flex-shrink-0">
                                 <!-- Group Tag -->
-                                <span v-if="task.taskListId !== '0' && groupNameMap[task.taskListId]"
+                                <span v-if="task.taskListId && groupNameMap[task.taskListId]"
                                     class="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium border border-slate-200/60">
                                     {{ groupNameMap[task.taskListId] }}
                                 </span>
@@ -533,7 +533,7 @@ export default {
                         <div>
                             <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Task Group</label>
                             <select v-model="taskForm.taskListId" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500">
-                                <option value="0">Inbox (General)</option>
+                                <option :value="null">Inbox (General)</option>
                                 <option v-for="g in taskGroups" :key="g.id" :value="g.id">{{ g.title }}</option>
                             </select>
                         </div>

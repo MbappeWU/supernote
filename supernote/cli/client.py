@@ -632,16 +632,16 @@ async def async_cloud_seed(
         print("\n--- Creating Task Groups & Tasks ---")
 
         # Group 0: Inbox
-        print("Created Inbox Tasks (group_id=0)")
+        print("Created Inbox Tasks (group_id=None)")
         await schedule.create_task(
-            0,
+            None,
             "Review handwritten meeting notes",
             detail="Check OCR transcripts and summarize key takeaways",
             status="needsAction",
             importance="high",
         )
         await schedule.create_task(
-            0,
+            None,
             "Organize Supernote inbox folder",
             detail="Sort recent .note files into projects and document categories",
             status="needsAction",
@@ -650,7 +650,8 @@ async def async_cloud_seed(
 
         # Group 1: Work & Projects
         g1 = await schedule.create_group("Work & Projects")
-        g1_id = int(g1.task_list_id)
+        assert g1.task_list_id is not None
+        g1_id = g1.task_list_id
         print(f"Created Group: Work & Projects (id={g1_id})")
 
         await schedule.create_task(
@@ -677,7 +678,8 @@ async def async_cloud_seed(
 
         # Group 2: Personal & Notes
         g2 = await schedule.create_group("Personal & Notes")
-        g2_id = int(g2.task_list_id)
+        assert g2.task_list_id is not None
+        g2_id = g2.task_list_id
         print(f"Created Group: Personal & Notes (id={g2_id})")
 
         await schedule.create_task(

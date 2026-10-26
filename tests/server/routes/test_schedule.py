@@ -6,6 +6,7 @@ from ical.calendar_stream import IcsCalendarStream
 
 from supernote.client.auth import AbstractAuth
 from supernote.client.client import Client
+from supernote.client.exceptions import BadRequestException
 from supernote.client.schedule import ScheduleClient
 from supernote.models.base import BooleanEnum
 from supernote.models.schedule import (
@@ -699,6 +700,12 @@ async def test_schedule_string_uuid_support(authenticated_client: Client) -> Non
     string_group_id = "dcf35927c2c7279e3d204f592af6e9ed"
     string_task_id = "a1b2c3d4e5f678901234567890abcdef"
 
+    group_resp = await schedule.create_group(
+        "Partner App Group", task_list_id=string_group_id
+    )
+    assert group_resp.success is True
+    assert group_resp.task_list_id == string_group_id
+
     # Create task with string UUIDs
     resp = await schedule.create_task(
         group_id=string_group_id,
@@ -722,8 +729,9 @@ async def test_schedule_string_uuid_support(authenticated_client: Client) -> Non
     assert task_vo.success is True
     assert task_vo.task_id == string_task_id
 
-    # Delete task
+    # Delete task and group
     await schedule.delete_task(string_task_id)
+    await schedule.delete_group(string_group_id)
 
 
 async def test_clear_group_without_last_modified(
@@ -952,7 +960,7 @@ async def test_schedule_13_digit_millisecond_timestamp_precision(
     create_resp = await authenticated_client.post(
         "/api/file/schedule/task",
         json={
-            "taskListId": "0",
+            "taskListId": None,
             "title": "Millisecond Timestamp Precision Task",
             "dueTime": create_due_time,
         },
@@ -969,7 +977,7 @@ async def test_schedule_13_digit_millisecond_timestamp_precision(
 
     list_res = await authenticated_client.post(
         "/api/file/schedule/task/all",
-        json={"taskListId": "0"},
+        json={},
     )
     assert list_res.status == 200
     list_data = await list_res.json()
@@ -993,5 +1001,59 @@ async def test_schedule_13_digit_millisecond_timestamp_precision(
     updated_data = await updated_get.json()
     assert updated_data["dueTime"] == update_due_time
     assert updated_data["lastModified"] >= 1_000_000_000_000
+
+    await schedule.delete_task(task_id)
+
+
+async def test_reject_nonexistent_task_list_id_on_create_and_update(
+    authenticated_client: Client,
+) -> None:
+    """Verify non-existent taskListId values (including '0' and '') are rejected with 400 (E0328)."""
+    schedule = ScheduleClient(authenticated_client)
+
+    # 1. Creating a task with invalid taskListId ('0', '', or missing group) raises BadRequestException (E0328)
+    for invalid_group_id in ("0", "", "nonexistent-group-id"):
+        with pytest.raises(BadRequestException, match="E0328"):
+            await authenticated_client.post(
+                "/api/file/schedule/task",
+                json={
+                    "taskListId": invalid_group_id,
+                    "title": "Invalid Group Task",
+                },
+            )
+
+    # 2. Create a valid Inbox task (taskListId=None), then verify updating with '0' is rejected
+    inbox_vo = await schedule.create_task(None, "Valid Inbox Task")
+    assert inbox_vo.task_id is not None
+    task_id = inbox_vo.task_id
+
+    for invalid_group_id in ("0", "", "nonexistent-group-id"):
+        with pytest.raises(BadRequestException, match="E0328"):
+            await authenticated_client.put(
+                "/api/file/schedule/task",
+                json={
+                    "taskId": task_id,
+                    "taskListId": invalid_group_id,
+                    "title": "Attempt Invalid Group Move",
+                },
+            )
+
+        with pytest.raises(BadRequestException, match="E0328"):
+            await authenticated_client.put(
+                "/api/file/schedule/task/list",
+                json={
+                    "updateScheduleTaskList": [
+                        {
+                            "taskId": task_id,
+                            "taskListId": invalid_group_id,
+                        }
+                    ]
+                },
+            )
+
+    # Verify the Inbox task remained untouched in Inbox (taskListId=None)
+    detail = await schedule.get_task(task_id)
+    assert detail.task_list_id is None
+    assert detail.title == "Valid Inbox Task"
 
     await schedule.delete_task(task_id)

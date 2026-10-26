@@ -8,6 +8,7 @@ from sqlalchemy.engine import CursorResult
 from supernote.server.db.models.schedule import ScheduleTaskDO, ScheduleTaskGroupDO
 from supernote.server.db.session import DatabaseSessionManager
 from supernote.server.events import LocalEventBus, ScheduleUpdatedEvent
+from supernote.server.exceptions import TaskGroupNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,9 @@ class ScheduleService:
             raise ValueError("Title is too long")
         if len(detail) > MAX_DETAIL_LENGTH:
             raise ValueError("Detail is too long")
+        if group_id is not None:
+            if not group_id or not await self.get_group(user_id, group_id):
+                raise TaskGroupNotFound(f"Task group {group_id} does not exist")
         async with self.session_manager.session() as session:
             kwargs: dict[str, Any] = {
                 "user_id": user_id,
@@ -352,6 +356,11 @@ class ScheduleService:
     ) -> ScheduleTaskDO | None:
         """Update a task."""
         updates = {k: v for k, v in kwargs.items() if k in TASK_ALLOWED_UPDATE_FIELDS}
+        if (target_group_id := updates.get("task_list_id")) is not None:
+            if not target_group_id or not await self.get_group(
+                user_id, target_group_id
+            ):
+                raise TaskGroupNotFound(f"Task group {target_group_id} does not exist")
         if not updates.get("update_time"):
             updates["update_time"] = int(time.time() * 1000)
 
@@ -409,6 +418,13 @@ class ScheduleService:
                     detail
                 ) > MAX_DETAIL_LENGTH:
                     raise ValueError("Detail is too long")
+                if (target_group_id := item.get("task_list_id")) is not None:
+                    if not target_group_id or not await self.get_group(
+                        user_id, target_group_id
+                    ):
+                        raise TaskGroupNotFound(
+                            f"Task group {target_group_id} does not exist"
+                        )
 
                 if not (task := await self.get_task(user_id, str(task_id))):
                     raise ValueError(f"Task {task_id} not found")

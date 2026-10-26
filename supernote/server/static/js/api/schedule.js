@@ -95,7 +95,7 @@ export async function fetchTasks(taskListId = null) {
     return {
         tasks: rawTasks.map(t => ({
             id: String(t.taskId),
-            taskListId: String(t.taskListId || "0"),
+            taskListId: t.taskListId ? String(t.taskListId) : null,
             title: t.title || "Untitled Task",
             detail: t.detail || "",
             status: t.status || "needsAction",
@@ -123,7 +123,7 @@ export async function createScheduleTask(taskData) {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
-            taskListId: String(taskData.taskListId || "0"),
+            taskListId: taskData.taskListId ? String(taskData.taskListId) : null,
             title: taskData.title,
             detail: taskData.detail || "",
             importance: taskData.importance || "low",
@@ -145,20 +145,25 @@ export async function createScheduleTask(taskData) {
  */
 export async function updateScheduleTask(taskData) {
     const taskId = String(taskData.id || taskData.taskId);
+    const payload = {
+        taskId: taskId,
+        title: taskData.title,
+        detail: taskData.detail,
+        importance: taskData.importance,
+        status: taskData.status,
+        dueTime: taskData.dueTime,
+        completedTime: taskData.completedTime,
+        lastModified: taskData.lastModified || Date.now(),
+        isReminderOn: taskData.isReminderOn !== undefined ? (taskData.isReminderOn ? "Y" : "N") : undefined
+    };
+    if ('taskListId' in taskData) {
+        payload.taskListId = taskData.taskListId ? String(taskData.taskListId) : null;
+    }
+
     const response = await fetch('/api/file/schedule/task', {
         method: 'PUT',
         headers: getAuthHeaders(),
-        body: JSON.stringify({
-            taskId: taskId,
-            taskListId: taskData.taskListId ? String(taskData.taskListId) : undefined,
-            title: taskData.title,
-            detail: taskData.detail,
-            importance: taskData.importance,
-            status: taskData.status,
-            dueTime: taskData.dueTime,
-            lastModified: taskData.lastModified || Date.now(),
-            isReminderOn: taskData.isReminderOn !== undefined ? (taskData.isReminderOn ? "Y" : "N") : undefined
-        })
+        body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
@@ -189,7 +194,7 @@ export async function deleteScheduleTask(taskId) {
  */
 export async function fetchIcsFeed(taskListId = null) {
     const headers = getAuthHeaders();
-    const url = taskListId && String(taskListId) !== '0'
+    const url = taskListId
         ? `/api/schedule/feed.ics?taskListId=${encodeURIComponent(taskListId)}`
         : '/api/schedule/feed.ics';
 

@@ -308,6 +308,8 @@ async def update_task(request: web.Request) -> web.Response:
         )
     except SupernoteError as err:
         return err.to_response()
+    except ValueError as err:
+        return SupernoteError(str(err), status_code=400).to_response()
     except Exception as err:
         return SupernoteError.uncaught(err).to_response()
 
@@ -340,7 +342,9 @@ async def batch_update_task_list(request: web.Request) -> web.Response:
                 updates_list.append(item_updates)
 
         await schedule_service.batch_update_tasks(
-            user_id, updates_list, task_list_id=dto.task_list_id
+            user_id,
+            updates_list,
+            task_list_id=dto.task_list_id,
         )
         return web.json_response(BaseResponse(success=True).to_dict())
     except SupernoteError as err:
@@ -426,7 +430,7 @@ async def list_tasks(request: web.Request) -> web.Response:
         except Exception:
             data = {}
         dto = ScheduleTaskDTO.from_dict(data)
-        group_id = dto.task_list_id
+        group_id = dto.task_list_id or None
 
         user = request["user"]
         schedule_service: ScheduleService = request.app["schedule_service"]
@@ -510,7 +514,7 @@ async def get_schedule_feed_ics(request: web.Request) -> web.Response:
     user_service = request.app["user_service"]
     user_id = await user_service.get_user_id(user_email)
 
-    task_list_id = request.query.get("taskListId")
+    task_list_id = request.query.get("taskListId") or None
 
     schedule_service: ScheduleService = request.app["schedule_service"]
     ical_export_service = ICalExportService(
