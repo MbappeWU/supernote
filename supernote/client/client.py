@@ -9,7 +9,7 @@ import aiohttp
 from aiohttp import FormData
 from aiohttp.client_exceptions import ClientError
 
-from supernote.models.base import BaseResponse
+from supernote.models.base import BaseResponse, ErrorCode
 from supernote.models.system import FileChunkParams, FileChunkVO, UploadFileVO
 
 from .auth import AbstractAuth
@@ -29,6 +29,20 @@ __all__ = [
 
 
 _T = TypeVar("_T", bound=BaseResponse)
+
+_UNAUTHORIZED_ERROR_CODES = frozenset(
+    {
+        ErrorCode.UNAUTHORIZED.value,
+        ErrorCode.ACCOUNT_NOT_EXIST.value,
+        ErrorCode.PASSWORD_ERROR.value,
+        ErrorCode.INVALID_CREDENTIALS.value,
+        ErrorCode.USER_DISABLED.value,
+        ErrorCode.USER_LOCKED.value,
+        ErrorCode.ACCOUNT_LOCKED.value,
+        ErrorCode.LOGIN_EXPIRED.value,
+        ErrorCode.INVALID_TOKEN.value,
+    }
+)
 
 CLOUD_API_URL = "https://cloud.supernote.com"
 HEADERS = {
@@ -145,8 +159,7 @@ class Client:
             data_response = data_cls.from_json(result)
         except (LookupError, ValueError) as err:
             raise ApiException(f"Server return malformed response: {result}") from err
-        if not data_response.success:
-            raise ApiException(data_response.error_msg)
+        self._raise_for_data_response(data_response)
         return data_response
 
     async def post(self, url: str, **kwargs: Any) -> aiohttp.ClientResponse:
@@ -194,8 +207,7 @@ class Client:
             raise ApiException(
                 f"Server return malformed response type {data_cls.__name__}: {result}"
             ) from err
-        if not data_response.success:
-            raise ApiException(data_response.error_msg)
+        self._raise_for_data_response(data_response)
         return data_response
 
     async def put_json(self, url: str, data_cls: type[_T], **kwargs: Any) -> _T:
@@ -211,8 +223,7 @@ class Client:
             raise ApiException(
                 f"Server return malformed response type {data_cls.__name__}: {result}"
             ) from err
-        if not data_response.success:
-            raise ApiException(data_response.error_msg)
+        self._raise_for_data_response(data_response)
         return data_response
 
     async def delete_json(self, url: str, data_cls: type[_T], **kwargs: Any) -> _T:
@@ -228,9 +239,17 @@ class Client:
             raise ApiException(
                 f"Server return malformed response type {data_cls.__name__}: {result}"
             ) from err
-        if not data_response.success:
-            raise ApiException(data_response.error_msg)
+        self._raise_for_data_response(data_response)
         return data_response
+
+    @staticmethod
+    def _raise_for_data_response(data_response: BaseResponse) -> None:
+        """Raise an appropriate ApiException when a parsed response indicates failure."""
+        if data_response.success:
+            return
+        if data_response.error_code in _UNAUTHORIZED_ERROR_CODES:
+            raise UnauthorizedException(data_response.error_msg)
+        raise ApiException(data_response.error_msg)
 
     async def _get_csrf_token(self) -> str:
         """Get the CSRF token."""

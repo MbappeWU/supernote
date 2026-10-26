@@ -80,6 +80,9 @@ export async function login(email, password) {
     }
 
     const loginData = await loginResp.json();
+    if (!loginData.success) {
+        throw new Error(loginData.errorMsg || "Invalid credentials");
+    }
     setToken(loginData.token);
     return loginData;
 }

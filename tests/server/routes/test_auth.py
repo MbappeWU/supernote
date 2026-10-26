@@ -62,9 +62,65 @@ async def test_check_user_exists(
         await login_client.check_user_exists("unknown@example.com")
 
 
-async def test_login_invalid_credentials(login_client: LoginClient) -> None:
-    with pytest.raises(UnauthorizedException):
+async def test_login_invalid_credentials(
+    client: TestClient,
+    login_client: LoginClient,
+    create_test_user: None,
+) -> None:
+    # Wrong password on existing user returns HTTP 200 with E0019 (Password error)
+    code_resp = await client.post(
+        "/api/official/user/query/random/code",
+        json={"account": "test@example.com"},
+    )
+    code_data = await code_resp.json()
+    wrong_pw_resp = await client.post(
+        "/api/official/user/account/login/new",
+        json={
+            "account": "test@example.com",
+            "password": "invalid_sha256_hash",
+            "timestamp": code_data["timestamp"],
+            "loginMethod": "2",
+        },
+    )
+    assert wrong_pw_resp.status == 200
+    assert await wrong_pw_resp.json() == {
+        "success": False,
+        "errorCode": "E0019",
+        "errorMsg": "Password error",
+        "token": "",
+        "counts": "1",
+        "isBind": "N",
+        "isBindEquipment": "N",
+        "soldOutCount": 0,
+    }
+
+    # Non-existent user returns HTTP 200 with E0018 (Account does not exist)
+    unknown_resp = await client.post(
+        "/api/official/user/account/login/new",
+        json={
+            "account": "nonexistent@example.com",
+            "password": "invalid_sha256_hash",
+            "timestamp": "1234567890",
+            "loginMethod": "2",
+        },
+    )
+    assert unknown_resp.status == 200
+    assert await unknown_resp.json() == {
+        "success": False,
+        "errorCode": "E0018",
+        "errorMsg": "Account does not exist",
+        "token": "",
+        "counts": "0",
+        "isBind": "N",
+        "isBindEquipment": "N",
+        "soldOutCount": 0,
+    }
+
+    with pytest.raises(UnauthorizedException, match="Password error"):
         await login_client.login("test@example.com", "wrongpassword")
+
+    with pytest.raises(UnauthorizedException, match="Account does not exist"):
+        await login_client.login("nonexistent@example.com", "wrongpassword")
 
 
 async def test_bind_equipment(

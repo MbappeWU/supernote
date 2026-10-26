@@ -7,7 +7,11 @@ from aiohttp import web
 from pytest_aiohttp import AiohttpClient
 
 from supernote.client import Client
-from supernote.client.exceptions import ApiException, SmsVerificationRequired
+from supernote.client.exceptions import (
+    ApiException,
+    SmsVerificationRequired,
+    UnauthorizedException,
+)
 from supernote.client.hashing import hash_password
 from supernote.client.login_client import LoginClient
 from supernote.models.auth import LoginVO, RandomCodeVO
@@ -189,6 +193,44 @@ async def test_login_general_api_exception(aiohttp_client: AiohttpClient) -> Non
     login_client = LoginClient(client)
 
     with pytest.raises(ApiException, match="Invalid credentials"):
+        await login_client.login("user@example.com", "wrongpass")
+
+
+async def test_login_password_error_code_raises_unauthorized(
+    aiohttp_client: AiohttpClient,
+) -> None:
+    """Test login raises UnauthorizedException when server returns E0019 (Password error)."""
+
+    async def handler_query_token(request: web.Request) -> web.Response:
+        return web.json_response({"success": True})
+
+    async def handler_random_code(request: web.Request) -> web.Response:
+        return web.json_response(
+            {"success": True, "randomCode": "salt123", "timestamp": "1600000000"}
+        )
+
+    async def handler_login_new(request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "success": False,
+                "errorCode": "E0019",
+                "errorMsg": "Password error",
+                "counts": "1",
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/api/csrf", handler_csrf)
+    app.router.add_post("/api/user/query/token", handler_query_token)
+    app.router.add_post("/api/official/user/query/random/code", handler_random_code)
+    app.router.add_post("/api/official/user/account/login/new", handler_login_new)
+
+    test_client = await aiohttp_client(app)
+    base_url = str(test_client.make_url(""))
+    client = Client(test_client.session, host=base_url)
+    login_client = LoginClient(client)
+
+    with pytest.raises(UnauthorizedException, match="Password error"):
         await login_client.login("user@example.com", "wrongpass")
 
 

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from supernote.models.auth import Equipment, LoginVO, UserVO
+from supernote.models.base import ErrorCode
 from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import (
     LoginRecordVO,
@@ -184,7 +185,7 @@ class UserService:
         if not user:
             return UserCheckVO(
                 success=False,
-                error_code="E0018",
+                error_code=ErrorCode.ACCOUNT_NOT_EXIST.value,
                 error_msg="User not found",
             )
         machine_id = await self.get_unique_machine_id()
@@ -397,17 +398,33 @@ class UserService:
         equipment: Equipment = Equipment.WEB,
         ip: str | None = None,
         login_method: str | None = None,
-    ) -> LoginVO | None:
+    ) -> LoginVO:
         user = await self.get_user_by_email(account)
-        if not user or not user.is_active:
-            logger.debug("User %s not found or not active", account)
-            return None
+        if not user:
+            logger.debug("User %s not found", account)
+            return LoginVO(
+                success=False,
+                error_code=ErrorCode.ACCOUNT_NOT_EXIST.value,
+                error_msg=ErrorCode.ACCOUNT_NOT_EXIST.message,
+            )
+        if not user.is_active:
+            logger.debug("User %s is not active", account)
+            return LoginVO(
+                success=False,
+                error_code=ErrorCode.USER_DISABLED.value,
+                error_msg=ErrorCode.USER_DISABLED.message,
+            )
 
         if not await self._verify_login_hash(
             account, user.password_md5, password_hash, timestamp
         ):
             logger.debug("Invalid login hash for user %s", account)
-            return None
+            return LoginVO(
+                success=False,
+                error_code=ErrorCode.PASSWORD_ERROR.value,
+                error_msg=ErrorCode.PASSWORD_ERROR.message,
+                counts="1",
+            )
 
         # Check binding status from DB
         is_bind = "N"

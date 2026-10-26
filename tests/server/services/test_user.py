@@ -5,7 +5,8 @@ import jwt
 import pytest
 from sqlalchemy import select
 
-from supernote.models.auth import Equipment
+from supernote.models.auth import Equipment, LoginVO
+from supernote.models.base import ErrorCode
 from supernote.models.equipment import UserEquipmentVO
 from supernote.models.user import (
     UpdateEmailDTO,
@@ -381,19 +382,27 @@ async def test_challenge_single_use_and_concurrent(user_service: UserService) ->
 
     # First challenge still works even though second challenge was issued
     vo1 = await user_service.login(email, hash1, ts1, equipment_no="dev1")
-    assert vo1 is not None
+    assert vo1.success is True
+    assert vo1.token != ""
 
-    # Replaying first challenge fails
+    # Replaying first challenge fails with PASSWORD_ERROR (E0019)
     replay = await user_service.login(email, hash1, ts1, equipment_no="dev1")
-    assert replay is None
+    assert replay == LoginVO(
+        success=False,
+        error_code=ErrorCode.PASSWORD_ERROR.value,
+        error_msg=ErrorCode.PASSWORD_ERROR.message,
+        counts="1",
+    )
 
     # Second challenge still works once
     vo2 = await user_service.login(email, hash2, ts2, equipment_no="dev2")
-    assert vo2 is not None
+    assert vo2.success is True
+    assert vo2.token != ""
 
 
 async def test_challenge_validation_and_diagnostic_logging(
     user_service: UserService,
+    session_manager: DatabaseSessionManager,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Verify login validates challenge timestamp and logs diagnostic warnings on failure."""
@@ -401,25 +410,41 @@ async def test_challenge_validation_and_diagnostic_logging(
     pw_md5 = hashlib.md5(b"password123").hexdigest()
     await user_service.register(UserRegisterDTO(email=email, password=pw_md5))
 
+    expected_pw_err = LoginVO(
+        success=False,
+        error_code=ErrorCode.PASSWORD_ERROR.value,
+        error_msg=ErrorCode.PASSWORD_ERROR.message,
+        counts="1",
+    )
+
+    # Unknown account returns ACCOUNT_NOT_EXIST (E0018)
+    assert await user_service.login("unknown@example.com", "hash", "123") == LoginVO(
+        success=False,
+        error_code=ErrorCode.ACCOUNT_NOT_EXIST.value,
+        error_msg=ErrorCode.ACCOUNT_NOT_EXIST.message,
+    )
+
     # Invalid timestamp format or empty timestamp logs warning without consuming active challenge
     code1, ts1 = await user_service.generate_random_code(email)
     hash1 = hash_with_salt(pw_md5, code1)
     with caplog.at_level(logging.WARNING):
         caplog.clear()
-        assert await user_service.login(email, hash1, "") is None
+        assert await user_service.login(email, hash1, "") == expected_pw_err
         assert "missing challenge timestamp" in caplog.text
 
         caplog.clear()
-        assert await user_service.login(email, hash1, "not-a-number") is None
+        assert await user_service.login(email, hash1, "not-a-number") == expected_pw_err
         assert "invalid timestamp format" in caplog.text
 
     # Legitimate challenge is still usable once after bogus timestamp attempts
-    assert await user_service.login(email, hash1, ts1, equipment_no="dev1") is not None
+    vo_ok = await user_service.login(email, hash1, ts1, equipment_no="dev1")
+    assert vo_ok.success is True
+    assert vo_ok.token != ""
 
     # Replay or unknown timestamp logs challenge expired/not found warning
     with caplog.at_level(logging.WARNING):
         caplog.clear()
-        assert await user_service.login(email, hash1, ts1) is None
+        assert await user_service.login(email, hash1, ts1) == expected_pw_err
         assert "challenge expired or not found" in caplog.text
 
     # Password hash mismatch logs warning without leaking secret
@@ -427,10 +452,27 @@ async def test_challenge_validation_and_diagnostic_logging(
     wrong_hash = hash_with_salt(hashlib.md5(b"wrong").hexdigest(), code2)
     with caplog.at_level(logging.WARNING):
         caplog.clear()
-        assert await user_service.login(email, wrong_hash, ts2) is None
+        assert await user_service.login(email, wrong_hash, ts2) == expected_pw_err
         assert "password hash mismatch" in caplog.text
         assert pw_md5 not in caplog.text
         assert code2 not in caplog.text
+
+    # Disabled user returns USER_DISABLED (E0709)
+    async with session_manager.session() as session:
+        user_row = (
+            await session.execute(select(UserDO).where(UserDO.email == email))
+        ).scalar_one()
+        user_row.is_active = False
+        await session.commit()
+
+    code3, ts3 = await user_service.generate_random_code(email)
+    assert await user_service.login(
+        email, hash_with_salt(pw_md5, code3), ts3
+    ) == LoginVO(
+        success=False,
+        error_code=ErrorCode.USER_DISABLED.value,
+        error_msg=ErrorCode.USER_DISABLED.message,
+    )
 
 
 async def test_update_email_validation_and_duplicate(user_service: UserService) -> None:

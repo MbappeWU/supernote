@@ -86,9 +86,11 @@ async def test_login_flow(
     assert "equipmentNo" not in data
 
 
-async def test_invalid_password(login_client: LoginClient) -> None:
+async def test_invalid_password(
+    create_test_user: None, login_client: LoginClient
+) -> None:
     """Test login with an invalid password"""
-    with pytest.raises(UnauthorizedException):
+    with pytest.raises(UnauthorizedException, match="Password error"):
         await login_client.login_equipment(
             TEST_USERNAME, "incorrect-password", "SN123456"
         )
