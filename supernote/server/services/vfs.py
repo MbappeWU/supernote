@@ -1,8 +1,10 @@
 import logging
 import time
+from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from supernote.server.constants import (
     SYSTEM_CATEGORY_CONTAINER_MAP,
@@ -697,6 +699,59 @@ class VirtualFileSystem:
 
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none() is not None
+
+    async def get_folder_sizes(
+        self, user_id: int, folder_ids: Sequence[int]
+    ) -> dict[int, int]:
+        """Calculate recursive total file byte sizes for each folder in folder_ids."""
+        if not folder_ids:
+            return {}
+
+        unique_ids = list(set(folder_ids))
+        base = (
+            select(
+                UserFileDO.directory_id.label("root_folder_id"),
+                UserFileDO.id,
+                UserFileDO.is_folder,
+                UserFileDO.size,
+            )
+            .where(
+                UserFileDO.user_id == user_id,
+                UserFileDO.is_active == "Y",
+                UserFileDO.directory_id.in_(unique_ids),
+            )
+            .cte(name="folder_descendants", recursive=True)
+        )
+
+        child = aliased(UserFileDO)
+        descendants = base.union_all(
+            select(
+                base.c.root_folder_id,
+                child.id,
+                child.is_folder,
+                child.size,
+            ).where(
+                child.user_id == user_id,
+                child.is_active == "Y",
+                base.c.is_folder == "Y",
+                child.directory_id == base.c.id,
+            )
+        )
+
+        stmt = (
+            select(
+                descendants.c.root_folder_id,
+                func.coalesce(func.sum(descendants.c.size), 0),
+            )
+            .where(descendants.c.is_folder == "N")
+            .group_by(descendants.c.root_folder_id)
+        )
+
+        result = await self.db.execute(stmt)
+        sizes: dict[int, int] = {fid: 0 for fid in unique_ids}
+        for root_folder_id, total_size in result.all():
+            sizes[int(root_folder_id)] = int(total_size or 0)
+        return sizes
 
     async def get_total_usage(self, user_id: int) -> int:
         """Calculate total storage usage for a user in bytes."""

@@ -112,3 +112,53 @@ async def test_web_client_upload_large_file_multipart(
     assert uploaded.md5 == expected_md5
     assert uploaded.inner_name is not None
     assert uploaded.inner_name.endswith("-000.pdf")
+
+
+async def test_web_list_query_returns_recursive_folder_sizes(
+    authenticated_client: Client,
+) -> None:
+    """Verify /api/file/list/query computes recursive folder sizes including flattened root folders."""
+    web_client = WebClient(authenticated_client)
+
+    # Query root to find the flattened 'Note' system folder
+    root_listing = await web_client.list_query(0)
+    note_folder = next(
+        item for item in root_listing.user_file_vo_list if item.file_name == "Note"
+    )
+    note_id = int(note_folder.id)
+    assert note_folder.size == 0
+
+    # Create nested hierarchy inside Note: Note -> Projects -> 2026, plus an EmptySub folder
+    projects_vo = await web_client.create_folder(note_id, "Projects")
+    projects_id = int(projects_vo.id)
+    year_vo = await web_client.create_folder(projects_id, "2026")
+    year_id = int(year_vo.id)
+    empty_vo = await web_client.create_folder(note_id, "EmptySub")
+    empty_id = int(empty_vo.id)
+
+    await web_client.upload_file(note_id, "root_note.note", b"a" * 120)
+    await web_client.upload_file(projects_id, "proj.note", b"b" * 300)
+    await web_client.upload_file(year_id, "deep.note", b"c" * 580)
+    await web_client.upload_file(year_id, "temp.note", b"d" * 1000)
+
+    # Delete temp.note and verify its bytes are excluded
+    year_listing = await web_client.list_query(year_id)
+    temp_item = next(
+        item for item in year_listing.user_file_vo_list if item.file_name == "temp.note"
+    )
+    await web_client.file_delete([int(temp_item.id)], parent_id=year_id)
+
+    # Check Note directory listing
+    note_listing = await web_client.list_query(note_id)
+    by_id = {int(item.id): item for item in note_listing.user_file_vo_list}
+    assert by_id[projects_id].size == 300 + 580
+    assert by_id[empty_id].size == 0
+
+    # Check root listing for flattened Note folder recursive size (120 + 300 + 580 = 1000)
+    root_listing_after = await web_client.list_query(0)
+    note_folder_after = next(
+        item
+        for item in root_listing_after.user_file_vo_list
+        if item.file_name == "Note"
+    )
+    assert note_folder_after.size == 1000

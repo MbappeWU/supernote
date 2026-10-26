@@ -331,3 +331,49 @@ async def test_list_recursive_nested_hierarchy(
         "Project/2026/deep.note",
         "root.note",
     ]
+
+
+async def test_get_folder_sizes_recursive_and_inactive_exclusion(
+    db_session: AsyncSession,
+) -> None:
+    """Verify get_folder_sizes computes recursive active descendant file bytes per folder."""
+    vfs = VirtualFileSystem(db_session)
+    user_id = 1006
+
+    folder_a = await vfs.create_directory(user_id, 0, "FolderA")
+    sub_a1 = await vfs.create_directory(user_id, folder_a.id, "SubA1")
+    deep_a2 = await vfs.create_directory(user_id, sub_a1.id, "DeepA2")
+    empty_folder = await vfs.create_directory(user_id, 0, "EmptyFolder")
+    folder_b = await vfs.create_directory(user_id, 0, "FolderB")
+
+    await vfs.create_or_update_file(
+        user_id, folder_a.id, "top.note", size=100, md5="m1", storage_key="k1"
+    )
+    await vfs.create_or_update_file(
+        user_id, sub_a1.id, "mid.note", size=250, md5="m2", storage_key="k2"
+    )
+    deleted_file = await vfs.create_or_update_file(
+        user_id, deep_a2.id, "deleted.note", size=900, md5="m3", storage_key="k3"
+    )
+    await vfs.create_or_update_file(
+        user_id, deep_a2.id, "deep.note", size=400, md5="m4", storage_key="k4"
+    )
+    await vfs.create_or_update_file(
+        user_id, folder_b.id, "b.pdf", size=50, md5="m5", storage_key="k5"
+    )
+
+    # Soft-delete one descendant file and verify it is excluded
+    await vfs.delete_node(user_id, deleted_file.id)
+
+    assert await vfs.get_folder_sizes(user_id, []) == {}
+
+    sizes = await vfs.get_folder_sizes(
+        user_id, [folder_a.id, sub_a1.id, deep_a2.id, empty_folder.id, folder_b.id]
+    )
+    assert sizes == {
+        folder_a.id: 750,
+        sub_a1.id: 650,
+        deep_a2.id: 400,
+        empty_folder.id: 0,
+        folder_b.id: 50,
+    }
